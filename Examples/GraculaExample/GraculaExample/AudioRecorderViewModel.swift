@@ -1,0 +1,201 @@
+import AppKit
+import Foundation
+
+@MainActor
+final class AudioRecorderViewModel: ObservableObject {
+    @Published private(set) var isRecording = false
+    @Published private(set) var isTranscribing = false
+    @Published private(set) var statusText = "Ready"
+    @Published private(set) var latestFileSourceText: String?
+    @Published private(set) var recognizedText = "No recognized speech yet."
+    @Published private(set) var recordings: [URL] = []
+    @Published private(set) var inputDevices: [AudioInputDevice] = []
+    @Published private(set) var diagnostics: [String] = []
+    @Published var selectedInputDeviceID: String?
+
+    private let recorder: DiskAudioRecorder
+    private let transcriber: FileSpeechTranscriber
+    private let diagnosticsFileURL: URL
+
+    init(recorder: DiskAudioRecorder) {
+        self.recorder = recorder
+        let loadedSettings = VoicePipelineSettings.loadFromDisk()
+        self.transcriber = FileSpeechTranscriber(settings: loadedSettings)
+        self.diagnosticsFileURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("GraculaExample", isDirectory: true)
+            .appendingPathComponent("recorder-diagnostics.log")
+        log.info("AudioRecorderViewModel initialized. appLog=\(log.logFilePath)")
+        appendDiagnostic("Voice settings file: \(VoicePipelineSettingsStore.defaultFileURL().path)")
+        Task {
+            await transcriber.prewarm()
+        }
+    }
+
+    var buttonTitle: String {
+        isRecording ? "Stop Recording" : "Record Message"
+    }
+
+    var buttonSystemImage: String {
+        isRecording ? "stop.fill" : "mic.fill"
+    }
+
+    func toggleRecording() async {
+        guard !isTranscribing else {
+            return
+        }
+
+        if isRecording {
+            await stopRecording()
+        } else {
+            await startRecording()
+        }
+    }
+
+    func loadRecordings() async {
+        let startedAt = PerformanceLog.checkpoint()
+        do {
+            refreshInputDevices()
+            recordings = try recorder.savedRecordings()
+            appendDiagnostic("Loaded \(recordings.count) recording file(s).")
+            appendDiagnostic("Speech runtime: \(transcriber.runtimeSummary)")
+            log.debug("loadRecordings completed in \(PerformanceLog.elapsedDescription(since: startedAt)); recordings=\(self.recordings.count); devices=\(self.inputDevices.count)")
+        } catch {
+            statusText = "Could not load recordings: \(error.localizedDescription)"
+            appendDiagnostic("Load recordings failed: \(error.localizedDescription)")
+            log.error("loadRecordings failed after \(PerformanceLog.elapsedDescription(since: startedAt)): \(error.localizedDescription)")
+        }
+    }
+
+    func refreshInputDevices() {
+        let startedAt = PerformanceLog.checkpoint()
+        inputDevices = recorder.availableInputDevices()
+        if selectedInputDeviceID == nil {
+            selectedInputDeviceID = recorder.defaultInputDevice()?.id ?? inputDevices.first?.id
+        } else if let selectedInputDeviceID,
+                  !inputDevices.contains(where: { $0.id == selectedInputDeviceID }) {
+            self.selectedInputDeviceID = recorder.defaultInputDevice()?.id ?? inputDevices.first?.id
+        }
+        log.debug("refreshInputDevices completed in \(PerformanceLog.elapsedDescription(since: startedAt)); devices=\(self.inputDevices.count); selected=\(self.selectedInputDeviceID ?? "nil")")
+    }
+
+    func revealLatestFileInFinder() {
+        guard let latestFileSourceText else {
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([
+            URL(filePath: latestFileSourceText)
+        ])
+    }
+
+    func revealDiagnosticsInFinder() {
+        NSWorkspace.shared.activateFileViewerSelecting([diagnosticsFileURL])
+    }
+
+    private func startRecording() async {
+        let startedAt = PerformanceLog.checkpoint()
+        do {
+            refreshInputDevices()
+            latestFileSourceText = nil
+            recognizedText = "No recognized speech yet."
+            let selectedName = selectedInputDeviceName()
+            appendDiagnostic("Starting recording. selectedDevice=\(selectedName), id=\(selectedInputDeviceID ?? "nil")")
+            let url = try await recorder.start(deviceID: selectedInputDeviceID)
+            latestFileSourceText = url.path(percentEncoded: false)
+            isRecording = true
+            statusText = "Recording from \(selectedName)..."
+            appendDiagnostic("Recording file opened: \(url.path(percentEncoded: false))")
+            log.debug("startRecording completed in \(PerformanceLog.elapsedDescription(since: startedAt)); device=\(selectedName); file=\(url.lastPathComponent)")
+        } catch {
+            isRecording = false
+            statusText = "Could not start recording: \(error.localizedDescription)"
+            appendDiagnostic("Start failed: \(error.localizedDescription)")
+            log.error("startRecording failed after \(PerformanceLog.elapsedDescription(since: startedAt)): \(error.localizedDescription)")
+        }
+    }
+
+    private func stopRecording() async {
+        let startedAt = PerformanceLog.checkpoint()
+        do {
+            appendDiagnostic("Stopping capture.")
+            let stopStartedAt = PerformanceLog.checkpoint()
+            let result = try recorder.stop()
+            let url = result.url
+            latestFileSourceText = url.path(percentEncoded: false)
+            isRecording = false
+            statusText = "Saved audio message."
+            appendDiagnostic(
+                "Stopped. packets=\(result.packetCount), bytes=\(result.byteSize), stopStatus=\(result.stopStatus), disposeStatus=\(result.disposeStatus), closeStatus=\(result.closeStatus), file=\(url.path(percentEncoded: false))"
+            )
+            log.debug("recorder.stop completed in \(PerformanceLog.elapsedDescription(since: stopStartedAt)); packets=\(result.packetCount); bytes=\(result.byteSize); stopStatus=\(result.stopStatus); disposeStatus=\(result.disposeStatus); closeStatus=\(result.closeStatus)")
+            recordings = try recorder.savedRecordings()
+
+            guard result.packetCount > 0, result.byteSize > 512 else {
+                recognizedText = "No audio frames were captured. Try a different input source."
+                statusText = "Saved file, but no audio was captured."
+                appendDiagnostic("Skipping transcription because recording has no captured packets.")
+                log.warning("Skipping speech transcription after \(PerformanceLog.elapsedDescription(since: startedAt)); no packets captured")
+                return
+            }
+
+            isTranscribing = true
+            statusText = "Saved audio message. Transcribing..."
+            appendDiagnostic("Starting speech transcription.")
+            let transcriptionStartedAt = PerformanceLog.checkpoint()
+            recognizedText = try await transcriber.transcribeFile(at: url)
+            statusText = "Saved and transcribed audio message."
+            isTranscribing = false
+            appendDiagnostic("Speech transcription finished. characters=\(recognizedText.count)")
+            log.debug("Speech transcription completed in \(PerformanceLog.elapsedDescription(since: transcriptionStartedAt)); characters=\(self.recognizedText.count)")
+
+            log.info("stopRecording completed in \(PerformanceLog.elapsedDescription(since: startedAt)); totalBytes=\(result.byteSize)")
+        } catch {
+            isRecording = false
+            isTranscribing = false
+            statusText = "Could not finish recording: \(error.localizedDescription)"
+            appendDiagnostic("Stop/transcribe failed: \(error.localizedDescription)")
+            log.error("stopRecording failed after \(PerformanceLog.elapsedDescription(since: startedAt)): \(error.localizedDescription)")
+        }
+    }
+
+    private func selectedInputDeviceName() -> String {
+        guard let selectedInputDeviceID,
+              let device = inputDevices.first(where: { $0.id == selectedInputDeviceID }) else {
+            return "Default Input"
+        }
+        return device.name
+    }
+
+    private func appendDiagnostic(_ message: String) {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        let line = "[\(formatter.string(from: Date()))] \(message)"
+        diagnostics.append(line)
+        if diagnostics.count > 80 {
+            diagnostics.removeFirst(diagnostics.count - 80)
+        }
+        persistDiagnostic(line)
+        log.debug(message)
+    }
+
+    private func persistDiagnostic(_ line: String) {
+        do {
+            let directory = diagnosticsFileURL.deletingLastPathComponent()
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+
+            let data = Data((line + "\n").utf8)
+            if FileManager.default.fileExists(atPath: diagnosticsFileURL.path) {
+                let handle = try FileHandle(forWritingTo: diagnosticsFileURL)
+                try handle.seekToEnd()
+                try handle.write(contentsOf: data)
+                try handle.close()
+            } else {
+                try data.write(to: diagnosticsFileURL)
+            }
+        } catch {
+            diagnostics.append("Failed to write diagnostics log: \(error.localizedDescription)")
+        }
+    }
+}
