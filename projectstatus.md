@@ -4,7 +4,7 @@ This file records implementation progress step by step. Every milestone update m
 
 ## Current Milestone
 
-Milestone 4 — In-Memory Core Actors
+Milestone 5 — Manual SwiftUI Shell
 
 Status: completed
 
@@ -45,6 +45,9 @@ Status: completed
 | 2026-04-28 | `git commit -m "Add application ports"` | Passed | Created commit `b98d700` for Milestone 3. |
 | 2026-04-28 | `swift build` | Passed | In-memory core actors compiled. |
 | 2026-04-28 | `swift test` | Passed | 34 tests passed after adding memory, audit, policy, registry, executor, and orchestrator tests. |
+| 2026-04-28 | `git commit -m "Implement in-memory application core"` | Passed | Created commit `fa8e5d3` for Milestone 4. |
+| 2026-04-28 | `swift build` | Passed | Manual SwiftUI shell compiled. |
+| 2026-04-28 | `swift test` | Passed | 34 tests passed after wiring demo UI shell. |
 
 ## Milestone 2 — Domain Core Report
 
@@ -90,12 +93,26 @@ Status: completed
 | 8. Add core flow tests | Done | Added tests for allowed execution, confirmation, denial, unknown tool, audit ordering, and policy decisions. |
 | 9. Update `projectstatus.md` | Done | Milestone 4 report and validation log are updated. |
 
+## Milestone 5 — Manual SwiftUI Shell Report
+
+| Step | Status | Report |
+| --- | --- | --- |
+| 1. Expand `AgentViewModel` as `@MainActor` | Done | Added manual input, status, result, pending challenge, confirmation text, and audit entries. |
+| 2. Add UI states | Done | Added visible status transitions for ready, thinking, needs confirmation, executing, executed, rejected, denied, and error states. |
+| 3. Add manual text input | Done | Added text field and run button. |
+| 4. Add transcript/result panel | Done | Added result display for tool outcomes and policy responses. |
+| 5. Add pending confirmation panel | Done | Added `ConfirmationView` with optional strong confirmation phrase input. |
+| 6. Add approve/reject controls | Done | Added approval and rejection actions for pending plans. |
+| 7. Add audit log preview | Done | Added `AuditLogPreviewView` backed by `InMemoryAuditLog`. |
+| 8. Wire fake planner and fake tools | Done | Added demo planner/tools through `AppCompositionRoot` using the real orchestrator, policy gate, registry, executor, memory, and audit log. |
+| 9. Update `projectstatus.md` | Done | Milestone 5 report and validation log are updated. |
+
 ## Blockers
 
 - SwiftPM commands need to run outside the default sandbox in this environment because manifest compilation fails with `sandbox-exec`.
 
 ## Next Actions
 
-1. Start Milestone 5 — Manual SwiftUI Shell.
-2. Expand `AgentViewModel` with manual input, status, results, confirmation state, approve/reject controls, and audit preview.
-3. Wire fake planner and tools through `AppCompositionRoot`.
+1. Start Milestone 6 — Text-to-Speech.
+2. Add `SpeechSynthesizing`, implement `AppleSpeechSynthesizer`, and wire stop-speaking support.
+3. Keep TTS behind protocol and avoid blocking the UI.
