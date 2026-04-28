@@ -4,7 +4,7 @@ This file records implementation progress step by step. Every milestone update m
 
 ## Current Milestone
 
-Milestone 6 — Text-to-Speech
+Milestone 7 — Speech-to-Text
 
 Status: completed
 
@@ -51,6 +51,11 @@ Status: completed
 | 2026-04-28 | `git commit -m "Add manual SwiftUI shell"` | Passed | Created commit `2734989` for Milestone 5. |
 | 2026-04-28 | `swift build` | Passed | Text-to-speech protocol, Apple adapter, and UI wiring compiled. |
 | 2026-04-28 | `swift test` | Passed | 38 tests passed after adding TTS tests. |
+| 2026-04-28 | `git commit -m "Add text to speech support"` | Passed | Created commit `83922e8` for Milestone 6. |
+| 2026-04-28 | `swift build` | Passed | Speech-to-text protocols, Apple adapters, and `VoicePipeline` compiled. |
+| 2026-04-28 | `swift test` | Failed | Initial Milestone 7 test run found missing `Foundation` import in `TranscriptEventTests`. |
+| 2026-04-28 | `swift test` | Passed | 41 tests passed after adding the missing import. |
+| 2026-04-28 | `swift build` | Passed | Final Milestone 7 build passed. |
 
 ## Milestone 2 — Domain Core Report
 
@@ -122,12 +127,25 @@ Status: completed
 | 6. Add fake TTS tests | Done | Added driver-backed tests for blank text, speak, stop, and configuration values. |
 | 7. Update `projectstatus.md` | Done | Milestone 6 report and validation log are updated. |
 
+## Milestone 7 — Speech-to-Text Report
+
+| Step | Status | Report |
+| --- | --- | --- |
+| 1. Add microphone permission flow | Done | Added permission checks in `AppleAudioCapture`; microphone permission is requested only when capture starts. |
+| 2. Implement `AudioCapturing` | Done | Added `AudioFrame`, `AudioCapturing`, and `AppleAudioCapture` using `AVAudioEngine`. |
+| 3. Implement `SpeechRecognizing` | Done | Added `TranscriptEvent`, `TranscriptKind`, `SpeechRecognizing`, and `AppleSpeechRecognizer` using Apple Speech. |
+| 4. Emit partial and final transcript events | Done | Apple recognizer maps Speech results to partial/final `TranscriptEvent` values. |
+| 5. Implement `VoicePipeline` actor | Done | Added pipeline from audio capture to STT to `AgentOrchestrator` to TTS. |
+| 6. Process final transcripts first | Done | Pipeline yields partial transcripts but only sends `.final` transcripts to the orchestrator. |
+| 7. Keep manual input fallback | Done | Existing manual SwiftUI input remains unchanged. |
+| 8. Update `projectstatus.md` | Done | Milestone 7 report and validation log are updated. |
+
 ## Blockers
 
 - SwiftPM commands need to run outside the default sandbox in this environment because manifest compilation fails with `sandbox-exec`.
 
 ## Next Actions
 
-1. Start Milestone 7 — Speech-to-Text.
-2. Add microphone permission flow, audio capture protocol, speech recognition protocol, transcript events, and `VoicePipeline`.
-3. Keep manual input fallback available.
+1. Start Milestone 8 — LLM Planner.
+2. Add LLM request/response models, local HTTP client, prompt compiler, and strict JSON parser.
+3. Keep invalid LLM output recoverable and ensure policy still gates every plan.
