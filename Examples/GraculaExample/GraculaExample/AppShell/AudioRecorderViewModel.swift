@@ -15,19 +15,30 @@ final class AudioRecorderViewModel: ObservableObject {
 
     private let recorder: DiskAudioRecorder
     private let transcriber: FileSpeechTranscriber
+    private let voicePipeline: VoicePipeline
     private let diagnosticsFileURL: URL
 
     init(recorder: DiskAudioRecorder) {
         self.recorder = recorder
         let loadedSettings = VoicePipelineSettings.loadFromDisk()
         self.transcriber = FileSpeechTranscriber(settings: loadedSettings)
+        self.voicePipeline = VoicePipeline(
+            settings: loadedSettings,
+            player: SystemAudioPlayer()
+        )
         self.diagnosticsFileURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("GraculaExample", isDirectory: true)
             .appendingPathComponent("recorder-diagnostics.log")
         log.info("AudioRecorderViewModel initialized. appLog=\(log.logFilePath)")
         appendDiagnostic("Voice settings file: \(VoicePipelineSettingsStore.defaultFileURL().path)")
+        appendDiagnostic(
+            "Speech synthesis: backend=\(loadedSettings.speechSynthesisBackend.rawValue), model=\(loadedSettings.voxcpmModelName), voice=\(loadedSettings.voxcpmVoiceName), device=\(loadedSettings.voxcpmDevice), baseURL=\(loadedSettings.voxcpmServerBaseURL), speakRecognizedText=\(loadedSettings.speakRecognizedText)"
+        )
         Task {
             await transcriber.prewarm()
+        }
+        Task {
+            await voicePipeline.prewarm()
         }
     }
 
@@ -142,9 +153,14 @@ final class AudioRecorderViewModel: ObservableObject {
             appendDiagnostic("Starting speech transcription.")
             let transcriptionStartedAt = PerformanceLog.checkpoint()
             recognizedText = try await transcriber.transcribeFile(at: url)
-            statusText = "Saved and transcribed audio message."
+            statusText = "Saved and transcribed audio message. Speaking..."
+            let didSpeak = await voicePipeline.speakRecognizedText(recognizedText)
+            statusText = didSpeak ? "Saved, transcribed, and spoken." : "Saved and transcribed audio message."
             isTranscribing = false
             appendDiagnostic("Speech transcription finished. characters=\(recognizedText.count)")
+            if didSpeak {
+                appendDiagnostic("Speech synthesis finished.")
+            }
             log.debug("Speech transcription completed in \(PerformanceLog.elapsedDescription(since: transcriptionStartedAt)); characters=\(self.recognizedText.count)")
 
             log.info("stopRecording completed in \(PerformanceLog.elapsedDescription(since: startedAt)); totalBytes=\(result.byteSize)")

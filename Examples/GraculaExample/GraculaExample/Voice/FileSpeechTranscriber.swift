@@ -58,8 +58,8 @@ struct LocalSpeechRuntimeConfiguration: Sendable {
         let applicationSupportDirectory = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("GraculaExample", isDirectory: true)
 
-        let resolvedModelName = modelName ?? (backend == .whisper ? "small" : "nvidia/parakeet-tdt-0.6b-v3")
-        let resolvedLanguageCode = languageCode ?? (backend == .whisper ? "ru" : "auto")
+        let resolvedModelName = modelName ?? defaultModelName(for: backend)
+        let resolvedLanguageCode = languageCode ?? defaultLanguageCode(for: backend)
 
         let (modelDirectoryURL, workerScriptURL) = backend == .whisper
             ? (
@@ -93,6 +93,24 @@ struct LocalSpeechRuntimeConfiguration: Sendable {
             workerScriptURL: workerScriptURL,
             ffmpegURL: ffmpegURL
         )
+    }
+
+    private static func defaultModelName(for backend: SpeechRecognitionBackend) -> String {
+        switch backend {
+        case .whisper:
+            return VoicePipelineSettings.Defaults.whisperModelName
+        case .parakeet:
+            return VoicePipelineSettings.Defaults.parakeetModelName
+        }
+    }
+
+    private static func defaultLanguageCode(for backend: SpeechRecognitionBackend) -> String {
+        switch backend {
+        case .whisper:
+            return VoicePipelineSettings.Defaults.whisperLanguageCode
+        case .parakeet:
+            return VoicePipelineSettings.Defaults.parakeetLanguageCode
+        }
     }
 }
 

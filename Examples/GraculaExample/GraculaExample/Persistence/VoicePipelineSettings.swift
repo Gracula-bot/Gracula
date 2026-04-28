@@ -5,12 +5,40 @@ enum SpeechRecognitionBackend: String, Codable, CaseIterable, Sendable {
     case whisper
 }
 
+enum SpeechSynthesisBackend: String, Codable, CaseIterable, Sendable {
+    case disabled
+    case appleSystem
+    case voxcpmLocal
+    case voxcpmServer
+}
+
 struct VoicePipelineSettings: Codable, Sendable {
+    enum Defaults {
+        static let whisperModelName = "small"
+        static let whisperLanguageCode = "ru"
+        static let parakeetModelName = "nvidia/parakeet-tdt-0.6b-v3"
+        static let parakeetLanguageCode = "auto"
+        static let speechSynthesisBackend: SpeechSynthesisBackend = .voxcpmLocal
+        static let speakRecognizedText = true
+        static let appleSystemVoiceLanguageCode = "ru-RU"
+        static let voxcpmServerBaseURL = "http://127.0.0.1:8000"
+        static let voxcpmModelName = "openbmb/VoxCPM2"
+        static let voxcpmVoiceName = "default"
+        static let voxcpmDevice = "cpu"
+    }
+
     var speechRecognitionBackend: SpeechRecognitionBackend = .whisper
-    var whisperModelName: String = "tiny"
-    var whisperLanguageCode: String = "ru"
-    var parakeetModelName: String = "nvidia/parakeet-tdt-0.6b-v3"
-    var parakeetLanguageCode: String = "auto"
+    var whisperModelName: String = Defaults.whisperModelName
+    var whisperLanguageCode: String = Defaults.whisperLanguageCode
+    var parakeetModelName: String = Defaults.parakeetModelName
+    var parakeetLanguageCode: String = Defaults.parakeetLanguageCode
+    var speechSynthesisBackend: SpeechSynthesisBackend = Defaults.speechSynthesisBackend
+    var speakRecognizedText: Bool = Defaults.speakRecognizedText
+    var appleSystemVoiceLanguageCode: String = Defaults.appleSystemVoiceLanguageCode
+    var voxcpmServerBaseURL: String = Defaults.voxcpmServerBaseURL
+    var voxcpmModelName: String = Defaults.voxcpmModelName
+    var voxcpmVoiceName: String = Defaults.voxcpmVoiceName
+    var voxcpmDevice: String = Defaults.voxcpmDevice
 
     var recognitionModelName: String {
         switch speechRecognitionBackend {
@@ -45,6 +73,13 @@ struct VoicePipelineSettings: Codable, Sendable {
         case whisperLanguageCode
         case parakeetModelName
         case parakeetLanguageCode
+        case speechSynthesisBackend
+        case speakRecognizedText
+        case appleSystemVoiceLanguageCode
+        case voxcpmServerBaseURL
+        case voxcpmModelName
+        case voxcpmVoiceName
+        case voxcpmDevice
         case recognitionModelName
         case recognitionLanguageCode
     }
@@ -54,16 +89,32 @@ struct VoicePipelineSettings: Codable, Sendable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         speechRecognitionBackend = try container.decodeIfPresent(SpeechRecognitionBackend.self, forKey: .speechRecognitionBackend) ?? .whisper
-        whisperModelName = try container.decodeIfPresent(String.self, forKey: .whisperModelName)
+        whisperModelName = Self.normalizedWhisperModelName(
+            try container.decodeIfPresent(String.self, forKey: .whisperModelName)
             ?? container.decodeIfPresent(String.self, forKey: .recognitionModelName)
-            ?? "tiny"
+            ?? Defaults.whisperModelName
+        )
         whisperLanguageCode = try container.decodeIfPresent(String.self, forKey: .whisperLanguageCode)
             ?? container.decodeIfPresent(String.self, forKey: .recognitionLanguageCode)
-            ?? "ru"
+            ?? Defaults.whisperLanguageCode
         parakeetModelName = try container.decodeIfPresent(String.self, forKey: .parakeetModelName)
-            ?? "nvidia/parakeet-tdt-0.6b-v3"
+            ?? Defaults.parakeetModelName
         parakeetLanguageCode = try container.decodeIfPresent(String.self, forKey: .parakeetLanguageCode)
-            ?? "auto"
+            ?? Defaults.parakeetLanguageCode
+        speechSynthesisBackend = try container.decodeIfPresent(SpeechSynthesisBackend.self, forKey: .speechSynthesisBackend)
+            ?? Defaults.speechSynthesisBackend
+        speakRecognizedText = try container.decodeIfPresent(Bool.self, forKey: .speakRecognizedText)
+            ?? Defaults.speakRecognizedText
+        appleSystemVoiceLanguageCode = try container.decodeIfPresent(String.self, forKey: .appleSystemVoiceLanguageCode)
+            ?? Defaults.appleSystemVoiceLanguageCode
+        voxcpmServerBaseURL = try container.decodeIfPresent(String.self, forKey: .voxcpmServerBaseURL)
+            ?? Defaults.voxcpmServerBaseURL
+        voxcpmModelName = try container.decodeIfPresent(String.self, forKey: .voxcpmModelName)
+            ?? Defaults.voxcpmModelName
+        voxcpmVoiceName = try container.decodeIfPresent(String.self, forKey: .voxcpmVoiceName)
+            ?? Defaults.voxcpmVoiceName
+        voxcpmDevice = try container.decodeIfPresent(String.self, forKey: .voxcpmDevice)
+            ?? Defaults.voxcpmDevice
     }
 
     func encode(to encoder: Encoder) throws {
@@ -73,6 +124,22 @@ struct VoicePipelineSettings: Codable, Sendable {
         try container.encode(whisperLanguageCode, forKey: .whisperLanguageCode)
         try container.encode(parakeetModelName, forKey: .parakeetModelName)
         try container.encode(parakeetLanguageCode, forKey: .parakeetLanguageCode)
+        try container.encode(speechSynthesisBackend, forKey: .speechSynthesisBackend)
+        try container.encode(speakRecognizedText, forKey: .speakRecognizedText)
+        try container.encode(appleSystemVoiceLanguageCode, forKey: .appleSystemVoiceLanguageCode)
+        try container.encode(voxcpmServerBaseURL, forKey: .voxcpmServerBaseURL)
+        try container.encode(voxcpmModelName, forKey: .voxcpmModelName)
+        try container.encode(voxcpmVoiceName, forKey: .voxcpmVoiceName)
+        try container.encode(voxcpmDevice, forKey: .voxcpmDevice)
+    }
+
+    private static func normalizedWhisperModelName(_ modelName: String) -> String {
+        switch modelName {
+        case "tiny":
+            return Defaults.whisperModelName
+        default:
+            return modelName
+        }
     }
 }
 
