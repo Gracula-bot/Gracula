@@ -22,7 +22,7 @@ Useful fields:
 
 - `speechRecognitionBackend`: `whisper` or `parakeet`
 - `parakeetModelName`: defaults to `nvidia/parakeet-tdt-0.6b-v3`
-- `whisperModelName`: defaults to `small`
+- `whisperModelName`: defaults to `tiny`
 - `whisperLanguageCode`: defaults to `ru`
 
 Whisper is the default. Parakeet v3 auto-detects language and supports Russian, Ukrainian, and other European languages if you want to compare the models later.

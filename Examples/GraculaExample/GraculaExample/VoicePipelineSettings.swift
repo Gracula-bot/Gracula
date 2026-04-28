@@ -7,7 +7,7 @@ enum SpeechRecognitionBackend: String, Codable, CaseIterable, Sendable {
 
 struct VoicePipelineSettings: Codable, Sendable {
     var speechRecognitionBackend: SpeechRecognitionBackend = .whisper
-    var whisperModelName: String = "small"
+    var whisperModelName: String = "tiny"
     var whisperLanguageCode: String = "ru"
     var parakeetModelName: String = "nvidia/parakeet-tdt-0.6b-v3"
     var parakeetLanguageCode: String = "auto"
@@ -56,7 +56,7 @@ struct VoicePipelineSettings: Codable, Sendable {
         speechRecognitionBackend = try container.decodeIfPresent(SpeechRecognitionBackend.self, forKey: .speechRecognitionBackend) ?? .whisper
         whisperModelName = try container.decodeIfPresent(String.self, forKey: .whisperModelName)
             ?? container.decodeIfPresent(String.self, forKey: .recognitionModelName)
-            ?? "small"
+            ?? "tiny"
         whisperLanguageCode = try container.decodeIfPresent(String.self, forKey: .whisperLanguageCode)
             ?? container.decodeIfPresent(String.self, forKey: .recognitionLanguageCode)
             ?? "ru"
