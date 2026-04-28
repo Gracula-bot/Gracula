@@ -8,7 +8,7 @@ The example target is a small manual macOS app for testing microphone recording 
 $HOME/Library/Application Support/GraculaExample/Recordings
 ```
 
-Choose an input source, then tap `Record Message` once to start recording. Tap the same button again to stop recording. The saved audio file path appears in the app as the latest file source, then a local `faster-whisper` worker transcribes the file and shows the recognized text in the UI.
+Choose an input source, then tap `Record Message` once to start recording. Tap the same button again to stop recording. The saved audio file path appears in the app as the latest file source, then a local speech worker transcribes the file and shows the recognized text in the UI.
 
 The app keeps speech recognition behind a config file so you can swap models without changing the UI wiring. The default recognizer now uses a local Whisper worker, and Parakeet stays available as a config option for later comparison.
 
@@ -27,10 +27,39 @@ Useful fields:
 
 Whisper is the default. Parakeet v3 auto-detects language and supports Russian, Ukrainian, and other European languages if you want to compare the models later.
 
+Project layout now follows the repo architecture more closely:
+
+```text
+GraculaExample/
+├─ AgentApp/
+│  └─ GraculaExampleApp.swift
+├─ AppShell/
+│  ├─ AudioRecorderExampleView.swift
+│  └─ AudioRecorderViewModel.swift
+├─ Voice/
+│  ├─ DiskAudioRecorder.swift
+│  └─ FileSpeechTranscriber.swift
+├─ Persistence/
+│  └─ VoicePipelineSettings.swift
+└─ Shared/
+   └─ Logger.swift
+```
+
+What changed in this refactor:
+
+- moved the app entry point into `AgentApp/`
+- moved UI and view state into `AppShell/`
+- moved audio capture and speech backends into `Voice/`
+- moved persisted pipeline settings into `Persistence/`
+- moved logging and timing helpers into `Shared/`
+- kept the Xcode project working through file-system-synced folders, so the new structure is reflected without extra manual project wiring
+
 The local runtime currently expects:
 
 ```bash
 Examples/GraculaExample/.whisper-venv/bin/python
+$HOME/Library/Application Support/GraculaExample/FasterWhisperModels
+$HOME/Library/Application Support/GraculaExample/faster-whisper-worker.py
 $HOME/Library/Application Support/GraculaExample/ParakeetModels
 $HOME/Library/Application Support/GraculaExample/parakeet-worker.py
 ```
