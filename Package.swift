@@ -39,7 +39,7 @@ let package = Package(
         ),
         .target(
             name: "AppShell",
-            dependencies: ["Application", "Domain", "Shared"],
+            dependencies: ["Application", "Domain", "Shared", "Voice"],
             swiftSettings: swiftSettings
         ),
         .target(
@@ -123,4 +123,3 @@ let package = Package(
 private let swiftSettings: [SwiftSetting] = [
     .swiftLanguageMode(.v6)
 ]
-

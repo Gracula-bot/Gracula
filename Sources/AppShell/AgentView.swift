@@ -26,6 +26,12 @@ public struct AgentView: View {
                     }
                 }
                 .disabled(!viewModel.canRun)
+
+                Button("Stop Speaking") {
+                    Task {
+                        await viewModel.stopSpeaking()
+                    }
+                }
             }
 
             if let challenge = viewModel.pendingChallenge {

@@ -1,6 +1,7 @@
 import AppShell
 import Application
 import Domain
+import Voice
 
 struct AppCompositionRoot {
     @MainActor
@@ -25,7 +26,8 @@ struct AppCompositionRoot {
             viewModel: AgentViewModel(
                 orchestrator: orchestrator,
                 toolExecutor: executor,
-                auditLog: auditLog
+                auditLog: auditLog,
+                speechSynthesizer: AppleSpeechSynthesizer()
             )
         )
     }

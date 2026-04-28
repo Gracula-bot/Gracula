@@ -1,6 +1,7 @@
 import Application
 import Domain
 import Foundation
+import Voice
 
 @MainActor
 public final class AgentViewModel: ObservableObject {
@@ -14,17 +15,20 @@ public final class AgentViewModel: ObservableObject {
     private let orchestrator: AgentOrchestrator?
     private let toolExecutor: (any ToolExecuting)?
     private let auditLog: InMemoryAuditLog?
+    private let speechSynthesizer: (any SpeechSynthesizing)?
     private var pendingPlan: AgentPlan?
 
     public init(
         orchestrator: AgentOrchestrator? = nil,
         toolExecutor: (any ToolExecuting)? = nil,
         auditLog: InMemoryAuditLog? = nil,
+        speechSynthesizer: (any SpeechSynthesizing)? = nil,
         statusText: String = "Ready"
     ) {
         self.orchestrator = orchestrator
         self.toolExecutor = toolExecutor
         self.auditLog = auditLog
+        self.speechSynthesizer = speechSynthesizer
         self.inputText = ""
         self.confirmationText = ""
         self.statusText = statusText
@@ -57,6 +61,7 @@ public final class AgentViewModel: ObservableObject {
         do {
             let outcome = try await orchestrator.handleFinalUserText(command)
             apply(outcome)
+            await speakCurrentResultIfNeeded()
         } catch {
             statusText = "Error"
             resultText = String(describing: error)
@@ -92,12 +97,17 @@ public final class AgentViewModel: ObservableObject {
             self.pendingPlan = nil
             pendingChallenge = nil
             confirmationText = ""
+            await speakCurrentResultIfNeeded()
         } catch {
             statusText = "Error"
             resultText = String(describing: error)
         }
 
         await refreshAuditEntries()
+    }
+
+    public func stopSpeaking() async {
+        await speechSynthesizer?.stop()
     }
 
     public func rejectPendingPlan() async {
@@ -150,6 +160,18 @@ public final class AgentViewModel: ObservableObject {
         }
         auditEntries = await auditLog.events.map { event in
             "\(event.kind.rawValue): \(event.summary)"
+        }
+    }
+
+    private func speakCurrentResultIfNeeded() async {
+        guard let speechSynthesizer else {
+            return
+        }
+
+        do {
+            try await speechSynthesizer.speak(resultText)
+        } catch {
+            statusText = "TTS error"
         }
     }
 

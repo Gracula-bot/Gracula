@@ -4,7 +4,7 @@ This file records implementation progress step by step. Every milestone update m
 
 ## Current Milestone
 
-Milestone 5 — Manual SwiftUI Shell
+Milestone 6 — Text-to-Speech
 
 Status: completed
 
@@ -48,6 +48,9 @@ Status: completed
 | 2026-04-28 | `git commit -m "Implement in-memory application core"` | Passed | Created commit `fa8e5d3` for Milestone 4. |
 | 2026-04-28 | `swift build` | Passed | Manual SwiftUI shell compiled. |
 | 2026-04-28 | `swift test` | Passed | 34 tests passed after wiring demo UI shell. |
+| 2026-04-28 | `git commit -m "Add manual SwiftUI shell"` | Passed | Created commit `2734989` for Milestone 5. |
+| 2026-04-28 | `swift build` | Passed | Text-to-speech protocol, Apple adapter, and UI wiring compiled. |
+| 2026-04-28 | `swift test` | Passed | 38 tests passed after adding TTS tests. |
 
 ## Milestone 2 — Domain Core Report
 
@@ -107,12 +110,24 @@ Status: completed
 | 8. Wire fake planner and fake tools | Done | Added demo planner/tools through `AppCompositionRoot` using the real orchestrator, policy gate, registry, executor, memory, and audit log. |
 | 9. Update `projectstatus.md` | Done | Milestone 5 report and validation log are updated. |
 
+## Milestone 6 — Text-to-Speech Report
+
+| Step | Status | Report |
+| --- | --- | --- |
+| 1. Add `SpeechSynthesizing` | Done | Added async TTS protocol in the `Voice` module. |
+| 2. Implement `AppleSpeechSynthesizer` | Done | Added actor-backed adapter using `AVSpeechSynthesizer` through a testable driver boundary. |
+| 3. Add stop speaking | Done | Added `stop()` to the protocol, adapter, view model, and UI. |
+| 4. Add voice/language/rate settings | Done | Added `SpeechSynthesisConfiguration` with language, rate, pitch, and volume. |
+| 5. Inject through composition root | Done | Wired `AppleSpeechSynthesizer` into `AgentViewModel` from `AppCompositionRoot`. |
+| 6. Add fake TTS tests | Done | Added driver-backed tests for blank text, speak, stop, and configuration values. |
+| 7. Update `projectstatus.md` | Done | Milestone 6 report and validation log are updated. |
+
 ## Blockers
 
 - SwiftPM commands need to run outside the default sandbox in this environment because manifest compilation fails with `sandbox-exec`.
 
 ## Next Actions
 
-1. Start Milestone 6 — Text-to-Speech.
-2. Add `SpeechSynthesizing`, implement `AppleSpeechSynthesizer`, and wire stop-speaking support.
-3. Keep TTS behind protocol and avoid blocking the UI.
+1. Start Milestone 7 — Speech-to-Text.
+2. Add microphone permission flow, audio capture protocol, speech recognition protocol, transcript events, and `VoicePipeline`.
+3. Keep manual input fallback available.
