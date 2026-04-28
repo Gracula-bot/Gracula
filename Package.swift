@@ -17,7 +17,7 @@ let package = Package(
         .library(name: "Tools", targets: ["Tools"]),
         .library(name: "Automation", targets: ["Automation"]),
         .library(name: "Persistence", targets: ["Persistence"]),
-        .library(name: "Security", targets: ["Security"]),
+        .library(name: "AgentSecurity", targets: ["AgentSecurity"]),
         .library(name: "Shared", targets: ["Shared"])
     ],
     targets: [
@@ -32,7 +32,7 @@ let package = Package(
                 "Tools",
                 "Automation",
                 "Persistence",
-                "Security",
+                "AgentSecurity",
                 "Shared"
             ],
             swiftSettings: swiftSettings
@@ -64,7 +64,7 @@ let package = Package(
         ),
         .target(
             name: "Tools",
-            dependencies: ["Application", "Domain", "Automation", "Persistence", "Security", "Shared"],
+            dependencies: ["Application", "Domain", "Automation", "Persistence", "AgentSecurity", "Shared"],
             swiftSettings: swiftSettings
         ),
         .target(
@@ -78,8 +78,9 @@ let package = Package(
             swiftSettings: swiftSettings
         ),
         .target(
-            name: "Security",
+            name: "AgentSecurity",
             dependencies: ["Domain", "Shared"],
+            path: "Sources/Security",
             swiftSettings: swiftSettings
         ),
         .target(
@@ -114,7 +115,7 @@ let package = Package(
         ),
         .testTarget(
             name: "SecurityTests",
-            dependencies: ["Security"],
+            dependencies: ["AgentSecurity"],
             swiftSettings: swiftSettings
         )
     ]

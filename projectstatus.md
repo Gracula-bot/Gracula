@@ -4,7 +4,7 @@ This file records implementation progress step by step. Every milestone update m
 
 ## Current Milestone
 
-Milestone 8 — LLM Planner
+Milestone 9 — Safe Tools
 
 Status: completed
 
@@ -60,6 +60,8 @@ Status: completed
 | 2026-04-28 | `git commit -m "Ignore SwiftPM workspace metadata"` | Passed | Created commit `ff7f483` to ignore generated `.swiftpm/` workspace metadata. |
 | 2026-04-28 | `swift build` | Passed | LLM models, local HTTP client, prompt compiler, parser, and planning adapter compiled. |
 | 2026-04-28 | `swift test` | Passed | 46 tests passed after adding LLM planner tests. |
+| 2026-04-28 | `swift test` | Passed | 53 tests passed after adding safe tools, path allowlist, file system client, and real app composition wiring. |
+| 2026-04-28 | `swift test --filter DomainTests` | Passed | 9 Domain milestone tests passed. |
 
 ## Milestone 2 — Domain Core Report
 
@@ -157,12 +159,27 @@ Status: completed
 | 7. Add parser tests | Done | Added tests for valid JSON, invalid JSON, unknown tools, invalid risk levels, and planning adapter integration. |
 | 8. Update `projectstatus.md` | Done | Milestone 8 report and validation log are updated. |
 
+## Milestone 9 — Safe Tools Report
+
+| Step | Status | Report |
+| --- | --- | --- |
+| 1. Add path allowlist | Done | Added `PathAllowlist` in `AgentSecurity` to resolve paths and reject files outside approved directories. |
+| 2. Add file system client | Done | Added `FileSystemClient` and `LocalFileSystemClient` for UTF-8 reads and writes. |
+| 3. Implement `OpenURLTool` | Done | Added web-only URL validation and delegated opening through `URLOpening`. |
+| 4. Implement `OpenAppTool` | Done | Added typed app-opening tool delegated through `AppOpening`. |
+| 5. Implement `ReadAllowedFileTool` | Done | Added approved-directory file reads. |
+| 6. Implement `WriteNoteTool` | Done | Added approved notes-directory writes with filename path component sanitization. |
+| 7. Add macOS opening adapter | Done | Added `WorkspaceOpeningClient` in `Automation` using `NSWorkspace` for URLs and applications. |
+| 8. Wire real safe tools in app composition | Done | `AppCompositionRoot` now registers real safe tools, shared allowlist, local file system, and optional local LLM planner through `GRACULA_LLM_ENDPOINT`. |
+| 9. Add tests | Done | Added focused tests for URL/app tools, allowed and denied file paths, note writes, filename sanitization, and allowlist behavior. |
+| 10. Add manual testing guide | Done | Added `manualtesting.md` with commands and manual checks for every milestone. |
+
 ## Blockers
 
 - SwiftPM commands need to run outside the default sandbox in this environment because manifest compilation fails with `sandbox-exec`.
 
 ## Next Actions
 
-1. Start Milestone 9 — Safe Tools.
-2. Implement `OpenURLTool`, `OpenAppTool`, `ReadAllowedFileTool`, `WriteNoteTool`, and approved directory validation.
-3. Add tests for allowed and denied file paths.
+1. Start Milestone 10 — Runtime App QA and Voice UI Controls.
+2. Add UI controls for starting/stopping the `VoicePipeline`.
+3. Add persistent stores for audit log, conversation history, and settings.

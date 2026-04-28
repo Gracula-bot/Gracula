@@ -1,23 +1,44 @@
+import AgentSecurity
 import AppShell
 import Application
+import Automation
 import Domain
+import Foundation
+import LLM
+import Persistence
+import Tools
 import Voice
 
 struct AppCompositionRoot {
     @MainActor
     func makeAgentView() -> AgentView {
         let auditLog = InMemoryAuditLog()
-        let registry = ToolRegistry(
-            tools: [
-                DemoTool(name: "open_url", resultPrefix: "Opened URL"),
-                DemoTool(name: "write_note", resultPrefix: "Wrote note", riskLevel: .reversible),
-                DemoTool(name: "send_message", resultPrefix: "Sent message", riskLevel: .externalCommunication)
+        let workspaceOpening = WorkspaceOpeningClient()
+        let fileSystem = LocalFileSystemClient()
+        let notesDirectory = Self.notesDirectory()
+        let readableDirectory = Self.readableDirectory()
+        let pathAllowlist = PathAllowlist(
+            approvedDirectories: [
+                notesDirectory,
+                readableDirectory
             ]
         )
+        let tools: [any AgentTool] = [
+            OpenURLTool(urlOpening: workspaceOpening),
+            OpenAppTool(appOpening: workspaceOpening),
+            ReadAllowedFileTool(allowlist: pathAllowlist, fileSystem: fileSystem),
+            WriteNoteTool(
+                notesDirectory: notesDirectory,
+                allowlist: pathAllowlist,
+                fileSystem: fileSystem
+            )
+        ]
+        let descriptors = Self.descriptors(for: tools)
+        let registry = ToolRegistry(tools: tools)
         let executor = ToolExecutor(registry: registry, auditLog: auditLog)
         let orchestrator = AgentOrchestrator(
-            planner: DemoPlanner(),
-            policyChecker: DefaultPolicyGate(reversibleAllowlistedTools: ["write_note"]),
+            planner: Self.makePlanner(availableTools: descriptors),
+            policyChecker: DefaultPolicyGate(reversibleAllowlistedTools: ["read_allowed_file", "write_note"]),
             toolExecutor: executor,
             memory: ConversationMemory(),
             auditLog: auditLog
@@ -31,35 +52,94 @@ struct AppCompositionRoot {
             )
         )
     }
+
+    private static func makePlanner(availableTools: [ToolDescriptor]) -> any Planning {
+        let environment = ProcessInfo.processInfo.environment
+        guard let endpointString = environment["GRACULA_LLM_ENDPOINT"],
+              let endpoint = URL(string: endpointString) else {
+            return DemoPlanner()
+        }
+
+        return LLMPlanningAdapter(
+            client: LocalHTTPLLMClient(endpoint: endpoint),
+            promptCompiler: PromptCompiler(
+                availableTools: availableTools,
+                model: environment["GRACULA_LLM_MODEL"]
+            ),
+            parser: AgentPlanParser(availableTools: availableTools)
+        )
+    }
+
+    private static func descriptors(for tools: [any AgentTool]) -> [ToolDescriptor] {
+        tools
+            .map {
+                ToolDescriptor(
+                    name: $0.name,
+                    description: $0.description,
+                    riskLevel: $0.riskLevel
+                )
+            }
+            .sorted { $0.name < $1.name }
+    }
+
+    private static func notesDirectory() -> URL {
+        applicationSupportDirectory()
+            .appendingPathComponent("Notes", isDirectory: true)
+    }
+
+    private static func readableDirectory() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Documents", isDirectory: true)
+            .appendingPathComponent("Gracula", isDirectory: true)
+    }
+
+    private static func applicationSupportDirectory() -> URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Gracula", isDirectory: true)
+    }
 }
 
 private struct DemoPlanner: Planning {
     func makePlan(userText: String, context: ConversationContext) async throws -> AgentPlan {
         let lowercasedText = userText.lowercased()
 
-        if lowercasedText.contains("send") || lowercasedText.contains("отправ") {
+        if lowercasedText.contains("read") || lowercasedText.contains("прочит") {
             return AgentPlan(
                 userText: userText,
-                summary: "Send prepared message",
+                summary: "Read allowed file",
                 toolCalls: [
                     ToolCall(
-                        name: "send_message",
-                        arguments: ["body": .string(userText)],
-                        riskLevel: .externalCommunication
+                        name: "read_allowed_file",
+                        arguments: ["path": .string(extractLastToken(from: userText))],
+                        riskLevel: .reversible
                     )
                 ]
             )
         }
 
-        if lowercasedText.contains("note") || lowercasedText.contains("замет") || lowercasedText.contains("запиш") {
+        if lowercasedText.contains("app") || lowercasedText.contains("прилож") {
             return AgentPlan(
                 userText: userText,
-                summary: "Write note",
+                summary: "Open app",
                 toolCalls: [
                     ToolCall(
-                        name: "write_note",
-                        arguments: ["text": .string(userText)],
-                        riskLevel: .reversible
+                        name: "open_app",
+                        arguments: ["appName": .string(extractAppName(from: userText))],
+                        riskLevel: .safe
+                    )
+                ]
+            )
+        }
+
+        if let url = extractURL(from: userText) {
+            return AgentPlan(
+                userText: userText,
+                summary: "Open URL",
+                toolCalls: [
+                    ToolCall(
+                        name: "open_url",
+                        arguments: ["url": .string(url)],
+                        riskLevel: .safe
                     )
                 ]
             )
@@ -67,34 +147,39 @@ private struct DemoPlanner: Planning {
 
         return AgentPlan(
             userText: userText,
-            summary: "Open requested URL",
+            summary: "Write note",
             toolCalls: [
                 ToolCall(
-                    name: "open_url",
-                    arguments: ["url": .string(userText)],
-                    riskLevel: .safe
+                    name: "write_note",
+                    arguments: [
+                        "text": .string(userText),
+                        "filename": .string("note.txt")
+                    ],
+                    riskLevel: .reversible
                 )
             ]
         )
     }
-}
 
-private struct DemoTool: AgentTool {
-    let name: String
-    let resultPrefix: String
-    let riskLevel: ToolRiskLevel
-
-    init(name: String, resultPrefix: String, riskLevel: ToolRiskLevel = .safe) {
-        self.name = name
-        self.resultPrefix = resultPrefix
-        self.riskLevel = riskLevel
+    private func extractURL(from text: String) -> String? {
+        text
+            .split(whereSeparator: \.isWhitespace)
+            .map(String.init)
+            .first { token in
+                token.hasPrefix("http://") || token.hasPrefix("https://")
+            }
     }
 
-    var description: String {
-        "Demo \(name) tool"
+    private func extractAppName(from text: String) -> String {
+        let tokens = text.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard let markerIndex = tokens.firstIndex(where: { $0.lowercased() == "app" || $0.lowercased() == "приложение" }),
+              tokens.indices.contains(markerIndex + 1) else {
+            return "Notes"
+        }
+        return tokens[(markerIndex + 1)...].joined(separator: " ")
     }
 
-    func run(_ call: ToolCall) async throws -> ToolResult {
-        .success("\(resultPrefix): \(call.arguments)")
+    private func extractLastToken(from text: String) -> String {
+        text.split(whereSeparator: \.isWhitespace).last.map(String.init) ?? ""
     }
 }
