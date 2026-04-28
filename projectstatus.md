@@ -4,7 +4,7 @@ This file records implementation progress step by step. Every milestone update m
 
 ## Current Milestone
 
-Milestone 1 — Base Architecture
+Milestone 2 — Domain Core
 
 Status: completed
 
@@ -34,6 +34,27 @@ Status: completed
 | 2026-04-28 | `swift build` | Passed | Build completed after adding `@MainActor` to `makeAgentView()`. |
 | 2026-04-28 | `swift test` | Sandbox blocked | Default sandbox failed during SwiftPM manifest compilation with `sandbox-exec: sandbox_apply: Operation not permitted`. |
 | 2026-04-28 | `swift test` | Passed | 6 smoke tests passed. |
+| 2026-04-28 | `git pull --ff-only origin develop` | Passed | Pulled remote `develop`; fast-forward included `.gitignore` update. |
+| 2026-04-28 | `swift build` | Passed | Domain Core compiled after replacing placeholder module with real domain models. |
+| 2026-04-28 | `swift test` | Failed | Initial Milestone 2 test run found missing `Foundation` import in `ToolArgumentTests`. |
+| 2026-04-28 | `swift test` | Passed | 14 tests passed after adding the missing import. |
+| 2026-04-28 | `swift build` | Passed | Final Milestone 2 build passed. |
+
+## Milestone 2 — Domain Core Report
+
+| Step | Status | Report |
+| --- | --- | --- |
+| 1. Implement `ToolRiskLevel` | Done | Added `safe`, `reversible`, `externalCommunication`, and `financialOrCritical` with comparable ordering. |
+| 2. Implement `ToolArgument` | Done | Added Codable/Sendable/Equatable typed argument cases. |
+| 3. Implement `ToolCall` | Done | Added typed tool call with ID, name, arguments, and risk level. |
+| 4. Implement `AgentPlan` | Done | Added plan model with `highestRiskLevel`. |
+| 5. Implement `ConfirmationChallenge` | Done | Added confirmation challenge model with optional required phrase. |
+| 6. Implement `PolicyDecision` | Done | Added allow, confirmation, and deny outcomes. |
+| 7. Implement `ToolResult` | Done | Added success, user-input, and failure results. |
+| 8. Implement conversation and audit models | Done | Added `ConversationContext`, `ConversationMessage`, `ConversationRole`, `AuditEvent`, and `AuditEventKind`. |
+| 9. Add Codable and Equatable tests | Done | Added round-trip tests for plan, arguments, conversation context, and audit events. |
+| 10. Add risk tests | Done | Added tests for `highestRiskLevel`, risk ordering, and planner raw values. |
+| 11. Update `projectstatus.md` | Done | Milestone 2 report and validation log are updated. |
 
 ## Blockers
 
@@ -41,6 +62,6 @@ Status: completed
 
 ## Next Actions
 
-1. Start Milestone 2 — Domain Core.
-2. Implement pure domain models from `agent.md`.
-3. Add Codable, Equatable, Sendable, and risk-level tests.
+1. Start Milestone 3 — Application Ports.
+2. Add `Planning`, `PolicyChecking`, `AgentTool`, `ToolExecuting`, `AgentMemory`, and `AuditLogging`.
+3. Add application errors and fakes for protocol tests.
