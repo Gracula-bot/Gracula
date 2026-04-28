@@ -4,7 +4,7 @@ This file records implementation progress step by step. Every milestone update m
 
 ## Current Milestone
 
-Milestone 3 — Application Ports
+Milestone 4 — In-Memory Core Actors
 
 Status: completed
 
@@ -42,6 +42,9 @@ Status: completed
 | 2026-04-28 | `git commit -m "Implement domain core models"` | Passed | Created commit `7752676` for Milestone 2. |
 | 2026-04-28 | `swift build` | Passed | Application ports compiled. |
 | 2026-04-28 | `swift test` | Passed | 19 tests passed after adding Application protocol tests. |
+| 2026-04-28 | `git commit -m "Add application ports"` | Passed | Created commit `b98d700` for Milestone 3. |
+| 2026-04-28 | `swift build` | Passed | In-memory core actors compiled. |
+| 2026-04-28 | `swift test` | Passed | 34 tests passed after adding memory, audit, policy, registry, executor, and orchestrator tests. |
 
 ## Milestone 2 — Domain Core Report
 
@@ -73,12 +76,26 @@ Status: completed
 | 8. Add fake test doubles | Done | Added fakes for planner, policy checker, tool, executor, memory, and audit log inside Application tests. |
 | 9. Update `projectstatus.md` | Done | Milestone 3 report and validation log are updated. |
 
+## Milestone 4 — In-Memory Core Actors Report
+
+| Step | Status | Report |
+| --- | --- | --- |
+| 1. Implement `ConversationMemory` actor | Done | Added bounded in-memory conversation history. |
+| 2. Implement `InMemoryAuditLog` actor | Done | Added append-only in-memory audit event store. |
+| 3. Implement `DefaultPolicyGate` actor | Done | Added safe, reversible allowlist, external communication, and strong confirmation rules. |
+| 4. Implement `ToolRegistry` actor | Done | Added registration, resolution, descriptors, and typed unknown-tool failure. |
+| 5. Implement `ToolExecutor` actor | Done | Added sequential tool execution with start, finish, and failure audit events. |
+| 6. Implement `AgentOrchestrator` actor | Done | Added final-text handling through memory, planner, audit, policy, executor, and outcome mapping. |
+| 7. Add fake planner and fake tools | Done | Added reusable fakes for Application tests. |
+| 8. Add core flow tests | Done | Added tests for allowed execution, confirmation, denial, unknown tool, audit ordering, and policy decisions. |
+| 9. Update `projectstatus.md` | Done | Milestone 4 report and validation log are updated. |
+
 ## Blockers
 
 - SwiftPM commands need to run outside the default sandbox in this environment because manifest compilation fails with `sandbox-exec`.
 
 ## Next Actions
 
-1. Start Milestone 4 — In-Memory Core Actors.
-2. Implement `ConversationMemory`, `InMemoryAuditLog`, `DefaultPolicyGate`, `ToolRegistry`, `ToolExecutor`, and `AgentOrchestrator`.
-3. Add tests for allowed, confirmation, denied, unknown tool, and audit flows.
+1. Start Milestone 5 — Manual SwiftUI Shell.
+2. Expand `AgentViewModel` with manual input, status, results, confirmation state, approve/reject controls, and audit preview.
+3. Wire fake planner and tools through `AppCompositionRoot`.

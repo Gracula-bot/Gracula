@@ -78,50 +78,6 @@ func auditLoggingPortCanRecordEvents() async throws {
     #expect(await auditLog.events == [event])
 }
 
-private struct FakePlanner: Planning {
-    let plan: AgentPlan
-
-    func makePlan(userText: String, context: ConversationContext) async throws -> AgentPlan {
-        plan
-    }
-}
-
-private struct FakePolicyChecker: PolicyChecking {
-    let decision: PolicyDecision
-
-    func evaluate(_ plan: AgentPlan) async throws -> PolicyDecision {
-        decision
-    }
-}
-
-private struct FakeTool: AgentTool {
-    let result: ToolResult
-
-    var name: String {
-        "fake_tool"
-    }
-
-    var description: String {
-        "Fake test tool"
-    }
-
-    var riskLevel: ToolRiskLevel {
-        .safe
-    }
-
-    func run(_ call: ToolCall) async throws -> ToolResult {
-        result
-    }
-}
-
-private struct FakeToolExecutor: ToolExecuting {
-    let results: [ToolResult]
-
-    func execute(_ plan: AgentPlan) async throws -> [ToolResult] {
-        results
-    }
-}
-
 private actor FakeMemory: AgentMemory {
     private var storedMessages: [ConversationMessage] = []
 
@@ -145,4 +101,3 @@ private actor FakeAuditLog: AuditLogging {
         recordedEvents.append(event)
     }
 }
-
