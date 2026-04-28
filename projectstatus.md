@@ -4,7 +4,7 @@ This file records implementation progress step by step. Every milestone update m
 
 ## Current Milestone
 
-Milestone 7 — Speech-to-Text
+Milestone 8 — LLM Planner
 
 Status: completed
 
@@ -56,6 +56,10 @@ Status: completed
 | 2026-04-28 | `swift test` | Failed | Initial Milestone 7 test run found missing `Foundation` import in `TranscriptEventTests`. |
 | 2026-04-28 | `swift test` | Passed | 41 tests passed after adding the missing import. |
 | 2026-04-28 | `swift build` | Passed | Final Milestone 7 build passed. |
+| 2026-04-28 | `git commit -m "Add speech to text pipeline"` | Passed | Created commit `d545a44` for Milestone 7. |
+| 2026-04-28 | `git commit -m "Ignore SwiftPM workspace metadata"` | Passed | Created commit `ff7f483` to ignore generated `.swiftpm/` workspace metadata. |
+| 2026-04-28 | `swift build` | Passed | LLM models, local HTTP client, prompt compiler, parser, and planning adapter compiled. |
+| 2026-04-28 | `swift test` | Passed | 46 tests passed after adding LLM planner tests. |
 
 ## Milestone 2 — Domain Core Report
 
@@ -140,12 +144,25 @@ Status: completed
 | 7. Keep manual input fallback | Done | Existing manual SwiftUI input remains unchanged. |
 | 8. Update `projectstatus.md` | Done | Milestone 7 report and validation log are updated. |
 
+## Milestone 8 — LLM Planner Report
+
+| Step | Status | Report |
+| --- | --- | --- |
+| 1. Add `LLMClient` models | Done | Added `LLMClient`, `LLMRequest`, `LLMResponse`, and `LLMToken`. |
+| 2. Implement local HTTP client | Done | Added `LocalHTTPLLMClient` for local OpenAI/Ollama-compatible response shapes. |
+| 3. Implement `PromptCompiler` | Done | Added compiler for system prompt, user command, recent context, available tools, safety rules, and JSON schema. |
+| 4. Include tools, context, safety rules, and schema | Done | Prompt tests verify all required sections are included. |
+| 5. Implement strict JSON parser | Done | Added `AgentPlanParser` for JSON-only planner output to typed `AgentPlan`. |
+| 6. Reject invalid JSON safely | Done | Parser returns `LLMError.invalidPlannerOutput` for invalid JSON. |
+| 7. Add parser tests | Done | Added tests for valid JSON, invalid JSON, unknown tools, invalid risk levels, and planning adapter integration. |
+| 8. Update `projectstatus.md` | Done | Milestone 8 report and validation log are updated. |
+
 ## Blockers
 
 - SwiftPM commands need to run outside the default sandbox in this environment because manifest compilation fails with `sandbox-exec`.
 
 ## Next Actions
 
-1. Start Milestone 8 — LLM Planner.
-2. Add LLM request/response models, local HTTP client, prompt compiler, and strict JSON parser.
-3. Keep invalid LLM output recoverable and ensure policy still gates every plan.
+1. Start Milestone 9 — Safe Tools.
+2. Implement `OpenURLTool`, `OpenAppTool`, `ReadAllowedFileTool`, `WriteNoteTool`, and approved directory validation.
+3. Add tests for allowed and denied file paths.
