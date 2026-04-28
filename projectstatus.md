@@ -4,7 +4,7 @@ This file records implementation progress step by step. Every milestone update m
 
 ## Current Milestone
 
-Milestone 2 — Domain Core
+Milestone 3 — Application Ports
 
 Status: completed
 
@@ -39,6 +39,9 @@ Status: completed
 | 2026-04-28 | `swift test` | Failed | Initial Milestone 2 test run found missing `Foundation` import in `ToolArgumentTests`. |
 | 2026-04-28 | `swift test` | Passed | 14 tests passed after adding the missing import. |
 | 2026-04-28 | `swift build` | Passed | Final Milestone 2 build passed. |
+| 2026-04-28 | `git commit -m "Implement domain core models"` | Passed | Created commit `7752676` for Milestone 2. |
+| 2026-04-28 | `swift build` | Passed | Application ports compiled. |
+| 2026-04-28 | `swift test` | Passed | 19 tests passed after adding Application protocol tests. |
 
 ## Milestone 2 — Domain Core Report
 
@@ -56,12 +59,26 @@ Status: completed
 | 10. Add risk tests | Done | Added tests for `highestRiskLevel`, risk ordering, and planner raw values. |
 | 11. Update `projectstatus.md` | Done | Milestone 2 report and validation log are updated. |
 
+## Milestone 3 — Application Ports Report
+
+| Step | Status | Report |
+| --- | --- | --- |
+| 1. Add `Planning` | Done | Added async `Planning.makePlan(userText:context:)` protocol. |
+| 2. Add `PolicyChecking` | Done | Added async `PolicyChecking.evaluate(_:)` protocol. |
+| 3. Add `AgentTool` | Done | Added typed tool protocol with name, description, risk level, and async run method. |
+| 4. Add `ToolExecuting` | Done | Added async plan execution protocol returning `[ToolResult]`. |
+| 5. Add `AgentMemory` | Done | Added async memory protocol for appending messages and reading context. |
+| 6. Add `AuditLogging` | Done | Added async audit logging protocol for `AuditEvent`. |
+| 7. Add application errors | Done | Added `ApplicationError` with planning, policy, tool, memory, and audit cases. |
+| 8. Add fake test doubles | Done | Added fakes for planner, policy checker, tool, executor, memory, and audit log inside Application tests. |
+| 9. Update `projectstatus.md` | Done | Milestone 3 report and validation log are updated. |
+
 ## Blockers
 
 - SwiftPM commands need to run outside the default sandbox in this environment because manifest compilation fails with `sandbox-exec`.
 
 ## Next Actions
 
-1. Start Milestone 3 — Application Ports.
-2. Add `Planning`, `PolicyChecking`, `AgentTool`, `ToolExecuting`, `AgentMemory`, and `AuditLogging`.
-3. Add application errors and fakes for protocol tests.
+1. Start Milestone 4 — In-Memory Core Actors.
+2. Implement `ConversationMemory`, `InMemoryAuditLog`, `DefaultPolicyGate`, `ToolRegistry`, `ToolExecutor`, and `AgentOrchestrator`.
+3. Add tests for allowed, confirmation, denied, unknown tool, and audit flows.
