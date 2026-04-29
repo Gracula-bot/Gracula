@@ -11,6 +11,7 @@ public final class AgentViewModel: ObservableObject {
     @Published public private(set) var resultText: String
     @Published public private(set) var pendingChallenge: ConfirmationChallenge?
     @Published public private(set) var auditEntries: [String]
+    @Published public private(set) var botSettings: BotSettingsSnapshot?
 
     private let orchestrator: AgentOrchestrator?
     private let toolExecutor: (any ToolExecuting)?
@@ -23,6 +24,7 @@ public final class AgentViewModel: ObservableObject {
         toolExecutor: (any ToolExecuting)? = nil,
         auditLog: InMemoryAuditLog? = nil,
         speechSynthesizer: (any SpeechSynthesizing)? = nil,
+        botSettings: BotSettingsSnapshot? = nil,
         statusText: String = "Ready"
     ) {
         self.orchestrator = orchestrator
@@ -35,6 +37,7 @@ public final class AgentViewModel: ObservableObject {
         self.resultText = "No command has run yet."
         self.pendingChallenge = nil
         self.auditEntries = []
+        self.botSettings = botSettings
     }
 
     public var canRun: Bool {

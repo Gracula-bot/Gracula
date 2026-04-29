@@ -12,6 +12,8 @@ final class OpenClawLocalController: ObservableObject {
     @Published private(set) var chatMessages: [OpenClawChatMessage] = []
     @Published private(set) var chatStatusText = "Ready to chat."
     @Published private(set) var isSendingChat = false
+    @Published private(set) var settingsSnapshot: OpenClawSettingsSnapshot
+    @Published private(set) var settingsStatusText = "Settings loaded."
 
     let repositoryDirectory = URL(filePath: "/Users/gg/openclaw", directoryHint: .isDirectory)
     let configDirectory = FileManager.default.homeDirectoryForCurrentUser
@@ -29,6 +31,10 @@ final class OpenClawLocalController: ObservableObject {
     private var gatewayProcess: Process?
     private var streamBridgeProcess: Process?
     private var healthTask: Task<Void, Never>?
+
+    init() {
+        self.settingsSnapshot = Self.makeSettingsSnapshot()
+    }
 
     var chatSessionLabel: String {
         let prefix = "gracula-local-chat-"
@@ -55,6 +61,7 @@ final class OpenClawLocalController: ObservableObject {
             try validateRuntime()
             try prepareDirectories()
             let environment = try openClawEnvironment()
+            settingsSnapshot = Self.makeSettingsSnapshot(environment: environment)
 
             gatewayProcess = try launchProcess(
                 name: "gateway",
@@ -115,11 +122,37 @@ final class OpenClawLocalController: ObservableObject {
     }
 
     func refreshHealth() async {
+        reloadSettings()
         async let gateway = checkHealth(url: URL(string: "http://\(gatewayHost):\(gatewayPort)/healthz")!)
         async let bridge = checkHealth(url: URL(string: "http://\(gatewayHost):\(streamBridgePort)/health")!)
         gatewayStatus = await gateway
         streamBridgeStatus = await bridge
         statusText = isRunning ? "Gateway \(gatewayStatus), bridge \(streamBridgeStatus)" : "Stopped"
+    }
+
+    func reloadSettings() {
+        settingsSnapshot = Self.makeSettingsSnapshot()
+        settingsStatusText = "Settings reloaded."
+    }
+
+    func applySettings(
+        environmentEntries: [OpenClawEditableSetting],
+        jsonEntries: [OpenClawEditableSetting],
+        workspaceFiles: [OpenClawWorkspaceFile]
+    ) {
+        do {
+            try OpenClawSettingsReader.writeEnvironment(entries: environmentEntries)
+            try OpenClawSettingsReader.writeJSON(entries: jsonEntries)
+            try OpenClawSettingsReader.writeWorkspaceFiles(workspaceFiles)
+            reloadSettings()
+            settingsStatusText = isRunning
+                ? "Settings applied. Restart OpenClaw to apply process environment changes."
+                : "Settings applied."
+            appendLog(settingsStatusText)
+        } catch {
+            settingsStatusText = "Settings apply failed: \(error.localizedDescription)"
+            appendLog(settingsStatusText)
+        }
     }
 
     func resetChat() {
@@ -224,6 +257,11 @@ final class OpenClawLocalController: ObservableObject {
         environment["OPENCLAW_TRACK_AUTO_LINKS"] = environment["OPENCLAW_TRACK_AUTO_LINKS"] ?? "1"
         environment["BROWSER"] = environment["BROWSER"] ?? "echo"
         return environment
+    }
+
+    private static func makeSettingsSnapshot(environment: [String: String]? = nil) -> OpenClawSettingsSnapshot {
+        let controller = OpenClawSettingsReader(environment: environment)
+        return controller.snapshot()
     }
 
     private var gatewayPort: String {
@@ -746,6 +784,542 @@ final class OpenClawLocalController: ObservableObject {
             options: .regularExpression
         )
         return output
+    }
+}
+
+struct OpenClawSettingsSnapshot: Equatable {
+    let runtimeRows: [OpenClawSettingsRow]
+    let permissionRows: [OpenClawSettingsRow]
+    let environmentRows: [OpenClawSettingsRow]
+    let toolRows: [OpenClawSettingsRow]
+    let environmentEntries: [OpenClawEditableSetting]
+    let jsonEntries: [OpenClawEditableSetting]
+    let workspaceFiles: [OpenClawWorkspaceFile]
+}
+
+struct OpenClawSettingsRow: Identifiable, Equatable {
+    let id: String
+    let name: String
+    let value: String
+}
+
+struct OpenClawEditableSetting: Identifiable, Equatable {
+    enum Source: String, Equatable {
+        case environment
+        case json
+    }
+
+    enum ValueKind: String, Equatable {
+        case string
+        case bool
+        case int
+        case double
+        case array
+        case object
+        case null
+    }
+
+    let id: String
+    let key: String
+    let source: Source
+    let kind: ValueKind
+    let isSecret: Bool
+    var value: String
+
+    init(key: String, source: Source, kind: ValueKind, isSecret: Bool, value: String) {
+        self.id = "\(source.rawValue):\(key)"
+        self.key = key
+        self.source = source
+        self.kind = kind
+        self.isSecret = isSecret
+        self.value = value
+    }
+}
+
+struct OpenClawWorkspaceFile: Identifiable, Equatable {
+    let id: String
+    let relativePath: String
+    var contents: String
+
+    init(relativePath: String, contents: String) {
+        self.id = relativePath
+        self.relativePath = relativePath
+        self.contents = contents
+    }
+}
+
+enum OpenClawSettingsApplyError: LocalizedError {
+    case invalidJSONValue(String)
+    case invalidJSONObject
+
+    var errorDescription: String? {
+        switch self {
+        case let .invalidJSONValue(key):
+            return "Invalid JSON value for \(key)."
+        case .invalidJSONObject:
+            return "openclaw.json must contain a JSON object."
+        }
+    }
+}
+
+struct OpenClawSettingsReader {
+    private let repositoryDirectory = URL(filePath: "/Users/gg/openclaw", directoryHint: .isDirectory)
+    private let configDirectory = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".openclaw", isDirectory: true)
+    private let workspaceDirectory = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".openclaw", isDirectory: true)
+        .appendingPathComponent("workspace", isDirectory: true)
+    private let nodeURL = URL(filePath: "/opt/homebrew/bin/node")
+    private let gatewayHost = "127.0.0.1"
+    private let fallbackGatewayPort = "18789"
+    private let streamBridgePort = "7071"
+    private let environment: [String: String]
+
+    init(environment: [String: String]? = nil) {
+        var mergedEnvironment = ProcessInfo.processInfo.environment
+        Self.mergeEnvFile(repositoryDirectory.appendingPathComponent(".env"), into: &mergedEnvironment)
+        Self.mergeEnvFile(configDirectory.appendingPathComponent(".env"), into: &mergedEnvironment)
+        if let environment {
+            mergedEnvironment.merge(environment) { _, newValue in newValue }
+        }
+        self.environment = mergedEnvironment
+    }
+
+    func snapshot() -> OpenClawSettingsSnapshot {
+        let gatewayPort = configuredGatewayPort(from: environment)
+        let runtimeRows = [
+            row("Repository", repositoryDirectory.path),
+            row("Node runtime", nodeURL.path),
+            row("Gateway script", repositoryDirectory.appendingPathComponent("dist/index.js").path),
+            row("Gateway URL", "http://\(gatewayHost):\(gatewayPort)/"),
+            row("Gateway health", "http://\(gatewayHost):\(gatewayPort)/healthz"),
+            row("Stream bridge health", "http://\(gatewayHost):\(streamBridgePort)/health"),
+            row("Config file", configDirectory.appendingPathComponent("openclaw.json").path),
+            row("Repo .env", repositoryDirectory.appendingPathComponent(".env").path),
+            row("User .env", configDirectory.appendingPathComponent(".env").path)
+        ]
+
+        let permissionRows = [
+            row("Gateway bind", environment["OPENCLAW_GATEWAY_BIND"] ?? "loopback"),
+            row("Config directory", configDirectory.path),
+            row("Workspace directory", workspaceDirectory.path),
+            row("Canvas directory", configDirectory.appendingPathComponent("canvas", isDirectory: true).path),
+            row("Cron directory", configDirectory.appendingPathComponent("cron", isDirectory: true).path),
+            row("Browser launch", environment["BROWSER"] ?? "echo"),
+            row("Track only groups", environment["OPENCLAW_TRACK_ONLY_GROUPS"] ?? "1"),
+            row("Track auto links", environment["OPENCLAW_TRACK_AUTO_LINKS"] ?? "1")
+        ]
+
+        let environmentKeys = environment.keys
+            .filter { key in
+                key.hasPrefix("OPENCLAW_")
+                    || key.hasPrefix("OPENAI_")
+                    || key.hasPrefix("ANTHROPIC_")
+                    || key.hasPrefix("GOOGLE_")
+                    || key.hasPrefix("GEMINI_")
+                    || key.hasPrefix("TELEGRAM_")
+                    || key.hasPrefix("ONLYFANS_")
+                    || key == "BROWSER"
+            }
+            .sorted()
+        let environmentRows = environmentKeys.map { key in
+            row(key, redacted(environment[key] ?? "", forKey: key))
+        }
+        let environmentEntries = environmentKeys.map { key in
+            OpenClawEditableSetting(
+                key: key,
+                source: .environment,
+                kind: .string,
+                isSecret: isSecretKey(key),
+                value: environment[key] ?? ""
+            )
+        }
+        let jsonEntries = flattenJSONSettings()
+        let workspaceFiles = readWorkspaceFiles()
+        let toolRows = jsonEntries
+            .filter { entry in
+                entry.key.hasPrefix("tools.")
+                    || entry.key.hasPrefix("plugins.")
+                    || entry.key.hasPrefix("hooks.")
+                    || entry.key.hasPrefix("skills.")
+            }
+            .map { entry in
+                row(entry.key, entry.isSecret ? "[redacted]" : entry.value)
+            }
+
+        return OpenClawSettingsSnapshot(
+            runtimeRows: runtimeRows,
+            permissionRows: permissionRows,
+            environmentRows: environmentRows,
+            toolRows: toolRows,
+            environmentEntries: environmentEntries,
+            jsonEntries: jsonEntries,
+            workspaceFiles: workspaceFiles
+        )
+    }
+
+    static func writeEnvironment(entries: [OpenClawEditableSetting]) throws {
+        let url = URL(filePath: "/Users/gg/openclaw/.env")
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if fileManager.fileExists(atPath: url.path) {
+            let backupURL = url.deletingLastPathComponent()
+                .appendingPathComponent(".env.bak.\(backupTimestamp())")
+            try? fileManager.copyItem(at: url, to: backupURL)
+        }
+
+        let lines = entries
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key)=\(escapedEnvValue($0.value))" }
+        try (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    static func writeJSON(entries: [OpenClawEditableSetting]) throws {
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".openclaw", isDirectory: true)
+            .appendingPathComponent("openclaw.json")
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if fileManager.fileExists(atPath: url.path) {
+            let backupURL = url.deletingLastPathComponent()
+                .appendingPathComponent("openclaw.json.bak.\(backupTimestamp())")
+            try? fileManager.copyItem(at: url, to: backupURL)
+        }
+
+        let rootObject: NSMutableDictionary
+        if let data = try? Data(contentsOf: url),
+           !data.isEmpty,
+           let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            rootObject = NSMutableDictionary(dictionary: object)
+        } else {
+            rootObject = NSMutableDictionary()
+        }
+
+        for entry in entries {
+            guard let value = try jsonValue(from: entry) else {
+                continue
+            }
+            setJSONValue(value, forPath: entry.key, in: rootObject)
+        }
+
+        guard JSONSerialization.isValidJSONObject(rootObject) else {
+            throw OpenClawSettingsApplyError.invalidJSONObject
+        }
+        let data = try JSONSerialization.data(withJSONObject: rootObject, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: url, options: [.atomic])
+    }
+
+    static func writeWorkspaceFiles(_ files: [OpenClawWorkspaceFile]) throws {
+        let workspaceDirectory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".openclaw", isDirectory: true)
+            .appendingPathComponent("workspace", isDirectory: true)
+        let fileManager = FileManager.default
+        for file in files {
+            guard isEditableWorkspaceFile(file.relativePath) else {
+                continue
+            }
+            let url = workspaceDirectory.appendingPathComponent(file.relativePath)
+            if fileManager.fileExists(atPath: url.path) {
+                let backupURL = url.deletingLastPathComponent()
+                    .appendingPathComponent("\(url.lastPathComponent).bak.\(backupTimestamp())")
+                try? fileManager.copyItem(at: url, to: backupURL)
+            }
+            try file.contents.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
+    private func row(_ name: String, _ value: String) -> OpenClawSettingsRow {
+        OpenClawSettingsRow(id: name, name: name, value: value.isEmpty ? "Not set" : value)
+    }
+
+    private func flattenJSONSettings() -> [OpenClawEditableSetting] {
+        let configURL = configDirectory.appendingPathComponent("openclaw.json")
+        guard let data = try? Data(contentsOf: configURL),
+              let object = try? JSONSerialization.jsonObject(with: data) else {
+            return []
+        }
+
+        var entries: [OpenClawEditableSetting] = []
+        flattenJSONValue(object, prefix: "", into: &entries)
+        return entries.sorted { $0.key < $1.key }
+    }
+
+    private func readWorkspaceFiles() -> [OpenClawWorkspaceFile] {
+        let workspaceURL = workspaceDirectory
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: workspaceURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+
+        return urls
+            .filter { Self.isEditableWorkspaceFile($0.lastPathComponent) }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            .compactMap { url in
+                guard let contents = try? String(contentsOf: url) else {
+                    return nil
+                }
+                return OpenClawWorkspaceFile(relativePath: url.lastPathComponent, contents: contents)
+            }
+    }
+
+    private func flattenJSONValue(_ value: Any, prefix: String, into entries: inout [OpenClawEditableSetting]) {
+        if let dictionary = value as? [String: Any], !dictionary.isEmpty {
+            for key in dictionary.keys.sorted() {
+                let nextPrefix = prefix.isEmpty ? key : "\(prefix).\(key)"
+                flattenJSONValue(dictionary[key] as Any, prefix: nextPrefix, into: &entries)
+            }
+            return
+        }
+
+        let kind = valueKind(for: value)
+        entries.append(
+            OpenClawEditableSetting(
+                key: prefix,
+                source: .json,
+                kind: kind,
+                isSecret: isSecretKey(prefix),
+                value: editableString(for: value, kind: kind)
+            )
+        )
+    }
+
+    private func valueKind(for value: Any) -> OpenClawEditableSetting.ValueKind {
+        switch value {
+        case is NSNull:
+            return .null
+        case let number as NSNumber:
+            if CFGetTypeID(number) == CFBooleanGetTypeID() {
+                return .bool
+            }
+            return floor(number.doubleValue) == number.doubleValue ? .int : .double
+        case is String:
+            return .string
+        case is [Any]:
+            return .array
+        case is [String: Any]:
+            return .object
+        default:
+            return .string
+        }
+    }
+
+    private func editableString(for value: Any, kind: OpenClawEditableSetting.ValueKind) -> String {
+        switch kind {
+        case .null:
+            return "null"
+        case .bool, .int, .double:
+            return "\(value)"
+        case .string:
+            return value as? String ?? "\(value)"
+        case .array, .object:
+            guard JSONSerialization.isValidJSONObject(value),
+                  let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+                  let string = String(data: data, encoding: .utf8) else {
+                return "\(value)"
+            }
+            return string
+        }
+    }
+
+    private func configuredGatewayPort(from environment: [String: String]) -> String {
+        if let port = normalizedPort(environment["OPENCLAW_GATEWAY_PORT"]) {
+            return port
+        }
+        if let port = configuredGatewayPortFromOpenClawJSON() {
+            return port
+        }
+        return fallbackGatewayPort
+    }
+
+    private func configuredGatewayPortFromOpenClawJSON() -> String? {
+        let configURL = configDirectory.appendingPathComponent("openclaw.json")
+        guard let data = try? Data(contentsOf: configURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let gateway = object["gateway"] as? [String: Any] else {
+            return nil
+        }
+
+        if let stringPort = gateway["port"] as? String {
+            return normalizedPort(stringPort)
+        }
+        if let numericPort = gateway["port"] as? NSNumber {
+            return normalizedPort(numericPort.stringValue)
+        }
+        return nil
+    }
+
+    private func normalizedPort(_ rawPort: String?) -> String? {
+        guard let rawPort else {
+            return nil
+        }
+        let trimmed = rawPort.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let port = Int(trimmed), (1...65535).contains(port) else {
+            return nil
+        }
+        return String(port)
+    }
+
+    private static func mergeEnvFile(_ url: URL, into environment: inout [String: String]) {
+        guard let contents = try? String(contentsOf: url) else {
+            return
+        }
+
+        for rawLine in contents.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty, !line.hasPrefix("#"), let separatorIndex = line.firstIndex(of: "=") else {
+                continue
+            }
+
+            let key = String(line[..<separatorIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard key.range(of: #"^[A-Za-z_][A-Za-z0-9_]*$"#, options: .regularExpression) != nil else {
+                continue
+            }
+
+            var value = String(line[line.index(after: separatorIndex)...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if value.count >= 2,
+               let first = value.first,
+               let last = value.last,
+               (first == "\"" && last == "\"") || (first == "'" && last == "'") {
+                value.removeFirst()
+                value.removeLast()
+            }
+            environment[key] = value
+        }
+    }
+
+    private func redacted(_ value: String, forKey key: String) -> String {
+        guard !value.isEmpty else {
+            return "Not set"
+        }
+        if isSecretKey(key) {
+            return "[redacted]"
+        }
+        if value.count > 80 {
+            return String(value.prefix(77)) + "..."
+        }
+        return value
+    }
+
+    private func isSecretKey(_ key: String) -> Bool {
+        key.range(of: #"(?i)(token|secret|key|cookie|authorization|password|apiKey|api_key)"#, options: .regularExpression) != nil
+    }
+
+    private static func isSecretKey(_ key: String) -> Bool {
+        key.range(of: #"(?i)(token|secret|key|cookie|authorization|password|apiKey|api_key)"#, options: .regularExpression) != nil
+    }
+
+    private static func escapedEnvValue(_ value: String) -> String {
+        if value.rangeOfCharacter(from: .whitespacesAndNewlines) == nil,
+           !value.contains("#"),
+           !value.contains("\""),
+           !value.contains("'") {
+            return value
+        }
+        let escaped = value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "\"\(escaped)\""
+    }
+
+    private static func backupTimestamp() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter.string(from: Date())
+    }
+
+    private static func jsonValue(from entry: OpenClawEditableSetting) throws -> Any? {
+        let trimmed = entry.value.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch entry.kind {
+        case .string:
+            return entry.value
+        case .bool:
+            guard !trimmed.isEmpty else {
+                return nil
+            }
+            if ["true", "1", "yes"].contains(trimmed.lowercased()) {
+                return true
+            }
+            if ["false", "0", "no"].contains(trimmed.lowercased()) {
+                return false
+            }
+            return nil
+        case .int:
+            guard !trimmed.isEmpty else {
+                return nil
+            }
+            guard let value = Int(trimmed) else {
+                return nil
+            }
+            return value
+        case .double:
+            guard !trimmed.isEmpty else {
+                return nil
+            }
+            guard let value = Double(trimmed) else {
+                return nil
+            }
+            return value
+        case .null:
+            return NSNull()
+        case .array, .object:
+            guard !trimmed.isEmpty else {
+                return nil
+            }
+            guard let data = trimmed.data(using: .utf8),
+                  let value = try? JSONSerialization.jsonObject(with: data) else {
+                return nil
+            }
+            return value
+        }
+    }
+
+    private static func setJSONValue(_ value: Any, forPath path: String, in root: NSMutableDictionary) {
+        let components = path.split(separator: ".").map(String.init)
+        guard let last = components.last else {
+            return
+        }
+        var current = root
+        for component in components.dropLast() {
+            if let existing = current[component] as? NSMutableDictionary {
+                current = existing
+            } else if let existing = current[component] as? [String: Any] {
+                let dictionary = NSMutableDictionary(dictionary: existing)
+                current[component] = dictionary
+                current = dictionary
+            } else {
+                let dictionary = NSMutableDictionary()
+                current[component] = dictionary
+                current = dictionary
+            }
+        }
+        current[last] = value
+    }
+
+    private static func isEditableWorkspaceFile(_ relativePath: String) -> Bool {
+        guard !relativePath.contains("/"),
+              relativePath.hasSuffix(".md") || relativePath.hasSuffix(".txt") else {
+            return false
+        }
+        let allowedNames: Set<String> = [
+            "AGENTS.md",
+            "BOOTSTRAP.md",
+            "HEARTBEAT.md",
+            "IDENTITY.md",
+            "IDENTITY-female.md",
+            "MEMORY.md",
+            "SOUL.md",
+            "TOOLS.md",
+            "USER.md"
+        ]
+        return allowedNames.contains(relativePath)
+            || relativePath.hasPrefix("IDENTITY")
+            || relativePath.hasPrefix("SOUL")
+            || relativePath.hasPrefix("AGENT")
+            || relativePath.hasPrefix("TOOL")
     }
 }
 

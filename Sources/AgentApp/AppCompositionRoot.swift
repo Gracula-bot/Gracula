@@ -35,11 +35,20 @@ struct AppCompositionRoot {
             )
         ]
         let descriptors = Self.descriptors(for: tools)
+        let reversibleAllowlistedTools: Set<String> = ["read_allowed_file", "write_note"]
+        let botSettings = Self.botSettings(
+            descriptors: descriptors,
+            reversibleAllowlistedTools: reversibleAllowlistedTools,
+            approvedDirectories: [
+                notesDirectory,
+                readableDirectory
+            ]
+        )
         let registry = ToolRegistry(tools: tools)
         let executor = ToolExecutor(registry: registry, auditLog: auditLog)
         let orchestrator = AgentOrchestrator(
             planner: Self.makePlanner(availableTools: descriptors),
-            policyChecker: DefaultPolicyGate(reversibleAllowlistedTools: ["read_allowed_file", "write_note"]),
+            policyChecker: DefaultPolicyGate(reversibleAllowlistedTools: reversibleAllowlistedTools),
             toolExecutor: executor,
             memory: ConversationMemory(),
             auditLog: auditLog
@@ -49,7 +58,8 @@ struct AppCompositionRoot {
                 orchestrator: orchestrator,
                 toolExecutor: executor,
                 auditLog: auditLog,
-                speechSynthesizer: AppleSpeechSynthesizer()
+                speechSynthesizer: AppleSpeechSynthesizer(),
+                botSettings: botSettings
             )
         )
     }
@@ -81,6 +91,25 @@ struct AppCompositionRoot {
                 )
             }
             .sorted { $0.name < $1.name }
+    }
+
+    private static func botSettings(
+        descriptors: [ToolDescriptor],
+        reversibleAllowlistedTools: Set<String>,
+        approvedDirectories: [URL]
+    ) -> BotSettingsSnapshot {
+        let environment = ProcessInfo.processInfo.environment
+        let endpoint = environment["GRACULA_LLM_ENDPOINT"]
+        let model = environment["GRACULA_LLM_MODEL"]
+
+        return BotSettingsSnapshot(
+            plannerMode: endpoint.flatMap(URL.init(string:)) == nil ? "Demo planner" : "OpenAI-compatible local HTTP planner",
+            llmEndpoint: endpoint ?? "Not set",
+            llmModel: model ?? "Not set",
+            reversibleAllowlistedTools: Array(reversibleAllowlistedTools),
+            approvedDirectories: approvedDirectories,
+            tools: descriptors
+        )
     }
 
     private static func notesDirectory() -> URL {
