@@ -68,6 +68,31 @@ func policyGateRequiresConfirmationForExternalCommunication() async throws {
 }
 
 @Test
+func policyGateRequiresConfirmationForOnlyFansPublishing() async throws {
+    let gate = DefaultPolicyGate()
+    let plan = AgentPlan(
+        userText: "Опубликуй пост в OnlyFans",
+        summary: "Publish OnlyFans post",
+        toolCalls: [
+            ToolCall(
+                name: "publish_onlyfans_post",
+                arguments: ["text": .string("Test post")],
+                riskLevel: .externalCommunication
+            )
+        ]
+    )
+
+    let decision = try await gate.evaluate(plan)
+
+    guard case .requiresConfirmation(let challenge) = decision else {
+        Issue.record("Expected confirmation")
+        return
+    }
+    #expect(challenge.requiredPhrase == nil)
+    #expect(challenge.summary == "Publish OnlyFans post")
+}
+
+@Test
 func policyGateRequiresStrongConfirmationForFinancialOrCriticalPlans() async throws {
     let gate = DefaultPolicyGate()
     let plan = AgentPlan(
@@ -84,4 +109,3 @@ func policyGateRequiresStrongConfirmationForFinancialOrCriticalPlans() async thr
     }
     #expect(challenge.requiredPhrase == "Подтверждаю действие: Prepare payment to vendor")
 }
-

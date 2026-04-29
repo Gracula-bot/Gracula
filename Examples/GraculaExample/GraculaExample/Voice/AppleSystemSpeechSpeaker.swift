@@ -7,7 +7,13 @@ final class AppleSystemSpeechSpeaker: SpeechSpeaking {
 
     private let synthesizer = AVSpeechSynthesizer()
 
-    func speak(_ text: String, languageCode: String, voiceIdentifier: String? = nil) throws {
+    func speak(
+        _ text: String,
+        languageCode: String,
+        voiceIdentifier: String? = nil,
+        rate: Float,
+        pitch: Float
+    ) throws {
         let utterance = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !utterance.isEmpty else {
             throw VoiceSynthesisError.emptyText
@@ -15,6 +21,8 @@ final class AppleSystemSpeechSpeaker: SpeechSpeaking {
 
         synthesizer.stopSpeaking(at: .immediate)
         let speechUtterance = AVSpeechUtterance(string: utterance)
+        speechUtterance.rate = min(max(rate, AVSpeechUtteranceMinimumSpeechRate), AVSpeechUtteranceMaximumSpeechRate)
+        speechUtterance.pitchMultiplier = min(max(pitch, 0.5), 2.0)
         if let voiceIdentifier,
            let voice = AVSpeechSynthesisVoice(identifier: voiceIdentifier) {
             speechUtterance.voice = voice

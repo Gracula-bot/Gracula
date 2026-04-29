@@ -77,7 +77,9 @@ actor VoicePipeline {
                 try AppleSystemSpeechSpeaker.shared.speak(
                     trimmedText,
                     languageCode: settings.appleSystemVoiceLanguageCode,
-                    voiceIdentifier: settings.appleSystemVoiceIdentifier
+                    voiceIdentifier: settings.appleSystemVoiceIdentifier,
+                    rate: settings.appleSystemSpeechRate,
+                    pitch: settings.appleSystemSpeechPitch
                 )
             }
             log.info("Spoken recognized text using macOS system voice.")

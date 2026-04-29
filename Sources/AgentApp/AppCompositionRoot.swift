@@ -26,6 +26,7 @@ struct AppCompositionRoot {
         let tools: [any AgentTool] = [
             OpenURLTool(urlOpening: workspaceOpening),
             OpenAppTool(appOpening: workspaceOpening),
+            PublishOnlyFansPostTool(poster: workspaceOpening),
             ReadAllowedFileTool(allowlist: pathAllowlist, fileSystem: fileSystem),
             WriteNoteTool(
                 notesDirectory: notesDirectory,

@@ -18,10 +18,12 @@ struct VoicePipelineSettings: Codable, Sendable {
         static let whisperLanguageCode = "ru"
         static let parakeetModelName = "nvidia/parakeet-tdt-0.6b-v3"
         static let parakeetLanguageCode = "auto"
-        static let speechSynthesisBackend: SpeechSynthesisBackend = .voxcpmLocal
+        static let speechSynthesisBackend: SpeechSynthesisBackend = .appleSystem
         static let speakRecognizedText = true
         static let appleSystemVoiceLanguageCode = "ru-RU"
-        static let appleSystemVoiceIdentifier: String? = nil
+        static let appleSystemVoiceIdentifier: String? = "com.apple.voice.compact.ru-RU.Milena"
+        static let appleSystemSpeechRate: Float = 0.42
+        static let appleSystemSpeechPitch: Float = 0.65
         static let voxcpmServerBaseURL = "http://127.0.0.1:8000"
         static let voxcpmModelName = "openbmb/VoxCPM2"
         static let voxcpmVoiceName = "default"
@@ -37,6 +39,8 @@ struct VoicePipelineSettings: Codable, Sendable {
     var speakRecognizedText: Bool = Defaults.speakRecognizedText
     var appleSystemVoiceLanguageCode: String = Defaults.appleSystemVoiceLanguageCode
     var appleSystemVoiceIdentifier: String? = Defaults.appleSystemVoiceIdentifier
+    var appleSystemSpeechRate: Float = Defaults.appleSystemSpeechRate
+    var appleSystemSpeechPitch: Float = Defaults.appleSystemSpeechPitch
     var voxcpmServerBaseURL: String = Defaults.voxcpmServerBaseURL
     var voxcpmModelName: String = Defaults.voxcpmModelName
     var voxcpmVoiceName: String = Defaults.voxcpmVoiceName
@@ -79,6 +83,8 @@ struct VoicePipelineSettings: Codable, Sendable {
         case speakRecognizedText
         case appleSystemVoiceLanguageCode
         case appleSystemVoiceIdentifier
+        case appleSystemSpeechRate
+        case appleSystemSpeechPitch
         case voxcpmServerBaseURL
         case voxcpmModelName
         case voxcpmVoiceName
@@ -112,6 +118,10 @@ struct VoicePipelineSettings: Codable, Sendable {
             ?? Defaults.appleSystemVoiceLanguageCode
         appleSystemVoiceIdentifier = try container.decodeIfPresent(String.self, forKey: .appleSystemVoiceIdentifier)
             ?? Defaults.appleSystemVoiceIdentifier
+        appleSystemSpeechRate = try container.decodeIfPresent(Float.self, forKey: .appleSystemSpeechRate)
+            ?? Defaults.appleSystemSpeechRate
+        appleSystemSpeechPitch = try container.decodeIfPresent(Float.self, forKey: .appleSystemSpeechPitch)
+            ?? Defaults.appleSystemSpeechPitch
         voxcpmServerBaseURL = try container.decodeIfPresent(String.self, forKey: .voxcpmServerBaseURL)
             ?? Defaults.voxcpmServerBaseURL
         voxcpmModelName = try container.decodeIfPresent(String.self, forKey: .voxcpmModelName)
@@ -133,6 +143,8 @@ struct VoicePipelineSettings: Codable, Sendable {
         try container.encode(speakRecognizedText, forKey: .speakRecognizedText)
         try container.encode(appleSystemVoiceLanguageCode, forKey: .appleSystemVoiceLanguageCode)
         try container.encodeIfPresent(appleSystemVoiceIdentifier, forKey: .appleSystemVoiceIdentifier)
+        try container.encode(appleSystemSpeechRate, forKey: .appleSystemSpeechRate)
+        try container.encode(appleSystemSpeechPitch, forKey: .appleSystemSpeechPitch)
         try container.encode(voxcpmServerBaseURL, forKey: .voxcpmServerBaseURL)
         try container.encode(voxcpmModelName, forKey: .voxcpmModelName)
         try container.encode(voxcpmVoiceName, forKey: .voxcpmVoiceName)

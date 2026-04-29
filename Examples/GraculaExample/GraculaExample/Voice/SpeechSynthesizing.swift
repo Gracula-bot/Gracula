@@ -10,7 +10,13 @@ extension SpeechSynthesizing {
 }
 
 protocol SpeechSpeaking: Sendable {
-    @MainActor func speak(_ text: String, languageCode: String, voiceIdentifier: String?) throws
+    @MainActor func speak(
+        _ text: String,
+        languageCode: String,
+        voiceIdentifier: String?,
+        rate: Float,
+        pitch: Float
+    ) throws
 }
 
 enum VoiceSynthesisError: LocalizedError {

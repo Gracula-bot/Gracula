@@ -29,6 +29,8 @@ public struct PromptCompiler: Sendable {
         Use the lowest risk level that matches the tool.
         For messages/emails/payments, prepare drafts or intents first.
         Never send external communication without confirmation.
+        Only use publish_onlyfans_post when the user explicitly asks to publish, post, send, or upload a post to OnlyFans.
+        If the user asks only to write or draft a post, do not use publish_onlyfans_post.
         Never perform payments or purchases directly.
         """
     }

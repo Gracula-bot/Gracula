@@ -1,4 +1,5 @@
 import AppKit
+import Automation
 import Foundation
 
 @MainActor
@@ -23,6 +24,7 @@ final class OpenClawLocalController: ObservableObject {
     private let gatewayHost = "127.0.0.1"
     private let fallbackGatewayPort = "18789"
     private let streamBridgePort = "7071"
+    private let onlyFansPoster = WorkspaceOpeningClient()
     private var chatSessionID = "gracula-local-chat"
     private var gatewayProcess: Process?
     private var streamBridgeProcess: Process?
@@ -138,6 +140,14 @@ final class OpenClawLocalController: ObservableObject {
             isSendingChat = true
             chatStatusText = "Sending to OpenClaw..."
             appendChatMessage(.user(message))
+
+            if isExplicitOnlyFansPublishRequest(message) {
+                let reply = try await publishOnlyFansPostFromChatCommand(message)
+                appendChatMessage(.assistant(reply))
+                chatStatusText = "OnlyFans post published."
+                isSendingChat = false
+                return reply
+            }
 
             let response = try await runAgentTurn(message: message)
             let reply = response.replyText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -495,6 +505,165 @@ final class OpenClawLocalController: ObservableObject {
 
         appendLog("OpenClaw session transcript did not contain an assistant reply.")
         return nil
+    }
+
+    private func publishOnlyFansPostFromChatCommand(_ message: String) async throws -> String {
+        guard let postText = onlyFansPostText(from: message) else {
+            return [
+                "Я понял команду публикации в OnlyFans, но не нашел текст поста.",
+                "Напиши так: `опубликуй пост в OnlyFans: текст поста`.",
+                "Если хочешь опубликовать уже написанный пост, сначала попроси меня написать текст, потом отправь `опубликуй этот пост в OnlyFans`."
+            ].joined(separator: "\n")
+        }
+
+        let trimmedPostText = postText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPostText.isEmpty else {
+            return "Я понял команду публикации в OnlyFans, но текст поста пустой. Добавь текст после двоеточия."
+        }
+
+        try await onlyFansPoster.publishPost(text: trimmedPostText)
+        appendLog("Published OnlyFans post from explicit chat command. characters=\(trimmedPostText.count)")
+        return "Опубликовал пост в OnlyFans."
+    }
+
+    private func isExplicitOnlyFansPublishRequest(_ message: String) -> Bool {
+        let normalized = normalizedCommandText(message)
+        let mentionsOnlyFans = [
+            "onlyfans",
+            "only fans",
+            "онлифанс",
+            "онли фанс",
+            "онли фан",
+            "он ли фанс",
+            "он ли фан"
+        ].contains { normalized.contains($0) }
+
+        let asksToPublish = [
+            "опублику",
+            "запост",
+            "запубли",
+            "вылож",
+            "размест",
+            "отправ",
+            "публику",
+            "publish",
+            "post "
+        ].contains { normalized.contains($0) }
+
+        return mentionsOnlyFans && asksToPublish
+    }
+
+    private func onlyFansPostText(from message: String) -> String? {
+        if let inlineText = inlineOnlyFansPostText(from: message) {
+            return inlineText
+        }
+
+        if normalizedCommandText(message).contains("этот пост") || normalizedCommandText(message).contains("предыдущии пост") {
+            return latestPublishableAssistantMessage()
+        }
+
+        return latestPublishableAssistantMessage()
+    }
+
+    private func inlineOnlyFansPostText(from message: String) -> String? {
+        let separators = [":", ":\n", "\n\n"]
+        for separator in separators {
+            guard let range = message.range(of: separator) else {
+                continue
+            }
+            let candidate = String(message[range.upperBound...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if isPublishablePostText(candidate) {
+                return candidate
+            }
+        }
+
+        if let textAfterOnlyFans = textAfterOnlyFansMention(in: message),
+           isPublishablePostText(textAfterOnlyFans) {
+            return textAfterOnlyFans
+        }
+
+        let markerCandidates = [
+            "текст поста",
+            "пост:",
+            "post:"
+        ]
+        let lowercasedMessage = message.lowercased()
+        for marker in markerCandidates {
+            guard let range = lowercasedMessage.range(of: marker) else {
+                continue
+            }
+            let candidate = String(message[range.upperBound...])
+                .trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ":—-")))
+            if isPublishablePostText(candidate) {
+                return candidate
+            }
+        }
+
+        return nil
+    }
+
+    private func textAfterOnlyFansMention(in message: String) -> String? {
+        let normalizedMessage = normalizedCommandText(message)
+        let markers = [
+            "onlyfans",
+            "only fans",
+            "онлифанс",
+            "онли фанс",
+            "онли фан",
+            "он ли фанс",
+            "он ли фан"
+        ]
+
+        for marker in markers {
+            guard let range = normalizedMessage.range(of: marker) else {
+                continue
+            }
+
+            let candidateStartOffset = normalizedMessage.distance(from: normalizedMessage.startIndex, to: range.upperBound)
+            guard candidateStartOffset <= message.count,
+                  let candidateStart = message.index(message.startIndex, offsetBy: candidateStartOffset, limitedBy: message.endIndex) else {
+                continue
+            }
+
+            let candidate = String(message[candidateStart...])
+                .trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ":—-.,;")))
+            if isPublishablePostText(candidate) {
+                return candidate
+            }
+        }
+
+        return nil
+    }
+
+    private func latestPublishableAssistantMessage() -> String? {
+        for message in chatMessages.reversed() where message.role == .assistant {
+            if isPublishablePostText(message.text) && !looksLikeOnlyFansRefusal(message.text) {
+                return message.text
+            }
+        }
+        return nil
+    }
+
+    private func isPublishablePostText(_ text: String) -> Bool {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).count >= 8
+    }
+
+    private func looksLikeOnlyFansRefusal(_ text: String) -> Bool {
+        let normalized = normalizedCommandText(text)
+        return normalized.contains("ты с ума сошел")
+            || normalized.contains("какои onlyfans")
+            || normalized.contains("я в другом жанре")
+            || normalized.contains("отказыва")
+    }
+
+    private func normalizedCommandText(_ text: String) -> String {
+        text
+            .precomposedStringWithCanonicalMapping
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "ru_RU"))
+            .lowercased()
+            .replacingOccurrences(of: "ё", with: "е")
+            .replacingOccurrences(of: "й", with: "и")
     }
 
     private func assistantContentText(from message: [String: Any]) -> String {
