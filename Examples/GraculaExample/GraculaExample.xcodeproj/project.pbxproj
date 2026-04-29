@@ -364,38 +364,47 @@
 /* Begin XCSwiftPackageProductDependency section */
 		AA0000000000000000000201 /* AgentSecurity */ = {
 			isa = XCSwiftPackageProductDependency;
+			package = AA0000000000000000000200 /* XCLocalSwiftPackageReference "../.." */;
 			productName = AgentSecurity;
 		};
 		AA0000000000000000000202 /* AppShell */ = {
 			isa = XCSwiftPackageProductDependency;
+			package = AA0000000000000000000200 /* XCLocalSwiftPackageReference "../.." */;
 			productName = AppShell;
 		};
 		AA0000000000000000000203 /* Application */ = {
 			isa = XCSwiftPackageProductDependency;
+			package = AA0000000000000000000200 /* XCLocalSwiftPackageReference "../.." */;
 			productName = Application;
 		};
 		AA0000000000000000000204 /* Automation */ = {
 			isa = XCSwiftPackageProductDependency;
+			package = AA0000000000000000000200 /* XCLocalSwiftPackageReference "../.." */;
 			productName = Automation;
 		};
 		AA0000000000000000000205 /* Domain */ = {
 			isa = XCSwiftPackageProductDependency;
+			package = AA0000000000000000000200 /* XCLocalSwiftPackageReference "../.." */;
 			productName = Domain;
 		};
 		AA0000000000000000000206 /* LLM */ = {
 			isa = XCSwiftPackageProductDependency;
+			package = AA0000000000000000000200 /* XCLocalSwiftPackageReference "../.." */;
 			productName = LLM;
 		};
 		AA0000000000000000000207 /* Persistence */ = {
 			isa = XCSwiftPackageProductDependency;
+			package = AA0000000000000000000200 /* XCLocalSwiftPackageReference "../.." */;
 			productName = Persistence;
 		};
 		AA0000000000000000000208 /* Tools */ = {
 			isa = XCSwiftPackageProductDependency;
+			package = AA0000000000000000000200 /* XCLocalSwiftPackageReference "../.." */;
 			productName = Tools;
 		};
 		AA0000000000000000000209 /* Voice */ = {
 			isa = XCSwiftPackageProductDependency;
+			package = AA0000000000000000000200 /* XCLocalSwiftPackageReference "../.." */;
 			productName = Voice;
 		};
 /* End XCSwiftPackageProductDependency section */

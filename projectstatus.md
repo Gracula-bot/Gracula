@@ -4,7 +4,7 @@ This file records implementation progress step by step. Every milestone update m
 
 ## Current Milestone
 
-Milestone 9 — Safe Tools
+Milestone 10 — OpenClaw Voice Chat
 
 Status: completed
 
@@ -62,6 +62,9 @@ Status: completed
 | 2026-04-28 | `swift test` | Passed | 46 tests passed after adding LLM planner tests. |
 | 2026-04-28 | `swift test` | Passed | 53 tests passed after adding safe tools, path allowlist, file system client, and real app composition wiring. |
 | 2026-04-28 | `swift test --filter DomainTests` | Passed | 9 Domain milestone tests passed. |
+| 2026-04-29 | `xcodebuild build -project Examples/GraculaExample/GraculaExample.xcodeproj -scheme GraculaExample -destination 'platform=macOS'` | Failed | Code signing was blocked by missing Mac Development certificate for team `5SM7ZEMA29`. |
+| 2026-04-29 | `xcodebuild build -project Examples/GraculaExample/GraculaExample.xcodeproj -scheme GraculaExample -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO` | Passed | GraculaExample compiled after OpenClaw chat, voice-to-bot, bot voice reply, and macOS voice picker changes. |
+| 2026-04-29 | `open /Users/gg/Library/Developer/Xcode/DerivedData/GraculaExample-geqncmkzkjgffogcalrscaikgrwl/Build/Products/Debug/GraculaExample.app` | Passed | Relaunched the fresh Debug build after successful validation. |
 
 ## Milestone 2 — Domain Core Report
 
@@ -174,12 +177,27 @@ Status: completed
 | 9. Add tests | Done | Added focused tests for URL/app tools, allowed and denied file paths, note writes, filename sanitization, and allowlist behavior. |
 | 10. Add manual testing guide | Done | Added `manualtesting.md` with commands and manual checks for every milestone. |
 
+## Milestone 10 — OpenClaw Voice Chat Report
+
+| Step | Status | Report |
+| --- | --- | --- |
+| 1. Add local OpenClaw controller | Done | Added a local Node-based controller for starting the OpenClaw gateway/stream bridge and sending local agent turns. |
+| 2. Add OpenClaw controls and chat UI | Done | Added status, logs, dashboard controls, chat transcript, send, and reset controls. |
+| 3. Resolve configured gateway port | Done | Controller reads `OPENCLAW_GATEWAY_PORT` or `~/.openclaw/openclaw.json` and avoids stale hardcoded gateway checks. |
+| 4. Parse and recover OpenClaw replies | Done | Chat handles root/result payloads and recovers latest assistant text from OpenClaw session transcripts when CLI payloads are empty. |
+| 5. Route voice messages to OpenClaw | Done | Microphone recordings are transcribed, sent to OpenClaw, appended to chat, and bot replies are spoken. |
+| 6. Add macOS bot voice selection | Done | Added a `Bot Voice` picker backed by `AVSpeechSynthesisVoice`, persisted selected voice identifier, and routed system TTS through it. |
+| 7. Add local STT/TTS runtime tuning | Done | Kept faster-whisper worker prewarm and VoxCPM/system-voice fallback paths; documented faster macOS voices as the low-latency TTS path. |
+| 8. Validate Xcode build | Done | `xcodebuild ... CODE_SIGNING_ALLOWED=NO` passed; normal signing remains blocked by local certificate setup. |
+| 9. Update `projectstatus.md` | Done | Milestone 10 report and validation log are updated. |
+
 ## Blockers
 
 - SwiftPM commands need to run outside the default sandbox in this environment because manifest compilation fails with `sandbox-exec`.
+- GraculaExample normal Xcode signing requires a Mac Development certificate for team `5SM7ZEMA29`; validation currently uses `CODE_SIGNING_ALLOWED=NO`.
 
 ## Next Actions
 
-1. Start Milestone 10 — Runtime App QA and Voice UI Controls.
-2. Add UI controls for starting/stopping the `VoicePipeline`.
-3. Add persistent stores for audit log, conversation history, and settings.
+1. Profile voice round-trip latency across STT, OpenClaw, and TTS.
+2. Add streaming/VAD STT so transcription starts before recording stops.
+3. Add UI controls for STT backend/model and TTS rate/pitch if more latency or voice tuning is needed.

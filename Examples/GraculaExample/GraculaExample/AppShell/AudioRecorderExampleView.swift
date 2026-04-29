@@ -2,6 +2,7 @@ import SwiftUI
 
 struct AudioRecorderExampleView: View {
     @StateObject private var viewModel: AudioRecorderViewModel
+    @StateObject private var openClawController = OpenClawLocalController()
 
     init(viewModel: AudioRecorderViewModel) {
         _viewModel = StateObject(wrappedValue: viewModel)
@@ -11,6 +12,12 @@ struct AudioRecorderExampleView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 header
+
+                OpenClawControlView(controller: openClawController)
+
+                OpenClawChatView(controller: openClawController)
+
+                Divider()
 
                 if !viewModel.inputDevices.isEmpty {
                     Picker("Input Source", selection: $viewModel.selectedInputDeviceID) {
@@ -22,9 +29,21 @@ struct AudioRecorderExampleView: View {
                     .disabled(viewModel.isRecording || viewModel.isTranscribing)
                 }
 
+                if !viewModel.systemVoices.isEmpty {
+                    Picker("Bot Voice", selection: $viewModel.selectedSystemVoiceID) {
+                        ForEach(viewModel.systemVoices) { voice in
+                            Text(voice.displayName).tag(voice.id)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .disabled(viewModel.isRecording || viewModel.isTranscribing)
+                }
+
                 Button {
                     Task {
-                        await viewModel.toggleRecording()
+                        await viewModel.toggleRecording { message in
+                            await openClawController.sendChatMessage(message)
+                        }
                     }
                 } label: {
                     Label(viewModel.buttonTitle, systemImage: viewModel.buttonSystemImage)

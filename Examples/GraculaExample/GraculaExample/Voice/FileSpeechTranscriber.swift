@@ -36,16 +36,26 @@ struct LocalSpeechRuntimeConfiguration: Sendable {
         let homeDirectory = fileManager.homeDirectoryForCurrentUser
         let environment = ProcessInfo.processInfo.environment
 
+        let applicationSupportDirectory = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("GraculaExample", isDirectory: true)
+
         let pythonCandidates: [URL] = [
             environment["GRACULA_WHISPER_PYTHON"].map { URL(fileURLWithPath: $0) },
-            homeDirectory
-                .appendingPathComponent("Code", isDirectory: true)
-                .appendingPathComponent("Gracula", isDirectory: true)
-                .appendingPathComponent("Examples", isDirectory: true)
-                .appendingPathComponent("GraculaExample", isDirectory: true)
-                .appendingPathComponent(".whisper-venv", isDirectory: true)
+            applicationSupportDirectory
+                .appendingPathComponent("PythonRuntime", isDirectory: true)
                 .appendingPathComponent("bin", isDirectory: true)
-                .appendingPathComponent("python")
+                .appendingPathComponent("python"),
+            Self.examplePythonURL(
+                in: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            ),
+            Self.examplePythonURL(
+                in: homeDirectory.appendingPathComponent("Gracula", isDirectory: true)
+            ),
+            Self.examplePythonURL(
+                in: homeDirectory
+                    .appendingPathComponent("Code", isDirectory: true)
+                    .appendingPathComponent("Gracula", isDirectory: true)
+            )
         ]
         .compactMap { $0 }
 
@@ -54,9 +64,6 @@ struct LocalSpeechRuntimeConfiguration: Sendable {
                 "Python runtime not found. Expected `GRACULA_WHISPER_PYTHON` or `Examples/GraculaExample/.whisper-venv/bin/python`."
             )
         }
-
-        let applicationSupportDirectory = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("GraculaExample", isDirectory: true)
 
         let resolvedModelName = modelName ?? defaultModelName(for: backend)
         let resolvedLanguageCode = languageCode ?? defaultLanguageCode(for: backend)
@@ -111,6 +118,15 @@ struct LocalSpeechRuntimeConfiguration: Sendable {
         case .parakeet:
             return VoicePipelineSettings.Defaults.parakeetLanguageCode
         }
+    }
+
+    private static func examplePythonURL(in repositoryRoot: URL) -> URL {
+        repositoryRoot
+            .appendingPathComponent("Examples", isDirectory: true)
+            .appendingPathComponent("GraculaExample", isDirectory: true)
+            .appendingPathComponent(".whisper-venv", isDirectory: true)
+            .appendingPathComponent("bin", isDirectory: true)
+            .appendingPathComponent("python")
     }
 }
 

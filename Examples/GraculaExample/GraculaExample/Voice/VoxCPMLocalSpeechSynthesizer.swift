@@ -18,17 +18,27 @@ struct LocalVoxCPMSpeechRuntimeConfiguration: Sendable {
         let homeDirectory = fileManager.homeDirectoryForCurrentUser
         let environment = ProcessInfo.processInfo.environment
 
+        let applicationSupportDirectory = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("GraculaExample", isDirectory: true)
+
         let pythonCandidates: [URL] = [
             environment["GRACULA_VOXCPM_PYTHON"].map { URL(fileURLWithPath: $0) },
             environment["GRACULA_WHISPER_PYTHON"].map { URL(fileURLWithPath: $0) },
-            homeDirectory
-                .appendingPathComponent("Code", isDirectory: true)
-                .appendingPathComponent("Gracula", isDirectory: true)
-                .appendingPathComponent("Examples", isDirectory: true)
-                .appendingPathComponent("GraculaExample", isDirectory: true)
-                .appendingPathComponent(".whisper-venv", isDirectory: true)
+            applicationSupportDirectory
+                .appendingPathComponent("PythonRuntime", isDirectory: true)
                 .appendingPathComponent("bin", isDirectory: true)
-                .appendingPathComponent("python")
+                .appendingPathComponent("python"),
+            Self.examplePythonURL(
+                in: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            ),
+            Self.examplePythonURL(
+                in: homeDirectory.appendingPathComponent("Gracula", isDirectory: true)
+            ),
+            Self.examplePythonURL(
+                in: homeDirectory
+                    .appendingPathComponent("Code", isDirectory: true)
+                    .appendingPathComponent("Gracula", isDirectory: true)
+            )
         ]
         .compactMap { $0 }
 
@@ -38,8 +48,6 @@ struct LocalVoxCPMSpeechRuntimeConfiguration: Sendable {
             )
         }
 
-        let applicationSupportDirectory = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("GraculaExample", isDirectory: true)
         let modelDirectoryURL = applicationSupportDirectory.appendingPathComponent("VoxCPMModels", isDirectory: true)
         let workerScriptURL = applicationSupportDirectory.appendingPathComponent("voxcpm-worker.py")
         let resolvedModelSource = try Self.resolveModelSource(
@@ -105,6 +113,15 @@ struct LocalVoxCPMSpeechRuntimeConfiguration: Sendable {
                 return leftDate > rightDate
             }
             .first
+    }
+
+    private static func examplePythonURL(in repositoryRoot: URL) -> URL {
+        repositoryRoot
+            .appendingPathComponent("Examples", isDirectory: true)
+            .appendingPathComponent("GraculaExample", isDirectory: true)
+            .appendingPathComponent(".whisper-venv", isDirectory: true)
+            .appendingPathComponent("bin", isDirectory: true)
+            .appendingPathComponent("python")
     }
 }
 

@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Foundation
 
 @MainActor
@@ -10,17 +11,30 @@ final class AudioRecorderViewModel: ObservableObject {
     @Published private(set) var recognizedText = "No recognized speech yet."
     @Published private(set) var recordings: [URL] = []
     @Published private(set) var inputDevices: [AudioInputDevice] = []
+    @Published private(set) var systemVoices: [SystemSpeechVoice] = []
     @Published private(set) var diagnostics: [String] = []
     @Published var selectedInputDeviceID: String?
+    @Published var selectedSystemVoiceID: String {
+        didSet {
+            guard didFinishInitializing else {
+                return
+            }
+            applySelectedSystemVoice()
+        }
+    }
 
     private let recorder: DiskAudioRecorder
     private let transcriber: FileSpeechTranscriber
-    private let voicePipeline: VoicePipeline
+    private var voicePipeline: VoicePipeline
+    private var voiceSettings: VoicePipelineSettings
     private let diagnosticsFileURL: URL
+    private var didFinishInitializing = false
 
     init(recorder: DiskAudioRecorder) {
         self.recorder = recorder
         let loadedSettings = VoicePipelineSettings.loadFromDisk()
+        self.voiceSettings = loadedSettings
+        self.selectedSystemVoiceID = loadedSettings.appleSystemVoiceIdentifier ?? ""
         self.transcriber = FileSpeechTranscriber(settings: loadedSettings)
         self.voicePipeline = VoicePipeline(
             settings: loadedSettings,
@@ -34,6 +48,8 @@ final class AudioRecorderViewModel: ObservableObject {
         appendDiagnostic(
             "Speech synthesis: backend=\(loadedSettings.speechSynthesisBackend.rawValue), model=\(loadedSettings.voxcpmModelName), voice=\(loadedSettings.voxcpmVoiceName), device=\(loadedSettings.voxcpmDevice), baseURL=\(loadedSettings.voxcpmServerBaseURL), speakRecognizedText=\(loadedSettings.speakRecognizedText)"
         )
+        refreshSystemVoices()
+        didFinishInitializing = true
         Task {
             await transcriber.prewarm()
         }
@@ -50,13 +66,13 @@ final class AudioRecorderViewModel: ObservableObject {
         isRecording ? "stop.fill" : "mic.fill"
     }
 
-    func toggleRecording() async {
+    func toggleRecording(sendRecognizedText: ((String) async -> String?)? = nil) async {
         guard !isTranscribing else {
             return
         }
 
         if isRecording {
-            await stopRecording()
+            await stopRecording(sendRecognizedText: sendRecognizedText)
         } else {
             await startRecording()
         }
@@ -87,6 +103,28 @@ final class AudioRecorderViewModel: ObservableObject {
             self.selectedInputDeviceID = recorder.defaultInputDevice()?.id ?? inputDevices.first?.id
         }
         log.debug("refreshInputDevices completed in \(PerformanceLog.elapsedDescription(since: startedAt)); devices=\(self.inputDevices.count); selected=\(self.selectedInputDeviceID ?? "nil")")
+    }
+
+    func refreshSystemVoices() {
+        let voices = AVSpeechSynthesisVoice.speechVoices()
+            .map(SystemSpeechVoice.init)
+            .sorted { first, second in
+                if first.languageCode == second.languageCode {
+                    return first.name.localizedCaseInsensitiveCompare(second.name) == .orderedAscending
+                }
+                return first.languageCode.localizedCaseInsensitiveCompare(second.languageCode) == .orderedAscending
+            }
+        systemVoices = voices
+
+        if selectedSystemVoiceID.isEmpty {
+            selectedSystemVoiceID = voices.first(where: { $0.languageCode == voiceSettings.appleSystemVoiceLanguageCode })?.id
+                ?? voices.first?.id
+                ?? ""
+        } else if !voices.contains(where: { $0.id == selectedSystemVoiceID }) {
+            selectedSystemVoiceID = voices.first(where: { $0.languageCode == voiceSettings.appleSystemVoiceLanguageCode })?.id
+                ?? voices.first?.id
+                ?? ""
+        }
     }
 
     func revealLatestFileInFinder() {
@@ -124,7 +162,7 @@ final class AudioRecorderViewModel: ObservableObject {
         }
     }
 
-    private func stopRecording() async {
+    private func stopRecording(sendRecognizedText: ((String) async -> String?)?) async {
         let startedAt = PerformanceLog.checkpoint()
         do {
             appendDiagnostic("Stopping capture.")
@@ -153,15 +191,42 @@ final class AudioRecorderViewModel: ObservableObject {
             appendDiagnostic("Starting speech transcription.")
             let transcriptionStartedAt = PerformanceLog.checkpoint()
             recognizedText = try await transcriber.transcribeFile(at: url)
-            statusText = "Saved and transcribed audio message. Speaking..."
-            let didSpeak = await voicePipeline.speakRecognizedText(recognizedText)
-            statusText = didSpeak ? "Saved, transcribed, and spoken." : "Saved and transcribed audio message."
-            isTranscribing = false
             appendDiagnostic("Speech transcription finished. characters=\(recognizedText.count)")
+            log.debug("Speech transcription completed in \(PerformanceLog.elapsedDescription(since: transcriptionStartedAt)); characters=\(self.recognizedText.count)")
+
+            let trimmedRecognizedText = recognizedText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedRecognizedText.isEmpty else {
+                statusText = "Saved audio message, but no speech was recognized."
+                isTranscribing = false
+                appendDiagnostic("Skipping OpenClaw because recognized text is empty.")
+                return
+            }
+
+            let speechText: String
+            if let sendRecognizedText {
+                statusText = "Saved and transcribed audio message. Asking OpenClaw..."
+                appendDiagnostic("Sending recognized text to OpenClaw. characters=\(trimmedRecognizedText.count)")
+                if let reply = await sendRecognizedText(trimmedRecognizedText)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !reply.isEmpty {
+                    speechText = reply
+                    appendDiagnostic("OpenClaw reply received. characters=\(reply.count)")
+                    statusText = "OpenClaw replied. Speaking..."
+                } else {
+                    speechText = "OpenClaw did not return a spoken reply."
+                    appendDiagnostic("OpenClaw did not return a speakable reply.")
+                    statusText = "OpenClaw did not return a spoken reply."
+                }
+            } else {
+                speechText = trimmedRecognizedText
+                statusText = "Saved and transcribed audio message. Speaking..."
+            }
+
+            let didSpeak = await voicePipeline.speakRecognizedText(speechText)
+            statusText = didSpeak ? "Saved, transcribed, answered, and spoken." : "Saved and transcribed audio message."
+            isTranscribing = false
             if didSpeak {
                 appendDiagnostic("Speech synthesis finished.")
             }
-            log.debug("Speech transcription completed in \(PerformanceLog.elapsedDescription(since: transcriptionStartedAt)); characters=\(self.recognizedText.count)")
 
             log.info("stopRecording completed in \(PerformanceLog.elapsedDescription(since: startedAt)); totalBytes=\(result.byteSize)")
         } catch {
@@ -179,6 +244,26 @@ final class AudioRecorderViewModel: ObservableObject {
             return "Default Input"
         }
         return device.name
+    }
+
+    private func applySelectedSystemVoice() {
+        guard let selectedVoice = systemVoices.first(where: { $0.id == selectedSystemVoiceID }) else {
+            return
+        }
+
+        voiceSettings.speechSynthesisBackend = .appleSystem
+        voiceSettings.speakRecognizedText = true
+        voiceSettings.appleSystemVoiceIdentifier = selectedVoice.id
+        voiceSettings.appleSystemVoiceLanguageCode = selectedVoice.languageCode
+        voicePipeline = VoicePipeline(
+            settings: voiceSettings,
+            player: SystemAudioPlayer()
+        )
+        appendDiagnostic("Selected macOS bot voice: \(selectedVoice.name) (\(selectedVoice.languageCode)).")
+        Task {
+            await VoicePipelineSettingsStore.shared.save(voiceSettings)
+            await voicePipeline.prewarm()
+        }
     }
 
     private func appendDiagnostic(_ message: String) {
@@ -213,5 +298,21 @@ final class AudioRecorderViewModel: ObservableObject {
         } catch {
             diagnostics.append("Failed to write diagnostics log: \(error.localizedDescription)")
         }
+    }
+}
+
+struct SystemSpeechVoice: Identifiable, Equatable {
+    let id: String
+    let name: String
+    let languageCode: String
+
+    init(voice: AVSpeechSynthesisVoice) {
+        self.id = voice.identifier
+        self.name = voice.name
+        self.languageCode = voice.language
+    }
+
+    var displayName: String {
+        "\(name) (\(languageCode))"
     }
 }
