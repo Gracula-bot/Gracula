@@ -317,14 +317,16 @@ private enum CoreAudioInputDevices {
         )
         var value: CFString = "" as CFString
         var dataSize = UInt32(MemoryLayout<CFString>.size)
-        let status = AudioObjectGetPropertyData(
-            objectID,
-            &address,
-            0,
-            nil,
-            &dataSize,
-            &value
-        )
+        let status = withUnsafeMutablePointer(to: &value) { valuePointer in
+            AudioObjectGetPropertyData(
+                objectID,
+                &address,
+                0,
+                nil,
+                &dataSize,
+                valuePointer
+            )
+        }
         guard status == noErr else {
             return nil
         }
