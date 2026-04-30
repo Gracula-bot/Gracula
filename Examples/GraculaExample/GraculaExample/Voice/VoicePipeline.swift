@@ -53,6 +53,8 @@ actor VoicePipeline {
             return false
         }
 
+        await stopSpeaking()
+
         if let synthesizer, !voxcpmUnavailable {
             do {
                 let audioURL = try await synthesizer.synthesizeSpeech(from: trimmedText)
@@ -87,6 +89,13 @@ actor VoicePipeline {
         } catch {
             log.warning("macOS voice synthesis failed: \(error.localizedDescription)")
             return false
+        }
+    }
+
+    func stopSpeaking() async {
+        await MainActor.run {
+            AppleSystemSpeechSpeaker.shared.stop()
+            player.stop()
         }
     }
 

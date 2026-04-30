@@ -35,4 +35,8 @@ final class AppleSystemSpeechSpeaker: SpeechSpeaking {
 
         synthesizer.speak(speechUtterance)
     }
+
+    func stop() {
+        synthesizer.stopSpeaking(at: .immediate)
+    }
 }

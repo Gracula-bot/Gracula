@@ -3,6 +3,7 @@ import Foundation
 
 protocol AudioPlaying: Sendable {
     @MainActor func play(fileURL: URL) throws
+    @MainActor func stop()
 }
 
 @MainActor
@@ -14,5 +15,10 @@ final class SystemAudioPlayer: AudioPlaying {
         player.prepareToPlay()
         player.play()
         self.player = player
+    }
+
+    func stop() {
+        player?.stop()
+        player = nil
     }
 }

@@ -28,8 +28,16 @@ struct LocalVoxCPMSpeechRuntimeConfiguration: Sendable {
                 .appendingPathComponent("PythonRuntime", isDirectory: true)
                 .appendingPathComponent("bin", isDirectory: true)
                 .appendingPathComponent("python"),
+            Self.exampleDirectoryPythonURL(
+                in: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            ),
             Self.examplePythonURL(
                 in: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            ),
+            Self.examplePythonURL(
+                in: homeDirectory
+                    .appendingPathComponent("Documents", isDirectory: true)
+                    .appendingPathComponent("Gracula", isDirectory: true)
             ),
             Self.examplePythonURL(
                 in: homeDirectory.appendingPathComponent("Gracula", isDirectory: true)
@@ -44,7 +52,7 @@ struct LocalVoxCPMSpeechRuntimeConfiguration: Sendable {
 
         guard let pythonURL = pythonCandidates.first(where: { fileManager.isExecutableFile(atPath: $0.path) }) else {
             throw VoiceSynthesisError.invalidConfiguration(
-                "Python runtime not found. Expected `GRACULA_VOXCPM_PYTHON`, `GRACULA_WHISPER_PYTHON`, or `Examples/GraculaExample/.whisper-venv/bin/python`."
+                "Python runtime not found. Expected `GRACULA_VOXCPM_PYTHON`, `GRACULA_WHISPER_PYTHON`, or `Examples/GraculaExample/.whisper-venv/bin/python` under the Gracula checkout."
             )
         }
 
@@ -119,6 +127,13 @@ struct LocalVoxCPMSpeechRuntimeConfiguration: Sendable {
         repositoryRoot
             .appendingPathComponent("Examples", isDirectory: true)
             .appendingPathComponent("GraculaExample", isDirectory: true)
+            .appendingPathComponent(".whisper-venv", isDirectory: true)
+            .appendingPathComponent("bin", isDirectory: true)
+            .appendingPathComponent("python")
+    }
+
+    private static func exampleDirectoryPythonURL(in exampleDirectory: URL) -> URL {
+        exampleDirectory
             .appendingPathComponent(".whisper-venv", isDirectory: true)
             .appendingPathComponent("bin", isDirectory: true)
             .appendingPathComponent("python")

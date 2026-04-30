@@ -17,6 +17,7 @@ protocol SpeechSpeaking: Sendable {
         rate: Float,
         pitch: Float
     ) throws
+    @MainActor func stop()
 }
 
 enum VoiceSynthesisError: LocalizedError {

@@ -15,7 +15,7 @@ final class OpenClawLocalController: ObservableObject {
     @Published private(set) var settingsSnapshot: OpenClawSettingsSnapshot
     @Published private(set) var settingsStatusText = "Settings loaded."
 
-    let repositoryDirectory = URL(filePath: "/Users/gg/openclaw", directoryHint: .isDirectory)
+    let repositoryDirectory = URL(filePath: "/Users/jazzblood/Documents/Gracula/openclaw", directoryHint: .isDirectory)
     let configDirectory = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".openclaw", isDirectory: true)
     let workspaceDirectory = FileManager.default.homeDirectoryForCurrentUser
@@ -68,6 +68,8 @@ final class OpenClawLocalController: ObservableObject {
                 arguments: [
                     repositoryDirectory.appendingPathComponent("dist/index.js").path,
                     "gateway",
+                    "run",
+                    "--allow-unconfigured",
                     "--bind",
                     environment["OPENCLAW_GATEWAY_BIND"] ?? "loopback",
                     "--port",
@@ -80,20 +82,26 @@ final class OpenClawLocalController: ObservableObject {
             appendLog("Started OpenClaw gateway locally without Docker.")
             appendLog("Gateway: http://\(gatewayHost):\(environment["OPENCLAW_GATEWAY_PORT"] ?? gatewayPort)/")
 
-            do {
-                streamBridgeProcess = try launchProcess(
-                    name: "stream-bridge",
-                    arguments: [
-                        repositoryDirectory.appendingPathComponent("dist/telegram-stream/docker-stream-bridge.js").path
-                    ],
-                    environment: environment,
-                    updateRunningStateOnExit: false
-                )
-                appendLog("Stream bridge: http://\(gatewayHost):\(streamBridgePort)/health")
-            } catch {
+            if isEnabled(environment["OPENCLAW_ENABLE_STREAM_BRIDGE"]) {
+                do {
+                    streamBridgeProcess = try launchProcess(
+                        name: "stream-bridge",
+                        arguments: [
+                            repositoryDirectory.appendingPathComponent("dist/telegram-stream/docker-stream-bridge.js").path
+                        ],
+                        environment: environment,
+                        updateRunningStateOnExit: false
+                    )
+                    appendLog("Stream bridge: http://\(gatewayHost):\(streamBridgePort)/health")
+                } catch {
+                    streamBridgeProcess = nil
+                    streamBridgeStatus = "unavailable"
+                    appendLog("Stream bridge unavailable: \(error.localizedDescription)")
+                }
+            } else {
                 streamBridgeProcess = nil
-                streamBridgeStatus = "unavailable"
-                appendLog("Stream bridge unavailable: \(error.localizedDescription)")
+                streamBridgeStatus = "disabled"
+                appendLog("Stream bridge disabled. Set OPENCLAW_ENABLE_STREAM_BRIDGE=1 to start Telegram/OBS streaming support.")
             }
 
             scheduleHealthChecks()
@@ -101,6 +109,7 @@ final class OpenClawLocalController: ObservableObject {
             stop()
             statusText = "Start failed"
             appendLog("Start failed: \(error.localizedDescription)")
+            appendChatMessage(.error(error.localizedDescription))
         }
     }
 
@@ -123,16 +132,105 @@ final class OpenClawLocalController: ObservableObject {
 
     func refreshHealth() async {
         reloadSettings()
-        async let gateway = checkHealth(url: URL(string: "http://\(gatewayHost):\(gatewayPort)/healthz")!)
-        async let bridge = checkHealth(url: URL(string: "http://\(gatewayHost):\(streamBridgePort)/health")!)
-        gatewayStatus = await gateway
-        streamBridgeStatus = await bridge
-        statusText = isRunning ? "Gateway \(gatewayStatus), bridge \(streamBridgeStatus)" : "Stopped"
+        gatewayStatus = await checkHealth(url: URL(string: "http://\(gatewayHost):\(gatewayPort)/healthz")!)
+        if streamBridgeProcess?.isRunning == true {
+            streamBridgeStatus = await checkHealth(url: URL(string: "http://\(gatewayHost):\(streamBridgePort)/health")!)
+        } else if streamBridgeStatus != "disabled" {
+            streamBridgeStatus = streamBridgeProcess == nil ? "disabled" : "stopped"
+        }
+        statusText = isRunning ? "Running" : "Stopped"
+    }
+
+    func reportError(_ message: String) {
+        appendChatMessage(.error(message))
     }
 
     func reloadSettings() {
         settingsSnapshot = Self.makeSettingsSnapshot()
         settingsStatusText = "Settings reloaded."
+    }
+
+    func testSelectedModel(
+        environmentEntries: [OpenClawEditableSetting],
+        jsonEntries: [OpenClawEditableSetting],
+        workspaceFiles: [OpenClawWorkspaceFile]
+    ) async {
+        do {
+            settingsStatusText = "Testing selected model..."
+            let tempDirectory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("gracula-model-test-\(UUID().uuidString)", isDirectory: true)
+            let tempConfigDirectory = tempDirectory.appendingPathComponent(".openclaw", isDirectory: true)
+            let tempWorkspaceDirectory = tempConfigDirectory.appendingPathComponent("workspace", isDirectory: true)
+            let tempConfigURL = tempConfigDirectory.appendingPathComponent("openclaw.json")
+            try prepareTestDirectories(
+                configDirectory: tempConfigDirectory,
+                workspaceDirectory: tempWorkspaceDirectory
+            )
+            try OpenClawSettingsReader.writeEnvironment(
+                entries: environmentEntries,
+                to: tempConfigDirectory.appendingPathComponent(".env")
+            )
+            try OpenClawSettingsReader.writeJSON(
+                entries: jsonEntries,
+                to: tempConfigURL
+            )
+            try OpenClawSettingsReader.writeWorkspaceFiles(workspaceFiles, to: tempWorkspaceDirectory)
+            try copyAuthStoreIntoTestSandbox(
+                sandboxDirectory: tempDirectory
+            )
+
+            let environment = try openClawEnvironment(
+                configDirectory: tempConfigDirectory,
+                workspaceDirectory: tempWorkspaceDirectory,
+                configPath: tempConfigURL,
+                stateDirectory: tempDirectory
+            )
+            let testSessionID = "gracula-model-test-\(UUID().uuidString)"
+            let response = try await runAgentTurn(
+                message: "Reply with exactly: model test ok",
+                sessionID: testSessionID,
+                environment: environment
+            )
+            let reply = response.replyText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !reply.isEmpty else {
+                throw OpenClawLocalControllerError.agentFailed("Selected model returned an empty reply.")
+            }
+            settingsStatusText = "Model test passed."
+            appendChatMessage(.system("Model test passed: \(reply)"))
+            appendLog("Selected model test passed with reply: \(reply)")
+        } catch {
+            let message = "Model test failed: \(error.localizedDescription)"
+            settingsStatusText = message
+            appendChatMessage(.error(message))
+            appendLog(message)
+        }
+    }
+
+    private func copyAuthStoreIntoTestSandbox(sandboxDirectory: URL) throws {
+        let fileManager = FileManager.default
+        let sourceAuthStore = configDirectory
+            .appendingPathComponent("agents", isDirectory: true)
+            .appendingPathComponent("main", isDirectory: true)
+            .appendingPathComponent("agent", isDirectory: true)
+            .appendingPathComponent("auth-profiles.json")
+        guard fileManager.fileExists(atPath: sourceAuthStore.path) else {
+            return
+        }
+
+        let destinationAuthStore = sandboxDirectory
+            .appendingPathComponent("agents", isDirectory: true)
+            .appendingPathComponent("main", isDirectory: true)
+            .appendingPathComponent("agent", isDirectory: true)
+            .appendingPathComponent("auth-profiles.json")
+        try fileManager.createDirectory(
+            at: destinationAuthStore.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        if fileManager.fileExists(atPath: destinationAuthStore.path) {
+            try fileManager.removeItem(at: destinationAuthStore)
+        }
+        try fileManager.copyItem(at: sourceAuthStore, to: destinationAuthStore)
+        appendLog("Copied auth-profiles.json into the model test sandbox.")
     }
 
     func applySettings(
@@ -181,19 +279,20 @@ final class OpenClawLocalController: ObservableObject {
                 isSendingChat = false
                 return reply
             }
-
-            let response = try await runAgentTurn(message: message)
+            let response = try await runAgentTurn(message: message, sessionID: chatSessionID)
             let reply = response.replyText.trimmingCharacters(in: .whitespacesAndNewlines)
-            let sessionReply = reply.isEmpty ? latestAssistantReplyFromSession() : nil
-            let visibleReply = sessionReply ?? reply
-            if visibleReply.isEmpty {
-                appendChatMessage(.system("OpenClaw returned an empty reply."))
-            } else {
-                appendChatMessage(.assistant(visibleReply))
+            if reply.isEmpty {
+                let failure = "OpenClaw returned an empty reply for this turn."
+                appendChatMessage(.error(failure))
+                chatStatusText = "Chat failed."
+                appendLog(failure)
+                isSendingChat = false
+                return nil
             }
+            appendChatMessage(.assistant(reply))
             chatStatusText = "Reply received."
             isSendingChat = false
-            return visibleReply.isEmpty ? nil : visibleReply
+            return reply
         } catch {
             appendChatMessage(.error(error.localizedDescription))
             chatStatusText = "Chat failed."
@@ -209,7 +308,7 @@ final class OpenClawLocalController: ObservableObject {
             throw OpenClawLocalControllerError.missingRuntime("Node runtime not found at \(nodeURL.path).")
         }
         guard fileManager.fileExists(atPath: repositoryDirectory.appendingPathComponent("dist/index.js").path) else {
-            throw OpenClawLocalControllerError.missingRuntime("OpenClaw dist/index.js not found. Build /Users/gg/openclaw first.")
+            throw OpenClawLocalControllerError.missingRuntime("OpenClaw dist/index.js not found. Build /Users/jazzblood/Documents/Gracula/openclaw first.")
         }
     }
 
@@ -227,7 +326,15 @@ final class OpenClawLocalController: ObservableObject {
         )
     }
 
-    private func openClawEnvironment() throws -> [String: String] {
+    private func openClawEnvironment(
+        configDirectory: URL? = nil,
+        workspaceDirectory: URL? = nil,
+        configPath: URL? = nil,
+        stateDirectory: URL? = nil
+    ) throws -> [String: String] {
+        let configDirectory = configDirectory ?? self.configDirectory
+        let workspaceDirectory = workspaceDirectory ?? self.workspaceDirectory
+        let stateDirectory = stateDirectory ?? configDirectory
         var environment = ProcessInfo.processInfo.environment
         environment["HOME"] = FileManager.default.homeDirectoryForCurrentUser.path
         environment["TERM"] = environment["TERM"] ?? "xterm-256color"
@@ -245,6 +352,12 @@ final class OpenClawLocalController: ObservableObject {
 
         environment["OPENCLAW_CONFIG_DIR"] = configDirectory.path
         environment["OPENCLAW_WORKSPACE_DIR"] = workspaceDirectory.path
+        environment["OPENCLAW_STATE_DIR"] = stateDirectory.path
+        if let configPath {
+            environment["OPENCLAW_CONFIG_PATH"] = configPath.path
+        } else {
+            environment["OPENCLAW_CONFIG_PATH"] = configDirectory.appendingPathComponent("openclaw.json").path
+        }
         environment["OPENCLAW_GATEWAY_BIND"] = "loopback"
         environment["OPENCLAW_GATEWAY_PORT"] = environment["OPENCLAW_GATEWAY_PORT"] ?? configuredGatewayPort(from: environment)
         environment["OPENCLAW_GATEWAY_URL"] = "ws://\(gatewayHost):\(environment["OPENCLAW_GATEWAY_PORT"] ?? gatewayPort)"
@@ -304,6 +417,18 @@ final class OpenClawLocalController: ObservableObject {
             return nil
         }
         return String(port)
+    }
+
+    private func isEnabled(_ rawValue: String?) -> Bool {
+        guard let rawValue else {
+            return false
+        }
+        switch rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "1", "true", "yes", "on":
+            return true
+        default:
+            return false
+        }
     }
 
     private func mergeEnvFile(_ url: URL, into environment: inout [String: String]) {
@@ -415,19 +540,23 @@ final class OpenClawLocalController: ObservableObject {
         throw OpenClawLocalControllerError.gatewayUnavailable("OpenClaw gateway did not become healthy at http://\(gatewayHost):\(gatewayPort)/healthz")
     }
 
-    private func runAgentTurn(message: String) async throws -> OpenClawAgentTurnResponse {
+    private func runAgentTurn(
+        message: String,
+        sessionID: String,
+        environment: [String: String]? = nil
+    ) async throws -> OpenClawAgentTurnResponse {
         let result = try await runProcess(
             arguments: [
                 repositoryDirectory.appendingPathComponent("dist/index.js").path,
                 "agent",
                 "--local",
                 "--session-id",
-                chatSessionID,
+                sessionID,
                 "--message",
                 message,
                 "--json"
             ],
-            environment: try openClawEnvironment()
+            environment: environment ?? (try openClawEnvironment())
         )
 
         guard result.exitCode == 0 else {
@@ -451,6 +580,20 @@ final class OpenClawLocalController: ObservableObject {
         }
 
         throw OpenClawLocalControllerError.agentFailed("Could not parse OpenClaw JSON response.")
+    }
+
+    private func prepareTestDirectories(configDirectory: URL, workspaceDirectory: URL) throws {
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: configDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: workspaceDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(
+            at: configDirectory.appendingPathComponent("canvas", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try fileManager.createDirectory(
+            at: configDirectory.appendingPathComponent("cron", isDirectory: true),
+            withIntermediateDirectories: true
+        )
     }
 
     private func runProcess(arguments: [String], environment: [String: String]) async throws -> ProcessOutput {
@@ -863,7 +1006,7 @@ enum OpenClawSettingsApplyError: LocalizedError {
 }
 
 struct OpenClawSettingsReader {
-    private let repositoryDirectory = URL(filePath: "/Users/gg/openclaw", directoryHint: .isDirectory)
+    private let repositoryDirectory = URL(filePath: "/Users/jazzblood/Documents/Gracula/openclaw", directoryHint: .isDirectory)
     private let configDirectory = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".openclaw", isDirectory: true)
     private let workspaceDirectory = FileManager.default.homeDirectoryForCurrentUser
@@ -959,7 +1102,11 @@ struct OpenClawSettingsReader {
     }
 
     static func writeEnvironment(entries: [OpenClawEditableSetting]) throws {
-        let url = URL(filePath: "/Users/gg/openclaw/.env")
+        let url = URL(filePath: "/Users/jazzblood/Documents/Gracula/openclaw/.env")
+        try writeEnvironment(entries: entries, to: url)
+    }
+
+    static func writeEnvironment(entries: [OpenClawEditableSetting], to url: URL) throws {
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         if fileManager.fileExists(atPath: url.path) {
@@ -978,6 +1125,10 @@ struct OpenClawSettingsReader {
         let url = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".openclaw", isDirectory: true)
             .appendingPathComponent("openclaw.json")
+        try writeJSON(entries: entries, to: url)
+    }
+
+    static func writeJSON(entries: [OpenClawEditableSetting], to url: URL) throws {
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         if fileManager.fileExists(atPath: url.path) {
@@ -1013,6 +1164,10 @@ struct OpenClawSettingsReader {
         let workspaceDirectory = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".openclaw", isDirectory: true)
             .appendingPathComponent("workspace", isDirectory: true)
+        try writeWorkspaceFiles(files, to: workspaceDirectory)
+    }
+
+    static func writeWorkspaceFiles(_ files: [OpenClawWorkspaceFile], to workspaceDirectory: URL) throws {
         let fileManager = FileManager.default
         for file in files {
             guard isEditableWorkspaceFile(file.relativePath) else {

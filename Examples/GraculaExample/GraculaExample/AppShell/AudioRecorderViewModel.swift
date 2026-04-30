@@ -19,16 +19,20 @@ final class AudioRecorderViewModel: ObservableObject {
             guard didFinishInitializing else {
                 return
             }
+            guard !isApplyingVoiceSettings else {
+                return
+            }
             applySelectedSystemVoice()
         }
     }
 
     private let recorder: DiskAudioRecorder
-    private let transcriber: FileSpeechTranscriber
+    private var transcriber: FileSpeechTranscriber
     private var voicePipeline: VoicePipeline
     private var voiceSettings: VoicePipelineSettings
     private let diagnosticsFileURL: URL
     private var didFinishInitializing = false
+    private var isApplyingVoiceSettings = false
 
     init(recorder: DiskAudioRecorder) {
         self.recorder = recorder
@@ -66,15 +70,50 @@ final class AudioRecorderViewModel: ObservableObject {
         isRecording ? "stop.fill" : "mic.fill"
     }
 
-    func toggleRecording(sendRecognizedText: ((String) async -> String?)? = nil) async {
+    func toggleRecording(
+        sendRecognizedText: ((String) async -> String?)? = nil,
+        reportError: ((String) -> Void)? = nil
+    ) async {
         guard !isTranscribing else {
             return
         }
 
         if isRecording {
-            await stopRecording(sendRecognizedText: sendRecognizedText)
+            await stopRecording(sendRecognizedText: sendRecognizedText, reportError: reportError)
         } else {
-            await startRecording()
+            await voicePipeline.stopSpeaking()
+            await startRecording(reportError: reportError)
+        }
+    }
+
+    func currentVoiceSettings() -> VoicePipelineSettings {
+        voiceSettings
+    }
+
+    func reloadVoiceSettings() {
+        applyVoiceSettings(VoicePipelineSettings.loadFromDisk(), persist: false)
+    }
+
+    func applyVoiceSettings(_ settings: VoicePipelineSettings, persist: Bool = true) {
+        let selectedVoiceID = settings.appleSystemVoiceIdentifier ?? ""
+        isApplyingVoiceSettings = true
+        voiceSettings = settings
+        transcriber = FileSpeechTranscriber(settings: settings)
+        voicePipeline = VoicePipeline(
+            settings: settings,
+            player: SystemAudioPlayer()
+        )
+        selectedSystemVoiceID = selectedVoiceID
+        isApplyingVoiceSettings = false
+
+        appendDiagnostic("Voice settings updated.")
+
+        Task {
+            if persist {
+                await VoicePipelineSettingsStore.shared.save(settings)
+            }
+            await transcriber.prewarm()
+            await voicePipeline.prewarm()
         }
     }
 
@@ -140,7 +179,7 @@ final class AudioRecorderViewModel: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([diagnosticsFileURL])
     }
 
-    private func startRecording() async {
+    private func startRecording(reportError: ((String) -> Void)?) async {
         let startedAt = PerformanceLog.checkpoint()
         do {
             refreshInputDevices()
@@ -158,11 +197,15 @@ final class AudioRecorderViewModel: ObservableObject {
             isRecording = false
             statusText = "Could not start recording: \(error.localizedDescription)"
             appendDiagnostic("Start failed: \(error.localizedDescription)")
+            reportError?(error.localizedDescription)
             log.error("startRecording failed after \(PerformanceLog.elapsedDescription(since: startedAt)): \(error.localizedDescription)")
         }
     }
 
-    private func stopRecording(sendRecognizedText: ((String) async -> String?)?) async {
+    private func stopRecording(
+        sendRecognizedText: ((String) async -> String?)?,
+        reportError: ((String) -> Void)?
+    ) async {
         let startedAt = PerformanceLog.checkpoint()
         do {
             appendDiagnostic("Stopping capture.")
@@ -234,6 +277,7 @@ final class AudioRecorderViewModel: ObservableObject {
             isTranscribing = false
             statusText = "Could not finish recording: \(error.localizedDescription)"
             appendDiagnostic("Stop/transcribe failed: \(error.localizedDescription)")
+            reportError?(error.localizedDescription)
             log.error("stopRecording failed after \(PerformanceLog.elapsedDescription(since: startedAt)): \(error.localizedDescription)")
         }
     }
@@ -252,7 +296,6 @@ final class AudioRecorderViewModel: ObservableObject {
         }
 
         voiceSettings.speechSynthesisBackend = .appleSystem
-        voiceSettings.speakRecognizedText = true
         voiceSettings.appleSystemVoiceIdentifier = selectedVoice.id
         voiceSettings.appleSystemVoiceLanguageCode = selectedVoice.languageCode
         voicePipeline = VoicePipeline(

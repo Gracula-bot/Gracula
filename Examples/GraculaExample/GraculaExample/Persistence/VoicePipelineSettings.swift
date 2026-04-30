@@ -46,6 +46,11 @@ struct VoicePipelineSettings: Codable, Sendable {
     var voxcpmVoiceName: String = Defaults.voxcpmVoiceName
     var voxcpmDevice: String = Defaults.voxcpmDevice
 
+    var startVoiceAutomatically: Bool {
+        get { speakRecognizedText }
+        set { speakRecognizedText = newValue }
+    }
+
     var recognitionModelName: String {
         switch speechRecognitionBackend {
         case .whisper:

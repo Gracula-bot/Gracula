@@ -1,4 +1,4 @@
-#!/Users/jazzblood/Code/Gracula/Examples/GraculaExample/.whisper-venv/bin/python3.12
+#!/Users/jazzblood/Documents/Gracula/Examples/GraculaExample/.whisper-venv/bin/python
 # -*- coding: utf-8 -*-
 import re
 import sys
