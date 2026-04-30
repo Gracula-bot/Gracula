@@ -22,7 +22,7 @@ final class OpenClawLocalController: ObservableObject {
         .appendingPathComponent(".openclaw", isDirectory: true)
         .appendingPathComponent("workspace", isDirectory: true)
 
-    private let nodeURL = URL(filePath: "/opt/homebrew/bin/node")
+    private let nodeURL = resolveNodeExecutableURL()
     private let gatewayHost = "127.0.0.1"
     private let fallbackGatewayPort = "18789"
     private let streamBridgePort = "7071"
@@ -31,6 +31,7 @@ final class OpenClawLocalController: ObservableObject {
     private var gatewayProcess: Process?
     private var streamBridgeProcess: Process?
     private var healthTask: Task<Void, Never>?
+    private var startupTask: Task<Void, Never>?
 
     init() {
         self.settingsSnapshot = Self.makeSettingsSnapshot()
@@ -59,6 +60,18 @@ final class OpenClawLocalController: ObservableObject {
             appendLog("OpenClaw is already running.")
             return
         }
+        guard startupTask == nil else {
+            appendLog("OpenClaw is already starting.")
+            return
+        }
+
+        startupTask = Task { [weak self] in
+            await self?.startWorkflow()
+        }
+    }
+
+    private func startWorkflow() async {
+        defer { startupTask = nil }
 
         do {
             try validateRuntime()
@@ -137,6 +150,8 @@ final class OpenClawLocalController: ObservableObject {
     func stop() {
         healthTask?.cancel()
         healthTask = nil
+        startupTask?.cancel()
+        startupTask = nil
         terminate(process: gatewayProcess, name: "gateway")
         terminate(process: streamBridgeProcess, name: "stream-bridge")
         gatewayProcess = nil
@@ -206,25 +221,36 @@ final class OpenClawLocalController: ObservableObject {
                 configPath: tempConfigURL,
                 stateDirectory: tempDirectory
             )
-            let testSessionID = "gracula-model-test-\(UUID().uuidString)"
-            let response = try await runAgentTurn(
-                message: "Reply with exactly: model test ok",
-                sessionID: testSessionID,
-                environment: environment
-            )
-            if let status = response.status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-               status == "error" {
-                throw OpenClawLocalControllerError.agentFailed(
-                    response.summary?.trimmingCharacters(in: .whitespacesAndNewlines)
-                    ?? "Selected model returned an error status."
+            let primaryModelRef = currentPrimaryModelRef(in: jsonEntries)
+            let reply: String
+            if shouldUseDirectModelSmokeTest(for: primaryModelRef) {
+                appendLog("Selected model uses a tool-free probe; running direct completion smoke test.")
+                reply = try await runDirectModelSmokeTest(
+                    modelRef: primaryModelRef,
+                    environment: environment
                 )
-            }
-            let reply = response.replyText.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !reply.isEmpty else {
-                throw OpenClawLocalControllerError.agentFailed("Selected model returned an empty reply.")
-            }
-            if reply.hasPrefix("LLM error:") {
-                throw OpenClawLocalControllerError.agentFailed(reply)
+            } else {
+                let testSessionID = "gracula-model-test-\(UUID().uuidString)"
+                let response = try await runAgentTurn(
+                    message: "Reply with exactly: model test ok",
+                    sessionID: testSessionID,
+                    environment: environment
+                )
+                if let status = response.status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                   status == "error" {
+                    throw OpenClawLocalControllerError.agentFailed(
+                        response.summary?.trimmingCharacters(in: .whitespacesAndNewlines)
+                        ?? "Selected model returned an error status."
+                    )
+                }
+                let agentReply = response.replyText.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !agentReply.isEmpty else {
+                    throw OpenClawLocalControllerError.agentFailed("Selected model returned an empty reply.")
+                }
+                if agentReply.hasPrefix("LLM error:") {
+                    throw OpenClawLocalControllerError.agentFailed(agentReply)
+                }
+                reply = agentReply
             }
             settingsStatusText = "Model test passed."
             appendChatMessage(.system("Model test passed: \(reply)"))
@@ -314,6 +340,22 @@ final class OpenClawLocalController: ObservableObject {
                 isSendingChat = false
                 return reply
             }
+            let primaryModelRef = currentPrimaryModelRef()
+            if shouldUseDirectCompletion(for: primaryModelRef) {
+                appendLog("Selected model uses a tool-free chat path; running direct completion.")
+                let reply = try await runDirectModelChat(
+                    modelRef: primaryModelRef,
+                    prompt: directChatPrompt()
+                )
+                guard !reply.isEmpty else {
+                    throw OpenClawLocalControllerError.agentFailed("Selected model returned an empty reply.")
+                }
+                appendChatMessage(.assistant(reply))
+                chatStatusText = "Reply received."
+                isSendingChat = false
+                return reply
+            }
+
             let response = try await runAgentTurn(message: message, sessionID: chatSessionID)
             let reply = response.replyText.trimmingCharacters(in: .whitespacesAndNewlines)
             if looksLikeStaleAssistantReply(reply) {
@@ -405,10 +447,109 @@ final class OpenClawLocalController: ObservableObject {
     private func validateRuntime() throws {
         let fileManager = FileManager.default
         guard fileManager.isExecutableFile(atPath: nodeURL.path) else {
-            throw OpenClawLocalControllerError.missingRuntime("Node runtime not found at \(nodeURL.path).")
+            throw OpenClawLocalControllerError.missingRuntime("Node runtime not found. Install Node.js 22+ or set GRACULA_NODE_EXECUTABLE.")
         }
+        try bootstrapOpenClawCheckoutIfNeeded()
+        let distIndexURL = repositoryDirectory.appendingPathComponent("dist/index.js")
+        if !fileManager.fileExists(atPath: distIndexURL.path) {
+            appendLog("OpenClaw dist/index.js is missing; attempting to build the checkout at \(repositoryDirectory.path).")
+            try buildOpenClawCheckout()
+            if !fileManager.fileExists(atPath: distIndexURL.path) {
+                throw OpenClawLocalControllerError.missingRuntime(
+                    "OpenClaw dist/index.js not found after attempting a build. Install dependencies in \(repositoryDirectory.path) and run `pnpm build`, or point GRACULA_OPENCLAW_REPOSITORY_DIR at a built checkout."
+                )
+            }
+        }
+    }
+
+    private func bootstrapOpenClawCheckoutIfNeeded() throws {
+        let fileManager = FileManager.default
+        let packageURL = repositoryDirectory.appendingPathComponent("package.json")
+        if fileManager.fileExists(atPath: packageURL.path) {
+            return
+        }
+
+        let parentDirectory = repositoryDirectory.deletingLastPathComponent()
+        try fileManager.createDirectory(at: parentDirectory, withIntermediateDirectories: true)
+        appendLog("OpenClaw checkout not found at \(repositoryDirectory.path); cloning it now.")
+
+        let cloneOutput = try runCommand(
+            executableURL: URL(filePath: "/usr/bin/git"),
+            arguments: [
+                "clone",
+                "--depth",
+                "1",
+                "https://github.com/openclaw/openclaw.git",
+                repositoryDirectory.path
+            ],
+            currentDirectoryURL: parentDirectory,
+            environment: ProcessInfo.processInfo.environment
+        )
+
+        if cloneOutput.exitCode != 0 {
+            throw OpenClawLocalControllerError.missingRuntime(
+                cloneOutput.stderr.isEmpty ? cloneOutput.stdout : cloneOutput.stderr
+            )
+        }
+
+        if !cloneOutput.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            appendLog(cloneOutput.stdout, prefix: "git")
+        }
+        if !cloneOutput.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            appendLog(cloneOutput.stderr, prefix: "git")
+        }
+    }
+
+    private func buildOpenClawCheckout() throws {
+        let fileManager = FileManager.default
+        let environment = try openClawEnvironment()
+        guard let command = resolvePackageManagerCommand() else {
+            throw OpenClawLocalControllerError.missingRuntime(
+                "Could not find pnpm or corepack to build OpenClaw automatically."
+            )
+        }
+
+        appendLog("Building OpenClaw checkout with \(command.displayName).")
+        let installOutput = try runCommand(
+            executableURL: command.executableURL,
+            arguments: command.installArguments,
+            currentDirectoryURL: repositoryDirectory,
+            environment: environment
+        )
+        if installOutput.exitCode != 0 {
+            throw OpenClawLocalControllerError.missingRuntime(
+                installOutput.stderr.isEmpty ? installOutput.stdout : installOutput.stderr
+            )
+        }
+        if !installOutput.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            appendLog(installOutput.stdout, prefix: command.displayName)
+        }
+        if !installOutput.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            appendLog(installOutput.stderr, prefix: command.displayName)
+        }
+
+        let buildOutput = try runCommand(
+            executableURL: command.executableURL,
+            arguments: command.buildArguments,
+            currentDirectoryURL: repositoryDirectory,
+            environment: environment
+        )
+        if buildOutput.exitCode != 0 {
+            throw OpenClawLocalControllerError.missingRuntime(
+                buildOutput.stderr.isEmpty ? buildOutput.stdout : buildOutput.stderr
+            )
+        }
+        if !buildOutput.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            appendLog(buildOutput.stdout, prefix: command.displayName)
+        }
+        if !buildOutput.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            appendLog(buildOutput.stderr, prefix: command.displayName)
+        }
+
         guard fileManager.fileExists(atPath: repositoryDirectory.appendingPathComponent("dist/index.js").path) else {
-            throw OpenClawLocalControllerError.missingRuntime("OpenClaw dist/index.js not found. Build the OpenClaw checkout referenced by the app first.")
+            throw OpenClawLocalControllerError.missingRuntime(
+                "OpenClaw build finished but dist/index.js is still missing."
+            )
         }
     }
 
@@ -686,6 +827,210 @@ final class OpenClawLocalController: ObservableObject {
         throw OpenClawLocalControllerError.agentFailed("Could not parse OpenClaw JSON response.")
     }
 
+    private func runDirectModelSmokeTest(
+        modelRef: String,
+        environment: [String: String]
+    ) async throws -> String {
+        return try await runDirectModelChat(
+            modelRef: modelRef,
+            prompt: "Reply with exactly: model test ok",
+            environment: environment,
+            maxTokens: 32
+        )
+    }
+
+    private func runDirectModelChat(
+        modelRef: String,
+        prompt: String,
+        environment: [String: String]? = nil,
+        maxTokens: Int = 256
+    ) async throws -> String {
+        let trimmedRef = modelRef.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedRef.isEmpty else {
+            throw OpenClawLocalControllerError.agentFailed("Selected model is not set.")
+        }
+
+        let activeEnvironment: [String: String]
+        if let environment {
+            activeEnvironment = environment
+        } else {
+            activeEnvironment = try openClawEnvironment()
+        }
+        let apiKey = directModelSmokeTestAPIKey(from: activeEnvironment, modelRef: trimmedRef)
+        guard !apiKey.isEmpty else {
+            throw OpenClawLocalControllerError.agentFailed(
+                "No API key is available for the selected model."
+            )
+        }
+
+        let provider = trimmedRef.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: true)
+        guard provider.count == 2 else {
+            throw OpenClawLocalControllerError.agentFailed(
+                "Selected model ref must use provider/model format."
+            )
+        }
+
+        let providerName = String(provider[0])
+        let modelId = trimmedRef
+        let reasoningMode = directModelReasoningMode(for: trimmedRef)
+        let script = """
+        import { completeSimple, getModel } from "@mariozechner/pi-ai";
+
+        const provider = process.env.GRACULA_MODEL_PROVIDER ?? "";
+        const modelId = process.env.GRACULA_MODEL_ID ?? "";
+        const apiKey = process.env.GRACULA_MODEL_API_KEY ?? "";
+        const prompt = process.env.GRACULA_MODEL_PROMPT ?? "";
+        const maxTokens = Number(process.env.GRACULA_MODEL_MAX_TOKENS ?? "256");
+        const reasoning = process.env.GRACULA_MODEL_REASONING ?? "";
+        const model = getModel(provider, modelId);
+        const options = {
+          apiKey,
+          maxTokens,
+          temperature: 0
+        };
+        if (reasoning) {
+          options.reasoning = reasoning;
+        }
+        const response = await completeSimple(
+          model,
+          {
+            messages: [
+              {
+                role: "user",
+                content: prompt,
+                timestamp: Date.now()
+              }
+            ]
+          },
+          options
+        );
+        const contentBlocks = Array.isArray(response?.content) ? response.content : [];
+        const text = contentBlocks
+          .filter((block) => block?.type === "text" && typeof block.text === "string")
+          .map((block) => block.text.trim())
+          .filter(Boolean)
+          .join(" ")
+          .trim();
+        const fallbackText =
+          (typeof response?.text === "string" ? response.text.trim() : "") ||
+          (typeof response?.output_text === "string" ? response.output_text.trim() : "");
+        const finalText = text || fallbackText;
+        if (!finalText) {
+          throw new Error(`Selected model returned an empty reply. Raw response: ${JSON.stringify(response)}`);
+        }
+        console.log(JSON.stringify({ text: finalText }));
+        """
+        var smokeEnvironment = activeEnvironment
+        smokeEnvironment["GRACULA_MODEL_PROVIDER"] = providerName
+        smokeEnvironment["GRACULA_MODEL_ID"] = modelId
+        smokeEnvironment["GRACULA_MODEL_API_KEY"] = apiKey
+        smokeEnvironment["GRACULA_MODEL_PROMPT"] = prompt
+        smokeEnvironment["GRACULA_MODEL_MAX_TOKENS"] = String(maxTokens)
+        if let reasoningMode {
+            smokeEnvironment["GRACULA_MODEL_REASONING"] = reasoningMode
+        }
+
+        let result = try await runProcess(
+            arguments: [
+                "--input-type=module",
+                "-e",
+                script
+            ],
+            environment: smokeEnvironment
+        )
+
+        guard result.exitCode == 0 else {
+            throw OpenClawLocalControllerError.agentFailed(
+                result.stderr.isEmpty ? result.stdout : result.stderr
+            )
+        }
+
+        let stdout = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !stdout.isEmpty else {
+            throw OpenClawLocalControllerError.agentFailed("Selected model returned no output.")
+        }
+
+        if let decoded = try? JSONSerialization.jsonObject(with: Data(stdout.utf8)) as? [String: Any],
+           let text = decoded["text"] as? String {
+            let reply = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !reply.isEmpty else {
+                throw OpenClawLocalControllerError.agentFailed("Selected model returned an empty reply.")
+            }
+            return reply
+        }
+
+        return stdout
+    }
+
+    private func directModelSmokeTestAPIKey(from environment: [String: String], modelRef: String) -> String {
+        let lowercased = modelRef.lowercased()
+        if lowercased.hasPrefix("openrouter/") {
+            return environment["OPENROUTER_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
+        if lowercased.hasPrefix("google/") {
+            return environment["GEMINI_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+                ?? environment["GOOGLE_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+                ?? ""
+        }
+        if lowercased.hasPrefix("anthropic/") {
+            return environment["ANTHROPIC_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
+        if lowercased.hasPrefix("kilocode/") {
+            return environment["KILOCODE_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
+        if lowercased.hasPrefix("openai/") || lowercased.hasPrefix("openai-codex/") {
+            return environment["OPENAI_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
+        return ""
+    }
+
+    private func currentPrimaryModelRef(in jsonEntries: [OpenClawEditableSetting]) -> String {
+        if let value = jsonEntries.first(where: { $0.key == "agents.defaults.model.primary" })?.value
+            ?? jsonEntries.first(where: { $0.key == "agents.defaults.model" })?.value {
+            return value
+        }
+        return ""
+    }
+
+    private func shouldUseDirectModelSmokeTest(for modelRef: String) -> Bool {
+        let normalized = modelRef.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized == "openrouter/free"
+    }
+
+    private func shouldUseDirectCompletion(for modelRef: String) -> Bool {
+        shouldUseDirectModelSmokeTest(for: modelRef)
+    }
+
+    private func directModelReasoningMode(for modelRef: String) -> String? {
+        let normalized = modelRef.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized == "openrouter/free" {
+            return "medium"
+        }
+        return nil
+    }
+
+    private func currentPrimaryModelRef() -> String {
+        currentPrimaryModelRef(in: settingsSnapshot.jsonEntries)
+    }
+
+    private func directChatPrompt() -> String {
+        let transcript = chatMessages
+            .suffix(12)
+            .filter { $0.role != .error }
+            .map { message in
+                "\(message.role.rawValue): \(message.text)"
+            }
+            .joined(separator: "\n")
+
+        return """
+        Continue the conversation below and answer the latest user message directly.
+        Keep the answer concise unless the user asks for detail.
+
+        Conversation:
+        \(transcript)
+        """
+    }
+
     private func prepareTestDirectories(configDirectory: URL, workspaceDirectory: URL) throws {
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: configDirectory, withIntermediateDirectories: true)
@@ -746,6 +1091,52 @@ final class OpenClawLocalController: ObservableObject {
                 continuation.resume(throwing: error)
             }
         }
+    }
+
+    private func runCommand(
+        executableURL: URL,
+        arguments: [String],
+        currentDirectoryURL: URL,
+        environment: [String: String]
+    ) throws -> ProcessOutput {
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = arguments
+        process.currentDirectoryURL = currentDirectoryURL
+        process.environment = environment
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        let buffer = ProcessOutputBuffer()
+
+        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if !data.isEmpty {
+                buffer.appendStdout(data)
+            }
+        }
+        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if !data.isEmpty {
+                buffer.appendStderr(data)
+            }
+        }
+
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        try process.run()
+        process.waitUntilExit()
+
+        stdoutPipe.fileHandleForReading.readabilityHandler = nil
+        stderrPipe.fileHandleForReading.readabilityHandler = nil
+
+        let snapshot = buffer.snapshot()
+        return ProcessOutput(
+            stdout: snapshot.stdout,
+            stderr: snapshot.stderr,
+            exitCode: process.terminationStatus
+        )
     }
 
     private func decodeAgentResponse(from text: String) throws -> OpenClawAgentTurnResponse {
@@ -1099,7 +1490,7 @@ struct OpenClawSettingsReader {
     private let workspaceDirectory = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".openclaw", isDirectory: true)
         .appendingPathComponent("workspace", isDirectory: true)
-    private let nodeURL = URL(filePath: "/opt/homebrew/bin/node")
+    private let nodeURL = resolveNodeExecutableURL()
     private let gatewayHost = "127.0.0.1"
     private let fallbackGatewayPort = "18789"
     private let streamBridgePort = "7071"
@@ -1230,6 +1621,7 @@ struct OpenClawSettingsReader {
             try? fileManager.copyItem(at: url, to: backupURL)
         }
 
+        let normalizedEntries = entriesWithProviderDefaults(entries)
         let rootObject: NSMutableDictionary
         if let data = try? Data(contentsOf: url),
            !data.isEmpty,
@@ -1239,7 +1631,7 @@ struct OpenClawSettingsReader {
             rootObject = NSMutableDictionary()
         }
 
-        for entry in entries {
+        for entry in normalizedEntries {
             guard let value = try jsonValue(from: entry) else {
                 continue
             }
@@ -1251,6 +1643,134 @@ struct OpenClawSettingsReader {
         }
         let data = try JSONSerialization.data(withJSONObject: rootObject, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: url, options: [.atomic])
+    }
+
+    private static func entriesWithProviderDefaults(_ entries: [OpenClawEditableSetting]) -> [OpenClawEditableSetting] {
+        var normalized = entries
+
+        ensureEntry(
+            key: "models.providers.google.baseUrl",
+            value: "https://generativelanguage.googleapis.com/v1beta",
+            in: &normalized
+        )
+        ensureEntry(
+            key: "models.providers.google.api",
+            value: "google-generative-ai",
+            in: &normalized
+        )
+        ensureEntry(
+            key: "models.providers.google.models",
+            value: """
+            [
+              {
+                "id": "gemini-3.1-pro-preview",
+                "name": "Gemini 3.1 Pro Preview",
+                "api": "google-generative-ai",
+                "reasoning": true,
+                "input": ["text", "image"],
+                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+                "contextWindow": 1048576,
+                "maxTokens": 65536
+              },
+              {
+                "id": "gemini-3-flash-preview",
+                "name": "Gemini 3 Flash Preview",
+                "api": "google-generative-ai",
+                "reasoning": false,
+                "input": ["text", "image"],
+                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+                "contextWindow": 1048576,
+                "maxTokens": 65536
+              }
+            ]
+            """,
+            kind: .array,
+            in: &normalized
+        )
+
+        ensureEntry(
+            key: "models.providers.kilocode.baseUrl",
+            value: "https://api.kilo.ai/api/gateway/",
+            in: &normalized
+        )
+        ensureEntry(
+            key: "models.providers.kilocode.api",
+            value: "openai-completions",
+            in: &normalized
+        )
+        ensureEntry(
+            key: "models.providers.kilocode.models",
+            value: """
+            [
+              {
+                "id": "kilo/auto",
+                "name": "Kilo Auto",
+                "reasoning": true,
+                "input": ["text", "image"],
+                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+                "contextWindow": 1000000,
+                "maxTokens": 128000
+              }
+            ]
+            """,
+            kind: .array,
+            in: &normalized
+        )
+
+        ensureEntry(
+            key: "models.providers.openrouter.baseUrl",
+            value: "https://openrouter.ai/api/v1",
+            in: &normalized
+        )
+        ensureEntry(
+            key: "models.providers.openrouter.api",
+            value: "openai-completions",
+            in: &normalized
+        )
+        ensureEntry(
+            key: "models.providers.openrouter.models",
+            value: """
+            [
+              {
+                "id": "free",
+                "name": "OpenRouter Free",
+                "api": "openai-completions",
+                "reasoning": false,
+                "input": ["text"],
+                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+                "contextWindow": 128000,
+                "maxTokens": 8192,
+                "compat": {
+                  "supportsTools": false
+                }
+              }
+            ]
+            """,
+            kind: .array,
+            in: &normalized
+        )
+
+        return normalized
+    }
+
+    private static func ensureEntry(
+        key: String,
+        value: String,
+        kind: OpenClawEditableSetting.ValueKind = .string,
+        in entries: inout [OpenClawEditableSetting]
+    ) {
+        guard !entries.contains(where: { $0.key == key }) else {
+            return
+        }
+        entries.append(
+            OpenClawEditableSetting(
+                key: key,
+                source: .json,
+                kind: kind,
+                isSecret: false,
+                value: value
+            )
+        )
     }
 
     static func writeWorkspaceFiles(_ files: [OpenClawWorkspaceFile]) throws {
@@ -1683,31 +2203,128 @@ private func resolveOpenClawRepositoryDirectory() -> URL {
     }
 
     let currentDirectory = URL(filePath: fileManager.currentDirectoryPath, directoryHint: .isDirectory)
-    let relativeCandidates = [
-        currentDirectory
-            .appendingPathComponent("..", isDirectory: true)
-            .appendingPathComponent("..", isDirectory: true)
-            .appendingPathComponent("openclaw", isDirectory: true)
-            .standardizedFileURL,
-        currentDirectory
-            .appendingPathComponent("..", isDirectory: true)
-            .appendingPathComponent("..", isDirectory: true)
-            .appendingPathComponent("Vendor", isDirectory: true)
-            .appendingPathComponent("openclaw", isDirectory: true)
-            .standardizedFileURL,
-    ]
-    let absoluteCandidates = [
-        URL(filePath: "/Users/jazzblood/Documents/Gracula/openclaw", directoryHint: .isDirectory),
-        URL(filePath: "/Users/jazzblood/Documents/Gracula/Vendor/openclaw", directoryHint: .isDirectory),
-    ]
+    var relativeCandidates: [URL] = []
+    if currentDirectory.path != "/" {
+        relativeCandidates.append(
+            currentDirectory
+                .appendingPathComponent("openclaw", isDirectory: true)
+                .standardizedFileURL
+        )
+        relativeCandidates.append(
+            currentDirectory
+                .appendingPathComponent("..", isDirectory: true)
+                .appendingPathComponent("..", isDirectory: true)
+                .appendingPathComponent("openclaw", isDirectory: true)
+                .standardizedFileURL
+        )
+        relativeCandidates.append(
+            currentDirectory
+                .appendingPathComponent("..", isDirectory: true)
+                .appendingPathComponent("..", isDirectory: true)
+                .appendingPathComponent("Vendor", isDirectory: true)
+                .appendingPathComponent("openclaw", isDirectory: true)
+                .standardizedFileURL
+        )
+    }
 
-    for candidate in relativeCandidates + absoluteCandidates {
+    let userRuntimeCandidate = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library", isDirectory: true)
+        .appendingPathComponent("Application Support", isDirectory: true)
+        .appendingPathComponent("GraculaExample", isDirectory: true)
+        .appendingPathComponent("openclaw", isDirectory: true)
+
+    for candidate in relativeCandidates + [userRuntimeCandidate] {
         if fileManager.fileExists(atPath: candidate.path) {
             return candidate
         }
     }
 
-    return absoluteCandidates.first ?? currentDirectory
+    return userRuntimeCandidate
+}
+
+private func resolveNodeExecutableURL() -> URL {
+    let fileManager = FileManager.default
+    let env = ProcessInfo.processInfo.environment
+    if let override = env["GRACULA_NODE_EXECUTABLE"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !override.isEmpty {
+        let url = URL(filePath: override)
+        if fileManager.isExecutableFile(atPath: url.path) {
+            return url
+        }
+    }
+
+    let candidates = [
+        "/opt/homebrew/bin/node",
+        "/usr/local/bin/node",
+        "/usr/bin/node"
+    ]
+    for candidate in candidates {
+        let url = URL(filePath: candidate)
+        if fileManager.isExecutableFile(atPath: url.path) {
+            return url
+        }
+    }
+    return URL(filePath: candidates.first ?? "/usr/bin/node")
+}
+
+private struct PackageManagerCommand {
+    let executableURL: URL
+    let displayName: String
+    let installArguments: [String]
+    let buildArguments: [String]
+}
+
+private func resolvePackageManagerCommand() -> PackageManagerCommand? {
+    let fileManager = FileManager.default
+    let env = ProcessInfo.processInfo.environment
+    if let override = env["GRACULA_PNPM_EXECUTABLE"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !override.isEmpty {
+        let url = URL(filePath: override)
+        if fileManager.isExecutableFile(atPath: url.path) {
+            return PackageManagerCommand(
+                executableURL: url,
+                displayName: url.lastPathComponent,
+                installArguments: ["install", "--frozen-lockfile"],
+                buildArguments: ["build"]
+            )
+        }
+    }
+
+    let pnpmCandidates = [
+        "/opt/homebrew/bin/pnpm",
+        "/usr/local/bin/pnpm",
+        "/usr/bin/pnpm"
+    ]
+    for candidate in pnpmCandidates {
+        let url = URL(filePath: candidate)
+        if fileManager.isExecutableFile(atPath: url.path) {
+            return PackageManagerCommand(
+                executableURL: url,
+                displayName: "pnpm",
+                installArguments: ["install", "--frozen-lockfile"],
+                buildArguments: ["build"]
+            )
+        }
+    }
+
+    let corepackCandidates = [
+        "/opt/homebrew/bin/corepack",
+        "/usr/local/bin/corepack",
+        "/usr/bin/corepack"
+    ]
+    for candidate in corepackCandidates {
+        let url = URL(filePath: candidate)
+        if fileManager.isExecutableFile(atPath: url.path) {
+            return PackageManagerCommand(
+                executableURL: url,
+                displayName: "corepack pnpm",
+                installArguments: ["pnpm", "install", "--frozen-lockfile"],
+                buildArguments: ["pnpm", "build"]
+            )
+        }
+    }
+
+    return nil
 }
 
 private final class ProcessOutputBuffer: @unchecked Sendable {

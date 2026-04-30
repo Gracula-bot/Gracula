@@ -173,6 +173,7 @@ struct BrainSettingsSection: View {
     @State private var selectedPreset: BrainPreset = .googleGeminiPro
     @State private var customModelRef = ""
     @State private var googleApiKey = ""
+    @State private var openRouterApiKey = ""
     @State private var kiloCodeApiKey = ""
     @State private var isSyncing = false
 
@@ -225,6 +226,23 @@ struct BrainSettingsSection: View {
                     )
                 }
 
+            SecureField("OpenRouter API key", text: $openRouterApiKey)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .onChange(of: openRouterApiKey) { _, newValue in
+                    guard !isSyncing else { return }
+                    upsertEnvironmentSetting(
+                        key: "OPENROUTER_API_KEY",
+                        value: newValue,
+                        isSecret: true
+                    )
+                    upsertJSONSetting(
+                        key: "models.providers.openrouter.apiKey",
+                        value: newValue,
+                        isSecret: true
+                    )
+                }
+
             SecureField("KiloCode API key", text: $kiloCodeApiKey)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(.caption, design: .monospaced))
@@ -268,6 +286,9 @@ struct BrainSettingsSection: View {
             customModelRef = currentModel
         }
         googleApiKey = value(for: "models.providers.google.apiKey") ?? ""
+        openRouterApiKey = environmentValue(for: "OPENROUTER_API_KEY")
+            ?? value(for: "models.providers.openrouter.apiKey")
+            ?? ""
         kiloCodeApiKey = environmentValue(for: "KILOCODE_API_KEY")
             ?? value(for: "models.providers.kilocode.apiKey")
             ?? ""
@@ -407,6 +428,7 @@ struct BrainSettingsSection: View {
     private func ensureProviderDefaults() {
         ensureGoogleProviderDefaults()
         ensureKilocodeProviderDefaults()
+        ensureOpenRouterProviderDefaults()
     }
 
     private func clearModelFallbacks() {
@@ -453,6 +475,26 @@ struct BrainSettingsSection: View {
         ensureJSONSetting(
             key: "\(providerPrefix).models",
             value: Self.kilocodeProviderModelsJSON,
+            isSecret: false,
+            kind: .array
+        )
+    }
+
+    private func ensureOpenRouterProviderDefaults() {
+        let providerPrefix = "models.providers.openrouter"
+        ensureJSONSetting(
+            key: "\(providerPrefix).baseUrl",
+            value: "https://openrouter.ai/api/v1",
+            isSecret: false
+        )
+        ensureJSONSetting(
+            key: "\(providerPrefix).api",
+            value: "openai-completions",
+            isSecret: false
+        )
+        ensureJSONSetting(
+            key: "\(providerPrefix).models",
+            value: Self.openRouterProviderModelsJSON,
             isSecret: false,
             kind: .array
         )
@@ -509,6 +551,26 @@ struct BrainSettingsSection: View {
             "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
             "contextWindow": 1000000,
             "maxTokens": 128000
+          }
+        ]
+        """
+    }
+
+    private static var openRouterProviderModelsJSON: String {
+        """
+        [
+          {
+            "id": "free",
+            "name": "OpenRouter Free",
+            "api": "openai-completions",
+            "reasoning": false,
+            "input": ["text"],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 128000,
+            "maxTokens": 8192,
+            "compat": {
+              "supportsTools": false
+            }
           }
         ]
         """
