@@ -90,7 +90,11 @@ struct OpenClawSettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            BrainSettingsSection(snapshot: snapshot, jsonEntries: $jsonEntries)
+            BrainSettingsSection(
+                snapshot: snapshot,
+                environmentEntries: $environmentEntries,
+                jsonEntries: $jsonEntries
+            )
 
             DisclosureGroup("Runtime", isExpanded: $isRuntimeExpanded) {
                 settingsRows(snapshot.runtimeRows)

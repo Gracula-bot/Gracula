@@ -15,7 +15,7 @@ final class OpenClawLocalController: ObservableObject {
     @Published private(set) var settingsSnapshot: OpenClawSettingsSnapshot
     @Published private(set) var settingsStatusText = "Settings loaded."
 
-    let repositoryDirectory = URL(filePath: "/Users/jazzblood/Documents/Gracula/openclaw", directoryHint: .isDirectory)
+    let repositoryDirectory = resolveOpenClawRepositoryDirectory()
     let configDirectory = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".openclaw", isDirectory: true)
     let workspaceDirectory = FileManager.default.homeDirectoryForCurrentUser
@@ -34,6 +34,9 @@ final class OpenClawLocalController: ObservableObject {
 
     init() {
         self.settingsSnapshot = Self.makeSettingsSnapshot()
+        if shouldResetCurrentSessionOnLaunch() {
+            resetChat()
+        }
     }
 
     var chatSessionLabel: String {
@@ -63,24 +66,42 @@ final class OpenClawLocalController: ObservableObject {
             let environment = try openClawEnvironment()
             settingsSnapshot = Self.makeSettingsSnapshot(environment: environment)
 
-            gatewayProcess = try launchProcess(
-                name: "gateway",
-                arguments: [
-                    repositoryDirectory.appendingPathComponent("dist/index.js").path,
-                    "gateway",
-                    "run",
-                    "--allow-unconfigured",
-                    "--bind",
-                    environment["OPENCLAW_GATEWAY_BIND"] ?? "loopback",
-                    "--port",
-                    environment["OPENCLAW_GATEWAY_PORT"] ?? gatewayPort
-                ],
-                environment: environment
-            )
-            isRunning = true
-            statusText = "Starting local OpenClaw..."
-            appendLog("Started OpenClaw gateway locally without Docker.")
-            appendLog("Gateway: http://\(gatewayHost):\(environment["OPENCLAW_GATEWAY_PORT"] ?? gatewayPort)/")
+            do {
+                gatewayProcess = try launchProcess(
+                    name: "gateway",
+                    arguments: [
+                        repositoryDirectory.appendingPathComponent("dist/index.js").path,
+                        "gateway",
+                        "run",
+                        "--allow-unconfigured",
+                        "--bind",
+                        environment["OPENCLAW_GATEWAY_BIND"] ?? "loopback",
+                        "--port",
+                        environment["OPENCLAW_GATEWAY_PORT"] ?? gatewayPort
+                    ],
+                    environment: environment
+                )
+                isRunning = true
+                statusText = "Starting local OpenClaw..."
+                appendLog("Started OpenClaw gateway locally without Docker.")
+                appendLog("Gateway: http://\(gatewayHost):\(environment["OPENCLAW_GATEWAY_PORT"] ?? gatewayPort)/")
+            } catch {
+                let launchErrorMessage = error.localizedDescription
+                let normalizedLaunchError = launchErrorMessage.lowercased()
+                let gatewayAlreadyRunning = normalizedLaunchError.contains("already running")
+                    || normalizedLaunchError.contains("port 18789 is already in use")
+                    || normalizedLaunchError.contains("lock timeout")
+
+                if gatewayAlreadyRunning {
+                    gatewayProcess = nil
+                    isRunning = true
+                    statusText = "Using existing OpenClaw gateway..."
+                    gatewayStatus = "existing"
+                    appendLog("OpenClaw gateway is already running outside the app; attaching to http://\(gatewayHost):\(environment["OPENCLAW_GATEWAY_PORT"] ?? gatewayPort)/")
+                } else {
+                    throw error
+                }
+            }
 
             if isEnabled(environment["OPENCLAW_ENABLE_STREAM_BRIDGE"]) {
                 do {
@@ -191,9 +212,19 @@ final class OpenClawLocalController: ObservableObject {
                 sessionID: testSessionID,
                 environment: environment
             )
+            if let status = response.status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+               status == "error" {
+                throw OpenClawLocalControllerError.agentFailed(
+                    response.summary?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    ?? "Selected model returned an error status."
+                )
+            }
             let reply = response.replyText.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !reply.isEmpty else {
                 throw OpenClawLocalControllerError.agentFailed("Selected model returned an empty reply.")
+            }
+            if reply.hasPrefix("LLM error:") {
+                throw OpenClawLocalControllerError.agentFailed(reply)
             }
             settingsStatusText = "Model test passed."
             appendChatMessage(.system("Model test passed: \(reply)"))
@@ -268,6 +299,10 @@ final class OpenClawLocalController: ObservableObject {
         }
 
         do {
+            if shouldResetChatSessionBeforeSending(message) {
+                appendLog("Resetting stale chat session before send.")
+                resetChat()
+            }
             isSendingChat = true
             chatStatusText = "Sending to OpenClaw..."
             appendChatMessage(.user(message))
@@ -281,6 +316,25 @@ final class OpenClawLocalController: ObservableObject {
             }
             let response = try await runAgentTurn(message: message, sessionID: chatSessionID)
             let reply = response.replyText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if looksLikeStaleAssistantReply(reply) {
+                appendLog("OpenClaw returned a stale reply; resetting chat and retrying once.")
+                resetChat()
+                appendChatMessage(.user(message))
+                let retryResponse = try await runAgentTurn(message: message, sessionID: chatSessionID)
+                let retryReply = retryResponse.replyText.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !retryReply.isEmpty, !looksLikeStaleAssistantReply(retryReply) else {
+                    let failure = "OpenClaw returned a stale reply for this turn."
+                    appendChatMessage(.error(failure))
+                    chatStatusText = "Chat failed."
+                    appendLog(failure)
+                    isSendingChat = false
+                    return nil
+                }
+                appendChatMessage(.assistant(retryReply))
+                chatStatusText = "Reply received."
+                isSendingChat = false
+                return retryReply
+            }
             if reply.isEmpty {
                 let failure = "OpenClaw returned an empty reply for this turn."
                 appendChatMessage(.error(failure))
@@ -302,13 +356,59 @@ final class OpenClawLocalController: ObservableObject {
         }
     }
 
+    private func shouldResetChatSessionBeforeSending(_ message: String) -> Bool {
+        guard let lastReply = latestAssistantReplyFromSession() else {
+            return false
+        }
+
+        let normalizedReply = normalizedCommandText(lastReply)
+        let staleReplyMarkers = [
+            "Жду инструкций",
+            "Waiting for your instructions",
+            "Continue where I left off",
+            "Continue where you left off",
+            "fill SOUL.md",
+            "SOUL.md",
+            "What rules should I apply",
+            "Can you clarify",
+        ]
+        return staleReplyMarkers
+            .map(normalizedCommandText)
+            .contains(where: { normalizedReply.contains($0) })
+    }
+
+    private func shouldResetCurrentSessionOnLaunch() -> Bool {
+        guard let lastReply = latestAssistantReplyFromSession() else {
+            return false
+        }
+
+        return looksLikeStaleAssistantReply(lastReply)
+    }
+
+    private func looksLikeStaleAssistantReply(_ reply: String) -> Bool {
+        let normalizedReply = normalizedCommandText(reply)
+        let staleReplyMarkers = [
+            "Жду инструкций",
+            "Waiting for your instructions",
+            "Continue where I left off",
+            "Continue where you left off",
+            "fill SOUL.md",
+            "SOUL.md",
+            "What rules should I apply",
+            "Can you clarify",
+        ]
+        return staleReplyMarkers
+            .map(normalizedCommandText)
+            .contains(where: { normalizedReply.contains($0) })
+    }
+
     private func validateRuntime() throws {
         let fileManager = FileManager.default
         guard fileManager.isExecutableFile(atPath: nodeURL.path) else {
             throw OpenClawLocalControllerError.missingRuntime("Node runtime not found at \(nodeURL.path).")
         }
         guard fileManager.fileExists(atPath: repositoryDirectory.appendingPathComponent("dist/index.js").path) else {
-            throw OpenClawLocalControllerError.missingRuntime("OpenClaw dist/index.js not found. Build /Users/jazzblood/Documents/Gracula/openclaw first.")
+            throw OpenClawLocalControllerError.missingRuntime("OpenClaw dist/index.js not found. Build the OpenClaw checkout referenced by the app first.")
         }
     }
 
@@ -349,6 +449,10 @@ final class OpenClawLocalController: ObservableObject {
 
         mergeEnvFile(repositoryDirectory.appendingPathComponent(".env"), into: &environment)
         mergeEnvFile(configDirectory.appendingPathComponent(".env"), into: &environment)
+        if (environment["KILOCODE_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty,
+           let token = resolveKiloCLIAccessToken() {
+            environment["KILOCODE_API_KEY"] = token
+        }
 
         environment["OPENCLAW_CONFIG_DIR"] = configDirectory.path
         environment["OPENCLAW_WORKSPACE_DIR"] = workspaceDirectory.path
@@ -740,10 +844,10 @@ final class OpenClawLocalController: ObservableObject {
         }
 
         if normalizedCommandText(message).contains("этот пост") || normalizedCommandText(message).contains("предыдущии пост") {
-            return latestPublishableAssistantMessage()
+            return nil
         }
 
-        return latestPublishableAssistantMessage()
+        return nil
     }
 
     private func inlineOnlyFansPostText(from message: String) -> String? {
@@ -817,25 +921,8 @@ final class OpenClawLocalController: ObservableObject {
         return nil
     }
 
-    private func latestPublishableAssistantMessage() -> String? {
-        for message in chatMessages.reversed() where message.role == .assistant {
-            if isPublishablePostText(message.text) && !looksLikeOnlyFansRefusal(message.text) {
-                return message.text
-            }
-        }
-        return nil
-    }
-
     private func isPublishablePostText(_ text: String) -> Bool {
         text.trimmingCharacters(in: .whitespacesAndNewlines).count >= 8
-    }
-
-    private func looksLikeOnlyFansRefusal(_ text: String) -> Bool {
-        let normalized = normalizedCommandText(text)
-        return normalized.contains("ты с ума сошел")
-            || normalized.contains("какои onlyfans")
-            || normalized.contains("я в другом жанре")
-            || normalized.contains("отказыва")
     }
 
     private func normalizedCommandText(_ text: String) -> String {
@@ -1006,7 +1093,7 @@ enum OpenClawSettingsApplyError: LocalizedError {
 }
 
 struct OpenClawSettingsReader {
-    private let repositoryDirectory = URL(filePath: "/Users/jazzblood/Documents/Gracula/openclaw", directoryHint: .isDirectory)
+    private let repositoryDirectory = resolveOpenClawRepositoryDirectory()
     private let configDirectory = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".openclaw", isDirectory: true)
     private let workspaceDirectory = FileManager.default.homeDirectoryForCurrentUser
@@ -1024,6 +1111,10 @@ struct OpenClawSettingsReader {
         Self.mergeEnvFile(configDirectory.appendingPathComponent(".env"), into: &mergedEnvironment)
         if let environment {
             mergedEnvironment.merge(environment) { _, newValue in newValue }
+        }
+        if (mergedEnvironment["KILOCODE_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty,
+           let token = resolveKiloCLIAccessToken() {
+            mergedEnvironment["KILOCODE_API_KEY"] = token
         }
         self.environment = mergedEnvironment
     }
@@ -1060,6 +1151,8 @@ struct OpenClawSettingsReader {
                     || key.hasPrefix("ANTHROPIC_")
                     || key.hasPrefix("GOOGLE_")
                     || key.hasPrefix("GEMINI_")
+                    || key.hasPrefix("OPENROUTER_")
+                    || key.hasPrefix("KILOCODE_")
                     || key.hasPrefix("TELEGRAM_")
                     || key.hasPrefix("ONLYFANS_")
                     || key == "BROWSER"
@@ -1102,7 +1195,7 @@ struct OpenClawSettingsReader {
     }
 
     static func writeEnvironment(entries: [OpenClawEditableSetting]) throws {
-        let url = URL(filePath: "/Users/jazzblood/Documents/Gracula/openclaw/.env")
+        let url = resolveOpenClawRepositoryDirectory().appendingPathComponent(".env")
         try writeEnvironment(entries: entries, to: url)
     }
 
@@ -1346,6 +1439,17 @@ struct OpenClawSettingsReader {
         }
     }
 
+    private func applyKiloCLIAuthFallback(to environment: inout [String: String]) {
+        guard let token = resolveKiloCLIAccessToken() else {
+            return
+        }
+        let current = environment["KILOCODE_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard current.isEmpty else {
+            return
+        }
+        environment["KILOCODE_API_KEY"] = token
+    }
+
     private func redacted(_ value: String, forKey key: String) -> String {
         guard !value.isEmpty else {
             return "Not set"
@@ -1476,6 +1580,134 @@ struct OpenClawSettingsReader {
             || relativePath.hasPrefix("AGENT")
             || relativePath.hasPrefix("TOOL")
     }
+}
+
+fileprivate func resolveKiloCLIAccessToken() -> String? {
+    let fileManager = FileManager.default
+    let authJSONURL = fileManager.homeDirectoryForCurrentUser
+        .appendingPathComponent(".local", isDirectory: true)
+        .appendingPathComponent("share", isDirectory: true)
+        .appendingPathComponent("kilo", isDirectory: true)
+        .appendingPathComponent("auth.json")
+    if let token = readKiloAuthJSONAccessToken(from: authJSONURL) {
+        return token
+    }
+
+    let databaseURL = fileManager.homeDirectoryForCurrentUser
+        .appendingPathComponent(".local", isDirectory: true)
+        .appendingPathComponent("share", isDirectory: true)
+        .appendingPathComponent("kilo", isDirectory: true)
+        .appendingPathComponent("kilo.db")
+
+    guard fileManager.fileExists(atPath: databaseURL.path) else {
+        return nil
+    }
+
+    let activeAccountQuery = """
+    SELECT access_token
+    FROM account
+    WHERE id = (
+      SELECT active_account_id
+      FROM account_state
+      WHERE active_account_id IS NOT NULL
+      LIMIT 1
+    )
+    LIMIT 1;
+    """
+    if let token = readSQLiteValue(databaseURL: databaseURL, query: activeAccountQuery) {
+        return token
+    }
+
+    let fallbackQuery = """
+    SELECT access_token
+    FROM account
+    ORDER BY time_updated DESC
+    LIMIT 1;
+    """
+    return readSQLiteValue(databaseURL: databaseURL, query: fallbackQuery)
+}
+
+fileprivate func readKiloAuthJSONAccessToken(from url: URL) -> String? {
+    guard let data = try? Data(contentsOf: url),
+          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        return nil
+    }
+
+    if let access = object["kilo"] as? [String: Any],
+       let token = access["access"] as? String {
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    if let token = object["access"] as? String {
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    return nil
+}
+
+fileprivate func readSQLiteValue(databaseURL: URL, query: String) -> String? {
+    let process = Process()
+    process.executableURL = URL(filePath: "/usr/bin/sqlite3")
+    process.arguments = [databaseURL.path, query]
+
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    process.standardError = Pipe()
+
+    do {
+        try process.run()
+    } catch {
+        return nil
+    }
+    process.waitUntilExit()
+
+    guard process.terminationStatus == 0 else {
+        return nil
+    }
+
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    let output = String(data: data, encoding: .utf8)?
+        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return output.isEmpty ? nil : output
+}
+
+private func resolveOpenClawRepositoryDirectory() -> URL {
+    let fileManager = FileManager.default
+    let env = ProcessInfo.processInfo.environment
+
+    if let override = env["GRACULA_OPENCLAW_REPOSITORY_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !override.isEmpty {
+        return URL(filePath: override, directoryHint: .isDirectory)
+    }
+
+    let currentDirectory = URL(filePath: fileManager.currentDirectoryPath, directoryHint: .isDirectory)
+    let relativeCandidates = [
+        currentDirectory
+            .appendingPathComponent("..", isDirectory: true)
+            .appendingPathComponent("..", isDirectory: true)
+            .appendingPathComponent("openclaw", isDirectory: true)
+            .standardizedFileURL,
+        currentDirectory
+            .appendingPathComponent("..", isDirectory: true)
+            .appendingPathComponent("..", isDirectory: true)
+            .appendingPathComponent("Vendor", isDirectory: true)
+            .appendingPathComponent("openclaw", isDirectory: true)
+            .standardizedFileURL,
+    ]
+    let absoluteCandidates = [
+        URL(filePath: "/Users/jazzblood/Documents/Gracula/openclaw", directoryHint: .isDirectory),
+        URL(filePath: "/Users/jazzblood/Documents/Gracula/Vendor/openclaw", directoryHint: .isDirectory),
+    ]
+
+    for candidate in relativeCandidates + absoluteCandidates {
+        if fileManager.fileExists(atPath: candidate.path) {
+            return candidate
+        }
+    }
+
+    return absoluteCandidates.first ?? currentDirectory
 }
 
 private final class ProcessOutputBuffer: @unchecked Sendable {

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct AudioRecorderExampleView: View {
@@ -54,6 +55,8 @@ private struct OpenClawMainTabView: View {
 
                 OpenClawChatView(controller: openClawController)
 
+                OpenClawLogView(controller: openClawController)
+
                 HStack {
                     Button {
                         Task {
@@ -77,6 +80,64 @@ private struct OpenClawMainTabView: View {
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+private struct OpenClawLogView: View {
+    @ObservedObject var controller: OpenClawLocalController
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Logs")
+                        .font(.headline)
+                    Text("Runtime and chat trace from the local OpenClaw process.")
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(controller.logLines.joined(separator: "\n"), forType: .string)
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+                .disabled(controller.logLines.isEmpty)
+            }
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 6) {
+                        if controller.logLines.isEmpty {
+                            Text("No logs yet.")
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, minHeight: 96, alignment: .center)
+                        } else {
+                            ForEach(Array(controller.logLines.enumerated()), id: \.offset) { index, line in
+                                Text(line)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .id(index)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 6)
+                }
+                .frame(minHeight: 160, maxHeight: 240)
+                .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
+                .onChange(of: controller.logLines.count) { _, _ in
+                    guard let lastIndex = controller.logLines.indices.last else {
+                        return
+                    }
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        proxy.scrollTo(lastIndex, anchor: .bottom)
+                    }
+                }
+            }
         }
     }
 }
@@ -107,21 +168,31 @@ struct GraculaSettingsTabView: View {
 
 struct BrainSettingsSection: View {
     let snapshot: OpenClawSettingsSnapshot
+    @Binding var environmentEntries: [OpenClawEditableSetting]
     @Binding var jsonEntries: [OpenClawEditableSetting]
-    @State private var selectedPreset: BrainPreset = .openaiGPT54
+    @State private var selectedPreset: BrainPreset = .googleGeminiPro
     @State private var customModelRef = ""
     @State private var googleApiKey = ""
     @State private var kiloCodeApiKey = ""
     @State private var isSyncing = false
 
-    init(snapshot: OpenClawSettingsSnapshot, jsonEntries: Binding<[OpenClawEditableSetting]>) {
+    init(
+        snapshot: OpenClawSettingsSnapshot,
+        environmentEntries: Binding<[OpenClawEditableSetting]>,
+        jsonEntries: Binding<[OpenClawEditableSetting]>
+    ) {
         self.snapshot = snapshot
+        self._environmentEntries = environmentEntries
         self._jsonEntries = jsonEntries
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             sectionHeader("Brain", systemImage: "sparkles")
+
+            Text("Active brain: \(activeBrainDisplayName)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             Picker("Suggested model", selection: $selectedPreset) {
                 ForEach(BrainPreset.allCases) { preset in
@@ -159,6 +230,11 @@ struct BrainSettingsSection: View {
                 .font(.system(.caption, design: .monospaced))
                 .onChange(of: kiloCodeApiKey) { _, newValue in
                     guard !isSyncing else { return }
+                    upsertEnvironmentSetting(
+                        key: "KILOCODE_API_KEY",
+                        value: newValue,
+                        isSecret: true
+                    )
                     upsertJSONSetting(
                         key: "models.providers.kilocode.apiKey",
                         value: newValue,
@@ -185,15 +261,28 @@ struct BrainSettingsSection: View {
 
         let currentModel = currentPrimaryModelRef()
         if currentModel.isEmpty {
-            selectedPreset = .openaiGPT54
+            selectedPreset = .googleGeminiPro
             customModelRef = selectedPreset.modelRef
         } else {
             selectedPreset = BrainPreset.allCases.first(where: { $0.modelRef == currentModel }) ?? .custom
             customModelRef = currentModel
         }
         googleApiKey = value(for: "models.providers.google.apiKey") ?? ""
-        kiloCodeApiKey = value(for: "models.providers.kilocode.apiKey") ?? ""
+        kiloCodeApiKey = environmentValue(for: "KILOCODE_API_KEY")
+            ?? value(for: "models.providers.kilocode.apiKey")
+            ?? ""
         ensureProviderDefaults()
+    }
+
+    private var activeBrainDisplayName: String {
+        let currentModel = currentPrimaryModelRef().trimmingCharacters(in: .whitespacesAndNewlines)
+        if currentModel.isEmpty {
+            return "Not set"
+        }
+        if let preset = BrainPreset.allCases.first(where: { $0.modelRef == currentModel }) {
+            return "\(preset.displayName) (\(currentModel))"
+        }
+        return currentModel
     }
 
     private func applyPreset(_ preset: BrainPreset) {
@@ -206,6 +295,7 @@ struct BrainSettingsSection: View {
             value: preset.modelRef,
             isSecret: false
         )
+        clearModelFallbacks()
     }
 
     private func applyCustomModelRef(_ value: String) {
@@ -221,6 +311,7 @@ struct BrainSettingsSection: View {
             value: trimmed,
             isSecret: false
         )
+        clearModelFallbacks()
     }
 
     private func currentPrimaryModelRef() -> String {
@@ -253,6 +344,11 @@ struct BrainSettingsSection: View {
             ?? snapshot.jsonEntries.first(where: { $0.key == key })?.value
     }
 
+    private func environmentValue(for key: String) -> String? {
+        environmentEntries.first(where: { $0.key == key })?.value
+            ?? snapshot.environmentEntries.first(where: { $0.key == key })?.value
+    }
+
     private func upsertJSONSetting(
         key: String,
         value: String,
@@ -281,9 +377,45 @@ struct BrainSettingsSection: View {
         )
     }
 
+    private func upsertEnvironmentSetting(
+        key: String,
+        value: String,
+        isSecret: Bool
+    ) {
+        if let index = environmentEntries.firstIndex(where: { $0.key == key }) {
+            environmentEntries[index] = OpenClawEditableSetting(
+                key: key,
+                source: .environment,
+                kind: .string,
+                isSecret: isSecret,
+                value: value
+            )
+            return
+        }
+
+        environmentEntries.append(
+            OpenClawEditableSetting(
+                key: key,
+                source: .environment,
+                kind: .string,
+                isSecret: isSecret,
+                value: value
+            )
+        )
+    }
+
     private func ensureProviderDefaults() {
         ensureGoogleProviderDefaults()
         ensureKilocodeProviderDefaults()
+    }
+
+    private func clearModelFallbacks() {
+        upsertJSONSetting(
+            key: "agents.defaults.model.fallbacks",
+            value: "[]",
+            isSecret: false,
+            kind: .array
+        )
     }
 
     private func ensureGoogleProviderDefaults() {
@@ -388,6 +520,7 @@ enum BrainPreset: String, CaseIterable, Identifiable {
     case openaiCodexGPT54 = "openai-codex/gpt-5.4"
     case anthropicOpus46 = "anthropic/claude-opus-4-6"
     case anthropicSonnet46 = "anthropic/claude-sonnet-4-6"
+    case kiloAutoFree = "openrouter/free"
     case kilocodeAuto = "kilocode/kilo/auto"
     case googleGeminiPro = "google/gemini-3.1-pro-preview"
     case googleGeminiFlash = "google/gemini-3-flash-preview"
@@ -405,6 +538,8 @@ enum BrainPreset: String, CaseIterable, Identifiable {
             return "Anthropic Claude Opus 4.6"
         case .anthropicSonnet46:
             return "Anthropic Claude Sonnet 4.6"
+        case .kiloAutoFree:
+            return "Kilo Auto Free"
         case .kilocodeAuto:
             return "KiloCode Kilo Auto"
         case .googleGeminiPro:
@@ -420,6 +555,8 @@ enum BrainPreset: String, CaseIterable, Identifiable {
         switch self {
         case .custom:
             return ""
+        case .kiloAutoFree:
+            return "openrouter/free"
         case .kilocodeAuto:
             return "kilocode/kilo/auto"
         default:
