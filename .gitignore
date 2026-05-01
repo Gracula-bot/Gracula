@@ -8,6 +8,9 @@ xcuserdata/
 
 # OpenClaw workspace is versioned for Gracula persona/runtime snapshots.
 # Credentials and auth state must be removed before committing snapshots.
+.openclaw/tools/
+.openclaw/workspace/node_modules/
+.openclaw/workspace/venv/
 
 ## Obj-C/Swift specific
 *.hmap
