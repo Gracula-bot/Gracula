@@ -69,7 +69,7 @@ struct LocalSpeechRuntimeConfiguration: Sendable {
 
         guard let pythonURL = pythonCandidates.first(where: { fileManager.isExecutableFile(atPath: $0.path) }) else {
             throw FileSpeechTranscriberError.runtimeMissing(
-                "Python runtime not found. Expected `GRACULA_WHISPER_PYTHON` or `Examples/GraculaExample/.whisper-venv/bin/python` under the Gracula checkout."
+                "Python runtime not found. Expected `GRACULA_WHISPER_PYTHON`, `~/Library/Application Support/GraculaExample/PythonRuntime/bin/python`, or `Examples/GraculaExample/.whisper-venv/bin/python` under the Gracula checkout."
             )
         }
 

@@ -218,7 +218,7 @@ struct BrainSettingsSection: View {
                     applyCustomModelRef(newValue)
                 }
 
-            Text("Local Ollama runs on `http://127.0.0.1:11434` with `qwen3:14b`, no cloud API key required.")
+            Text("Local backends: Ollama at `http://127.0.0.1:11434` or MLX under Application Support.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -267,6 +267,7 @@ struct BrainSettingsSection: View {
             isSecret: false
         )
         clearModelFallbacks()
+        applyRuntimeDefaults(for: preset)
     }
 
     private func applyCustomModelRef(_ value: String) {
@@ -283,6 +284,20 @@ struct BrainSettingsSection: View {
             isSecret: false
         )
         clearModelFallbacks()
+        applyRuntimeDefaults(for: resolvedPreset)
+    }
+
+    private func applyRuntimeDefaults(for preset: BrainPreset) {
+        switch preset {
+        case .localQwen:
+            ensureOllamaProviderDefaults()
+        case .localQwenMLX:
+            break
+        case .custom:
+            if customModelRef.lowercased().hasPrefix("ollama/") {
+                ensureOllamaProviderDefaults()
+            }
+        }
     }
 
     private func currentPrimaryModelRef() -> String {
@@ -435,6 +450,18 @@ struct BrainSettingsSection: View {
         )
     }
 
+    private func ensureEnvironmentSetting(
+        key: String,
+        value settingValue: String,
+        isSecret: Bool
+    ) {
+        let current = environmentValue(for: key)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let current, !current.isEmpty {
+            return
+        }
+        upsertEnvironmentSetting(key: key, value: settingValue, isSecret: isSecret)
+    }
+
     private func ensureJSONSetting(
         key: String,
         value settingValue: String,
@@ -476,6 +503,7 @@ struct BrainSettingsSection: View {
 
 enum BrainPreset: String, CaseIterable, Identifiable {
     case localQwen = "ollama/qwen3:14b"
+    case localQwenMLX = "mlx/qwen3-14b-4bit"
     case custom
 
     var id: String { rawValue }
@@ -484,6 +512,8 @@ enum BrainPreset: String, CaseIterable, Identifiable {
         switch self {
         case .localQwen:
             return "Local Qwen3 14B"
+        case .localQwenMLX:
+            return "Local Qwen3 14B MLX 4-bit"
         case .custom:
             return "Custom"
         }

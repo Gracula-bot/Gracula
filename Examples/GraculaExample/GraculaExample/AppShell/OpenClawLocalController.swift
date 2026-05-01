@@ -29,15 +29,19 @@ final class OpenClawLocalController: ObservableObject {
     private let streamBridgePort = "7071"
     private let agentTurnTimeoutSeconds: TimeInterval = 180
     private let directModelTimeoutSeconds: TimeInterval = 120
+    private let directMLXTimeoutSeconds: TimeInterval = 240
     private let directVoiceTinyMaxTokens = 64
     private let directVoiceShortMaxTokens = 256
     private let directVoiceNormalMaxTokens = 700
     private let directMemoryFileLimit = 2
+    private let mlxRuntimeDirectory = resolveMLXRuntimeDirectory()
+    private let mlxModelsDirectory = resolveMLXModelsDirectory()
     private let onlyFansPoster = WorkspaceOpeningClient()
     private var chatSessionID = "gracula-local-chat"
     private var gatewayProcess: Process?
     private var streamBridgeProcess: Process?
     private var healthTask: Task<Void, Never>?
+    private var directModelPrewarmTask: Task<Void, Never>?
     private var consecutiveHealthFailures = 0
     private var startupTask: Task<Void, Never>?
     private var directPersonaContextCache: String?
@@ -60,6 +64,7 @@ final class OpenClawLocalController: ObservableObject {
     }
 
     deinit {
+        directModelPrewarmTask?.cancel()
         gatewayProcess?.terminate()
         streamBridgeProcess?.terminate()
         healthTask?.cancel()
@@ -90,6 +95,7 @@ final class OpenClawLocalController: ObservableObject {
             settingsSnapshot = Self.makeSettingsSnapshot(environment: environment)
             let primaryModelRef = currentPrimaryModelRef()
             if shouldUseDirectCompletion(for: primaryModelRef) {
+                try validateDirectModelRuntime(for: primaryModelRef)
                 gatewayProcess = nil
                 streamBridgeProcess = nil
                 isRunning = true
@@ -98,6 +104,7 @@ final class OpenClawLocalController: ObservableObject {
                 streamBridgeStatus = "disabled"
                 appendLog("Direct model mode active; skipping OpenClaw gateway startup.")
                 appendLog("Selected model uses direct completion: \(primaryModelRef)")
+                scheduleDirectModelPrewarm(modelRef: primaryModelRef)
                 return
             }
 
@@ -183,6 +190,8 @@ final class OpenClawLocalController: ObservableObject {
     }
 
     func stop() {
+        directModelPrewarmTask?.cancel()
+        directModelPrewarmTask = nil
         healthTask?.cancel()
         healthTask = nil
         startupTask?.cancel()
@@ -269,12 +278,15 @@ final class OpenClawLocalController: ObservableObject {
             )
             let primaryModelRef = currentPrimaryModelRef(in: jsonEntries)
             let reply: String
+            let metrics: DirectModelMetrics?
             if shouldUseDirectModelSmokeTest(for: primaryModelRef) {
                 appendLog("Selected model uses a tool-free probe; running direct completion smoke test.")
-                reply = try await runDirectModelSmokeTest(
+                let result = try await runDirectModelSmokeTest(
                     modelRef: primaryModelRef,
                     environment: environment
                 )
+                reply = result.text
+                metrics = result.metrics
             } else {
                 let testSessionID = "gracula-model-test-\(UUID().uuidString)"
                 let response = try await runAgentTurn(
@@ -297,10 +309,16 @@ final class OpenClawLocalController: ObservableObject {
                     throw OpenClawLocalControllerError.agentFailed(agentReply)
                 }
                 reply = agentReply
+                metrics = nil
             }
-            settingsStatusText = "Model test passed."
-            appendChatMessage(.system("Model test passed: \(reply)"))
+            let metricSummary = metrics?.statusSummary
+            settingsStatusText = metricSummary.map { "Model test passed. \($0)" } ?? "Model test passed."
+            let transcriptSummary = metricSummary.map { "Model test passed: \(reply) [\($0)]" } ?? "Model test passed: \(reply)"
+            appendChatMessage(.system(transcriptSummary))
             appendLog("Selected model test passed with reply: \(reply)")
+            if let metrics {
+                appendLog("Selected model performance: \(metrics.logSummary)")
+            }
         } catch {
             let message = "Model test failed: \(error.localizedDescription)"
             settingsStatusText = message
@@ -334,6 +352,38 @@ final class OpenClawLocalController: ObservableObject {
         }
         try fileManager.copyItem(at: sourceAuthStore, to: destinationAuthStore)
         appendLog("Copied auth-profiles.json into the model test sandbox.")
+    }
+
+    private func scheduleDirectModelPrewarm(modelRef: String) {
+        directModelPrewarmTask?.cancel()
+        directModelPrewarmTask = Task { [weak self] in
+            guard let self else {
+                return
+            }
+            await self.prewarmDirectModelIfNeeded(modelRef: modelRef)
+        }
+    }
+
+    private func prewarmDirectModelIfNeeded(modelRef: String) async {
+        let trimmedRef = modelRef.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedRef.isEmpty, shouldUseDirectCompletion(for: trimmedRef) else {
+            return
+        }
+
+        appendLog("Prewarming selected direct model on launch: \(trimmedRef)")
+        let startedAt = PerformanceLog.checkpoint()
+        do {
+            let result = try await runDirectModelSmokeTest(
+                modelRef: trimmedRef,
+                environment: try openClawEnvironment()
+            )
+            let metricSummary = result.metrics?.statusSummary ?? "no metrics"
+            appendLog("[latency] Direct model prewarm completed in \(PerformanceLog.elapsedDescription(since: startedAt)); model=\(trimmedRef); \(metricSummary)")
+        } catch is CancellationError {
+            appendLog("Direct model prewarm cancelled.")
+        } catch {
+            appendLog("Direct model prewarm failed: \(error.localizedDescription)")
+        }
     }
 
     func applySettings(
@@ -396,19 +446,24 @@ final class OpenClawLocalController: ObservableObject {
                 appendLog("[latency] Direct model request starting; model=\(primaryModelRef)")
                 let assistantMessageID = appendChatMessage(.assistant("…"))
                 chatStatusText = "Waiting for local model..."
-                let reply = try await runDirectModelChat(
+                let result = try await runDirectModelChat(
                     modelRef: primaryModelRef,
                     prompt: directChatPrompt(for: message),
                     maxTokens: directMaxTokens(for: message),
                     assistantMessageID: assistantMessageID
                 )
+                let reply = result.text
                 guard !reply.isEmpty else {
                     throw OpenClawLocalControllerError.agentFailed("Selected model returned an empty reply.")
                 }
+                updateChatMessage(id: assistantMessageID, text: reply)
                 appendLog("[latency] Direct model answer returned after \(PerformanceLog.elapsedDescription(since: turnStartedAt)); replyCharacters=\(reply.count)")
                 appendLog("[latency] Assistant reply appended to UI after \(PerformanceLog.elapsedDescription(since: turnStartedAt)); replyCharacters=\(reply.count)")
                 chatStatusText = "Reply received."
                 appendLog("Direct model reply received. characters=\(reply.count)")
+                if let metrics = result.metrics {
+                    appendLog("Direct model performance: \(metrics.logSummary)")
+                }
                 isSendingChat = false
                 return reply
             }
@@ -773,10 +828,28 @@ final class OpenClawLocalController: ObservableObject {
         environment: [String: String],
         updateRunningStateOnExit: Bool = true
     ) throws -> Process {
+        try launchObservedProcess(
+            name: name,
+            executableURL: nodeURL,
+            currentDirectoryURL: repositoryDirectory,
+            arguments: arguments,
+            environment: environment,
+            updateRunningStateOnExit: updateRunningStateOnExit
+        )
+    }
+
+    private func launchObservedProcess(
+        name: String,
+        executableURL: URL,
+        currentDirectoryURL: URL,
+        arguments: [String],
+        environment: [String: String],
+        updateRunningStateOnExit: Bool = true
+    ) throws -> Process {
         let process = Process()
-        process.executableURL = nodeURL
+        process.executableURL = executableURL
         process.arguments = arguments
-        process.currentDirectoryURL = repositoryDirectory
+        process.currentDirectoryURL = currentDirectoryURL
         process.environment = environment
 
         let pipe = Pipe()
@@ -905,7 +978,7 @@ final class OpenClawLocalController: ObservableObject {
     private func runDirectModelSmokeTest(
         modelRef: String,
         environment: [String: String]
-    ) async throws -> String {
+    ) async throws -> DirectModelChatResult {
         return try await runDirectModelChat(
             modelRef: modelRef,
             prompt: "Reply with exactly: model test ok",
@@ -920,7 +993,7 @@ final class OpenClawLocalController: ObservableObject {
         environment: [String: String]? = nil,
         maxTokens: Int = 256,
         assistantMessageID: UUID? = nil
-    ) async throws -> String {
+    ) async throws -> DirectModelChatResult {
         let startedAt = PerformanceLog.checkpoint()
         let trimmedRef = modelRef.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedRef.isEmpty else {
@@ -946,7 +1019,14 @@ final class OpenClawLocalController: ObservableObject {
                 assistantMessageID: assistantMessageID
             )
         }
-
+        if providerName == "mlx" {
+            return try await runDirectMLXChat(
+                modelID: providerModelID,
+                prompt: prompt,
+                maxTokens: effectiveMaxTokens,
+                startedAt: startedAt
+            )
+        }
         let activeEnvironment: [String: String]
         if let environment {
             activeEnvironment = environment
@@ -1087,11 +1167,11 @@ final class OpenClawLocalController: ObservableObject {
                 throw OpenClawLocalControllerError.agentFailed("Selected model returned an empty reply.")
             }
             appendLog("[latency] Direct model JSON decoded in \(PerformanceLog.elapsedDescription(since: startedAt)); replyCharacters=\(reply.count)")
-            return reply
+            return DirectModelChatResult(text: reply, metrics: nil)
         }
 
         appendLog("[latency] Direct model raw stdout returned in \(PerformanceLog.elapsedDescription(since: startedAt)); characters=\(stdout.count)")
-        return stdout
+        return DirectModelChatResult(text: stdout, metrics: nil)
     }
 
     private func runDirectOllamaChat(
@@ -1100,7 +1180,7 @@ final class OpenClawLocalController: ObservableObject {
         maxTokens: Int,
         startedAt: UInt64,
         assistantMessageID: UUID?
-    ) async throws -> String {
+    ) async throws -> DirectModelChatResult {
         let numCtx = maxTokens <= directVoiceTinyMaxTokens ? 2_048 : 4_096
         appendLog(
             "[latency] Direct Ollama request prepared; model=\(modelID), promptCharacters=\(prompt.count), maxTokens=\(maxTokens), numCtx=\(numCtx), think=false"
@@ -1149,6 +1229,7 @@ final class OpenClawLocalController: ObservableObject {
         var rawLines: [String] = []
         var sawFirstToken = false
         var receivedDone = false
+        var finalMetrics: DirectModelMetrics?
 
         for try await rawLine in bytes.lines {
             let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1182,6 +1263,20 @@ final class OpenClawLocalController: ObservableObject {
             }
 
             if let done = decoded["done"] as? Bool, done {
+                finalMetrics = DirectModelMetrics(
+                    providerLabel: "ollama",
+                    promptTokens: decoded["prompt_eval_count"] as? Int,
+                    promptTokensPerSecond: Self.tokensPerSecond(
+                        tokens: decoded["prompt_eval_count"] as? Int,
+                        durationNanoseconds: decoded["prompt_eval_duration"] as? NSNumber
+                    ),
+                    generationTokens: decoded["eval_count"] as? Int,
+                    generationTokensPerSecond: Self.tokensPerSecond(
+                        tokens: decoded["eval_count"] as? Int,
+                        durationNanoseconds: decoded["eval_duration"] as? NSNumber
+                    ),
+                    peakMemoryGB: nil
+                )
                 receivedDone = true
                 break
             }
@@ -1203,7 +1298,123 @@ final class OpenClawLocalController: ObservableObject {
             appendLog("[latency] Direct Ollama stream ended without explicit done flag.")
         }
         appendLog("[latency] Direct Ollama answer decoded after \(PerformanceLog.elapsedDescription(since: startedAt)); replyCharacters=\(reply.count)")
-        return reply
+        return DirectModelChatResult(text: reply, metrics: finalMetrics)
+    }
+
+    private func runDirectMLXChat(
+        modelID: String,
+        prompt: String,
+        maxTokens: Int,
+        startedAt: UInt64
+    ) async throws -> DirectModelChatResult {
+        let pythonURL = try mlxPythonExecutableURL()
+        let modelDirectory = try mlxModelDirectory(for: modelID)
+        let promptFileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gracula-mlx-prompt-\(UUID().uuidString).txt")
+        try prompt.write(to: promptFileURL, atomically: true, encoding: .utf8)
+        defer {
+            try? FileManager.default.removeItem(at: promptFileURL)
+        }
+
+        let script = """
+        import json
+        import os
+        from mlx_lm import load, stream_generate
+        from mlx_lm.sample_utils import make_sampler
+
+        model_path = os.environ["GRACULA_MLX_MODEL_PATH"]
+        prompt_file = os.environ["GRACULA_MLX_PROMPT_FILE"]
+        max_tokens = int(os.environ.get("GRACULA_MLX_MAX_TOKENS", "256"))
+        temperature = float(os.environ.get("GRACULA_MLX_TEMPERATURE", "0"))
+        top_p = float(os.environ.get("GRACULA_MLX_TOP_P", "0"))
+
+        with open(prompt_file, "r", encoding="utf-8") as handle:
+            user_prompt = handle.read()
+
+        model, tokenizer = load(model_path)
+        if getattr(tokenizer, "chat_template", None) is not None:
+            rendered_prompt = tokenizer.apply_chat_template(
+                [{"role": "user", "content": user_prompt}],
+                add_generation_prompt=True,
+                enable_thinking=False,
+            )
+        else:
+            rendered_prompt = user_prompt
+
+        sampler = make_sampler(temp=temperature, top_p=top_p)
+        chunks = []
+        final_metrics = None
+        for response in stream_generate(
+            model,
+            tokenizer,
+            rendered_prompt,
+            max_tokens=max_tokens,
+            sampler=sampler,
+        ):
+            if response.text:
+                chunks.append(response.text)
+            final_metrics = {
+                "prompt_tokens": response.prompt_tokens,
+                "prompt_tps": response.prompt_tps,
+                "generation_tokens": response.generation_tokens,
+                "generation_tps": response.generation_tps,
+                "peak_memory": response.peak_memory,
+                "finish_reason": response.finish_reason,
+            }
+
+        text = "".join(chunks).strip()
+        if not text:
+            raise RuntimeError("MLX returned an empty reply.")
+
+        print(json.dumps({"text": text, "metrics": final_metrics}, ensure_ascii=False))
+        """
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["GRACULA_MLX_MODEL_PATH"] = modelDirectory.path
+        environment["GRACULA_MLX_PROMPT_FILE"] = promptFileURL.path
+        environment["GRACULA_MLX_MAX_TOKENS"] = String(maxTokens)
+        environment["GRACULA_MLX_TEMPERATURE"] = maxTokens <= 64 ? "0" : "0.35"
+        environment["GRACULA_MLX_TOP_P"] = maxTokens <= 64 ? "0" : "0.85"
+
+        appendLog(
+            "[latency] Direct MLX request prepared; modelPath=\(modelDirectory.lastPathComponent), promptCharacters=\(prompt.count), maxTokens=\(maxTokens)"
+        )
+        let result = try await runExternalProcess(
+            executableURL: pythonURL,
+            arguments: ["-c", script],
+            currentDirectoryURL: repositoryDirectory,
+            environment: environment,
+            timeoutSeconds: directMLXTimeoutSeconds
+        )
+
+        guard result.exitCode == 0 else {
+            throw OpenClawLocalControllerError.agentFailed(
+                result.stderr.isEmpty ? result.stdout : result.stderr
+            )
+        }
+
+        let stdout = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let decoded = try? JSONDecoder().decode(DirectModelScriptResponse.self, from: Data(stdout.utf8)) else {
+            throw OpenClawLocalControllerError.agentFailed("MLX returned an invalid JSON response.")
+        }
+
+        let reply = decoded.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !reply.isEmpty else {
+            throw OpenClawLocalControllerError.agentFailed("MLX returned an empty reply.")
+        }
+
+        let metrics = decoded.metrics.map {
+            DirectModelMetrics(
+                providerLabel: "mlx",
+                promptTokens: $0.promptTokens,
+                promptTokensPerSecond: $0.promptTokensPerSecond,
+                generationTokens: $0.generationTokens,
+                generationTokensPerSecond: $0.generationTokensPerSecond,
+                peakMemoryGB: $0.peakMemoryGB
+            )
+        }
+        appendLog("[latency] Direct MLX answer decoded after \(PerformanceLog.elapsedDescription(since: startedAt)); replyCharacters=\(reply.count)")
+        return DirectModelChatResult(text: reply, metrics: metrics)
     }
 
     private func directModelSmokeTestAPIKey(from environment: [String: String], modelRef: String) -> String {
@@ -1236,6 +1447,7 @@ final class OpenClawLocalController: ObservableObject {
     private func shouldUseDirectModelSmokeTest(for modelRef: String) -> Bool {
         let normalized = modelRef.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return normalized.hasPrefix("ollama/")
+            || normalized.hasPrefix("mlx/")
             || normalized == "google/gemini-3-flash-preview"
             || normalized == "openrouter/free"
     }
@@ -1262,6 +1474,48 @@ final class OpenClawLocalController: ObservableObject {
 
     private func currentPrimaryModelRef() -> String {
         currentPrimaryModelRef(in: settingsSnapshot.jsonEntries)
+    }
+
+    private func validateDirectModelRuntime(for modelRef: String) throws {
+        let normalized = modelRef.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized.hasPrefix("mlx/") {
+            _ = try mlxPythonExecutableURL()
+            _ = try mlxModelDirectory(for: String(modelRef.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: true).last ?? ""))
+        }
+    }
+
+    private func mlxPythonExecutableURL() throws -> URL {
+        let url = mlxRuntimeDirectory
+            .appendingPathComponent(".venv", isDirectory: true)
+            .appendingPathComponent("bin", isDirectory: true)
+            .appendingPathComponent("python")
+        guard FileManager.default.isExecutableFile(atPath: url.path) else {
+            throw OpenClawLocalControllerError.missingRuntime(
+                "MLX runtime not found at \(url.path). Install it into Application Support before selecting the MLX backend."
+            )
+        }
+        return url
+    }
+
+    private func mlxModelDirectory(for modelID: String) throws -> URL {
+        let normalized = modelID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let directoryName: String
+        switch normalized {
+        case "qwen3-14b-4bit":
+            directoryName = "Qwen3-14B-4bit"
+        default:
+            throw OpenClawLocalControllerError.missingRuntime(
+                "Unsupported MLX model id: \(modelID)."
+            )
+        }
+
+        let url = mlxModelsDirectory.appendingPathComponent(directoryName, isDirectory: true)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw OpenClawLocalControllerError.missingRuntime(
+                "MLX model files not found at \(url.path). Download the model before selecting the MLX backend."
+            )
+        }
+        return url
     }
 
     private func directChatPrompt(for message: String) -> String {
@@ -1403,11 +1657,27 @@ final class OpenClawLocalController: ObservableObject {
         environment: [String: String],
         timeoutSeconds: TimeInterval? = nil
     ) async throws -> ProcessOutput {
+        try await runExternalProcess(
+            executableURL: nodeURL,
+            arguments: arguments,
+            currentDirectoryURL: repositoryDirectory,
+            environment: environment,
+            timeoutSeconds: timeoutSeconds
+        )
+    }
+
+    private func runExternalProcess(
+        executableURL: URL,
+        arguments: [String],
+        currentDirectoryURL: URL,
+        environment: [String: String],
+        timeoutSeconds: TimeInterval? = nil
+    ) async throws -> ProcessOutput {
         try await withCheckedThrowingContinuation { continuation in
             let process = Process()
-            process.executableURL = nodeURL
+            process.executableURL = executableURL
             process.arguments = arguments
-            process.currentDirectoryURL = repositoryDirectory
+            process.currentDirectoryURL = currentDirectoryURL
             process.environment = environment
 
             let stdoutPipe = Pipe()
@@ -1762,7 +2032,9 @@ final class OpenClawLocalController: ObservableObject {
         guard let index = chatMessages.firstIndex(where: { $0.id == id }) else {
             return
         }
-        chatMessages[index].text = text
+        var updatedMessages = chatMessages
+        updatedMessages[index].text = text
+        chatMessages = updatedMessages
     }
 
     private func removePendingAssistantPlaceholder() {
@@ -1784,6 +2056,54 @@ final class OpenClawLocalController: ObservableObject {
         } catch {
             return "offline"
         }
+    }
+
+    private nonisolated func isTCPPortOpen(host: String, port: UInt16) async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                let socketDescriptor = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+                guard socketDescriptor >= 0 else {
+                    continuation.resume(returning: false)
+                    return
+                }
+                defer { Darwin.close(socketDescriptor) }
+
+                var address = sockaddr_in()
+                address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+                address.sin_family = sa_family_t(AF_INET)
+                address.sin_port = port.bigEndian
+
+                let result = host.withCString { cString in
+                    inet_pton(AF_INET, cString, &address.sin_addr)
+                }
+                guard result == 1 else {
+                    continuation.resume(returning: false)
+                    return
+                }
+
+                var socketAddress = sockaddr()
+                memcpy(&socketAddress, &address, MemoryLayout<sockaddr_in>.size)
+                let connectResult = withUnsafePointer(to: &socketAddress) { pointer in
+                    pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { reboundPointer in
+                        Darwin.connect(
+                            socketDescriptor,
+                            reboundPointer,
+                            socklen_t(MemoryLayout<sockaddr_in>.size)
+                        )
+                    }
+                }
+                continuation.resume(returning: connectResult == 0)
+            }
+        }
+    }
+
+    private static func tokensPerSecond(tokens: Int?, durationNanoseconds: NSNumber?) -> Double? {
+        guard let tokens,
+              let durationNanoseconds,
+              durationNanoseconds.doubleValue > 0 else {
+            return nil
+        }
+        return Double(tokens) / (durationNanoseconds.doubleValue / 1_000_000_000)
     }
 
     private func appendLog(_ text: String, prefix: String? = nil) {
@@ -1954,6 +2274,7 @@ struct OpenClawSettingsReader {
         let environmentKeys = environment.keys
             .filter { key in
                 key.hasPrefix("OPENCLAW_")
+                    || key.hasPrefix("GRACULA_")
                     || key.hasPrefix("OPENAI_")
                     || key.hasPrefix("ANTHROPIC_")
                     || key.hasPrefix("GOOGLE_")
@@ -2600,6 +2921,22 @@ private func resolveOpenClawRepositoryDirectory() -> URL {
     return userRuntimeCandidate
 }
 
+private func resolveMLXRuntimeDirectory() -> URL {
+    FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library", isDirectory: true)
+        .appendingPathComponent("Application Support", isDirectory: true)
+        .appendingPathComponent("GraculaExample", isDirectory: true)
+        .appendingPathComponent("MLXRuntime", isDirectory: true)
+}
+
+private func resolveMLXModelsDirectory() -> URL {
+    FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library", isDirectory: true)
+        .appendingPathComponent("Application Support", isDirectory: true)
+        .appendingPathComponent("GraculaExample", isDirectory: true)
+        .appendingPathComponent("MLXModels", isDirectory: true)
+}
+
 private func resolveNodeExecutableURL() -> URL {
     let fileManager = FileManager.default
     let env = ProcessInfo.processInfo.environment
@@ -2725,6 +3062,66 @@ private final class ProcessCompletionState: @unchecked Sendable {
 
         didComplete = true
         return true
+    }
+}
+
+private struct DirectModelChatResult {
+    let text: String
+    let metrics: DirectModelMetrics?
+}
+
+private struct DirectModelMetrics {
+    let providerLabel: String
+    let promptTokens: Int?
+    let promptTokensPerSecond: Double?
+    let generationTokens: Int?
+    let generationTokensPerSecond: Double?
+    let peakMemoryGB: Double?
+
+    var statusSummary: String {
+        var parts: [String] = []
+        if let generationTokensPerSecond {
+            parts.append("\(Self.format(generationTokensPerSecond)) tok/s")
+        }
+        if let generationTokens {
+            parts.append("\(generationTokens) generated")
+        }
+        if let promptTokensPerSecond {
+            parts.append("prompt \(Self.format(promptTokensPerSecond)) tok/s")
+        }
+        if let peakMemoryGB {
+            parts.append("peak \(Self.format(peakMemoryGB)) GB")
+        }
+        return parts.isEmpty ? "no throughput metrics reported" : parts.joined(separator: ", ")
+    }
+
+    var logSummary: String {
+        "\(providerLabel): \(statusSummary)"
+    }
+
+    private static func format(_ value: Double) -> String {
+        String(format: "%.1f", value)
+    }
+}
+
+private struct DirectModelScriptResponse: Decodable {
+    let text: String
+    let metrics: DirectModelScriptMetrics?
+}
+
+private struct DirectModelScriptMetrics: Decodable {
+    let promptTokens: Int?
+    let promptTokensPerSecond: Double?
+    let generationTokens: Int?
+    let generationTokensPerSecond: Double?
+    let peakMemoryGB: Double?
+
+    private enum CodingKeys: String, CodingKey {
+        case promptTokens = "prompt_tokens"
+        case promptTokensPerSecond = "prompt_tps"
+        case generationTokens = "generation_tokens"
+        case generationTokensPerSecond = "generation_tps"
+        case peakMemoryGB = "peak_memory"
     }
 }
 

@@ -12,6 +12,11 @@ Choose an input source, then tap `Record Message` once to start recording. Tap t
 
 The app keeps speech recognition and speech synthesis behind a config file so you can swap backends without changing the UI wiring. The default recognizer now uses a local Whisper worker, Parakeet stays available as a config option, and recognized text can be spoken back through the macOS system voice.
 
+The OpenClaw model picker now supports two local model paths:
+
+- Ollama via `ollama/qwen3:14b` at `http://127.0.0.1:11434`
+- MLX via `mlx/qwen3-14b-4bit`, using a dedicated runtime at `~/Library/Application Support/GraculaExample/MLXRuntime` and model files at `~/Library/Application Support/GraculaExample/MLXModels/Qwen3-14B-4bit`
+
 The config file lives at:
 
 ```bash
@@ -64,12 +69,15 @@ What changed in this refactor:
 The local runtime currently expects:
 
 ```bash
+${HOME}/Library/Application Support/GraculaExample/PythonRuntime/bin/python
 Examples/GraculaExample/.whisper-venv/bin/python
 $HOME/Library/Application Support/GraculaExample/FasterWhisperModels
 $HOME/Library/Application Support/GraculaExample/faster-whisper-worker.py
 $HOME/Library/Application Support/GraculaExample/ParakeetModels
 $HOME/Library/Application Support/GraculaExample/parakeet-worker.py
 ```
+
+The app checks the managed Application Support runtime before falling back to the repo-local `.whisper-venv`.
 
 The local macOS fallback is configured for Russian by default through `appleSystemVoiceLanguageCode=ru-RU`.
 
