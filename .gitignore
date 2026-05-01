@@ -5,7 +5,9 @@
 ## User settings
 xcuserdata/
 .DS_Store
-.openclaw/
+
+# OpenClaw workspace is versioned for Gracula persona/runtime snapshots.
+# Credentials and auth state must be removed before committing snapshots.
 
 ## Obj-C/Swift specific
 *.hmap

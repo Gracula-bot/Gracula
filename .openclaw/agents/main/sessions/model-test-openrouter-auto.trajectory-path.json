@@ -1,0 +1,6 @@
+{
+  "traceSchema": "openclaw-trajectory-pointer",
+  "schemaVersion": 1,
+  "sessionId": "model-test-openrouter-auto",
+  "runtimeFile": "/Users/gg/.openclaw/agents/main/sessions/model-test-openrouter-auto.trajectory.jsonl"
+}

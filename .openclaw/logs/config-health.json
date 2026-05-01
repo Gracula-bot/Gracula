@@ -1,0 +1,22 @@
+{
+  "entries": {
+    "/Users/gg/Gracula/.openclaw/openclaw.json": {
+      "lastKnownGood": {
+        "hash": "e1978c32417807796a4964652b9ad4c8913cab1314bd41c751cfff8bbcda99b8",
+        "bytes": 28478,
+        "mtimeMs": 1777609841566.5415,
+        "ctimeMs": 1777609841566.682,
+        "dev": "16777234",
+        "ino": "137299328",
+        "mode": 420,
+        "nlink": 1,
+        "uid": 501,
+        "gid": 20,
+        "hasMeta": true,
+        "gatewayMode": "local",
+        "observedAt": "2026-05-01T04:30:43.866Z"
+      },
+      "lastObservedSuspiciousSignature": null
+    }
+  }
+}

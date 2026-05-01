@@ -1,0 +1,254 @@
+{
+  "providers": {
+    "openrouter": {
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "api": "openai-completions",
+      "models": [
+        {
+          "api": "openai-completions",
+          "compat": {
+            "supportsTools": false
+          },
+          "contextWindow": 128000,
+          "cost": {
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "input": 0,
+            "output": 0
+          },
+          "id": "free",
+          "input": [
+            "text"
+          ],
+          "maxTokens": 8192,
+          "name": "OpenRouter Free",
+          "reasoning": false
+        }
+      ],
+      "apiKey": "OPENROUTER_API_KEY",
+      "auth": "api-key",
+      "authHeader": true
+    },
+    "kilocode": {
+      "api": "openai-completions",
+      "baseUrl": "https://api.kilo.ai/api/gateway/",
+      "models": [
+        {
+          "contextWindow": 1000000,
+          "cost": {
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "input": 0,
+            "output": 0
+          },
+          "id": "kilo/auto",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 128000,
+          "name": "Kilo Auto",
+          "reasoning": true
+        }
+      ],
+      "apiKey": ""
+    },
+    "openai-codex": {
+      "baseUrl": "https://chatgpt.com/backend-api",
+      "api": "openai-codex-responses",
+      "models": []
+    },
+    "codex": {
+      "baseUrl": "https://chatgpt.com/backend-api",
+      "apiKey": "codex-app-server",
+      "auth": "token",
+      "api": "openai-codex-responses",
+      "models": [
+        {
+          "id": "gpt-5.5",
+          "name": "GPT-5.5",
+          "api": "openai-codex-responses",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 272000,
+          "maxTokens": 128000,
+          "compat": {
+            "supportsReasoningEffort": true,
+            "supportsUsageInStreaming": true
+          }
+        },
+        {
+          "id": "gpt-5.4",
+          "name": "gpt-5.4",
+          "api": "openai-codex-responses",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 272000,
+          "maxTokens": 128000,
+          "compat": {
+            "supportsReasoningEffort": true,
+            "supportsUsageInStreaming": true
+          }
+        },
+        {
+          "id": "gpt-5.4-mini",
+          "name": "GPT-5.4-Mini",
+          "api": "openai-codex-responses",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 272000,
+          "maxTokens": 128000,
+          "compat": {
+            "supportsReasoningEffort": true,
+            "supportsUsageInStreaming": true
+          }
+        },
+        {
+          "id": "gpt-5.3-codex",
+          "name": "gpt-5.3-codex",
+          "api": "openai-codex-responses",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 272000,
+          "maxTokens": 128000,
+          "compat": {
+            "supportsReasoningEffort": true,
+            "supportsUsageInStreaming": true
+          }
+        },
+        {
+          "id": "gpt-5.2",
+          "name": "gpt-5.2",
+          "api": "openai-codex-responses",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 272000,
+          "maxTokens": 128000,
+          "compat": {
+            "supportsReasoningEffort": true,
+            "supportsUsageInStreaming": true
+          }
+        }
+      ]
+    },
+    "google": {
+      "api": "google-generative-ai",
+      "apiKey": "GEMINI_API_KEY",
+      "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+      "models": [
+        {
+          "api": "google-generative-ai",
+          "contextWindow": 1048576,
+          "cost": {
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "input": 0,
+            "output": 0
+          },
+          "id": "gemini-3.1-pro-preview",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 65536,
+          "name": "Gemini 3.1 Pro Preview",
+          "reasoning": true
+        },
+        {
+          "api": "google-generative-ai",
+          "contextWindow": 1048576,
+          "cost": {
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "input": 0,
+            "output": 0
+          },
+          "id": "gemini-3-flash-preview",
+          "input": [
+            "text",
+            "image"
+          ],
+          "maxTokens": 65536,
+          "name": "Gemini 3 Flash Preview",
+          "reasoning": false
+        }
+      ]
+    },
+    "mlx": {
+      "api": "openai-completions",
+      "apiKey": "mlx-local",
+      "auth": "api-key",
+      "authHeader": true,
+      "baseUrl": "http://127.0.0.1:8080/v1",
+      "models": [
+        {
+          "id": "Qwen/Qwen3-30B-A3B-MLX-4bit",
+          "name": "Qwen/Qwen3-30B-A3B-MLX-4bit",
+          "api": "openai-completions",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32768,
+          "maxTokens": 4096,
+          "compat": {
+            "supportsTools": true,
+            "supportsStrictMode": false
+          },
+          "contextTokens": 16384
+        }
+      ]
+    }
+  }
+}

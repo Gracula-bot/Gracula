@@ -1,0 +1,6 @@
+{
+  "traceSchema": "openclaw-trajectory-pointer",
+  "schemaVersion": 1,
+  "sessionId": "gracula-mlx-smoke",
+  "runtimeFile": "/Users/gg/Gracula/.openclaw/agents/main/sessions/gracula-mlx-smoke.trajectory.jsonl"
+}

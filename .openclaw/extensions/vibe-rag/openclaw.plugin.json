@@ -1,0 +1,139 @@
+{
+  "id": "vibe-rag",
+  "name": "Vibe RAG",
+  "description": "Retrieves relevant excerpts from a full corpus file and injects them into prompt context.",
+  "uiHints": {
+    "sourcePath": {
+      "label": "Corpus File",
+      "help": "Workspace-relative path to the full corpus text file."
+    },
+    "topK": {
+      "label": "Top K Documents",
+      "help": "Maximum number of retrieved corpus documents to consider per turn."
+    },
+    "maxSnippetChars": {
+      "label": "Max Snippet Chars",
+      "help": "Per-document snippet size injected into prompt context."
+    },
+    "maxTotalChars": {
+      "label": "Max Total Chars",
+      "help": "Maximum total retrieval context injected per turn."
+    },
+    "minTokenLength": {
+      "label": "Min Token Length"
+    },
+    "maxQueryTokens": {
+      "label": "Max Query Tokens"
+    },
+    "fallbackDocs": {
+      "label": "Fallback Docs",
+      "help": "How many style-only fallback excerpts to inject when the query is weak."
+    },
+    "heartbeatDocs": {
+      "label": "Heartbeat Docs",
+      "help": "How many excerpts to inject for heartbeat/proactive runs."
+    },
+    "recentBias": {
+      "label": "Recent Bias",
+      "help": "Light score bonus for newer documents."
+    },
+    "aggressionBias": {
+      "label": "Aggression Bias",
+      "help": "Adds more weight to compact, harder-edged excerpts during ranking."
+    },
+    "poisonBias": {
+      "label": "Poison Bias",
+      "help": "Boosts contempt-heavy and punchline-heavy excerpts."
+    },
+    "poisonPoolSize": {
+      "label": "Poison Pool Size",
+      "help": "How much of the spiciest corpus is available for style carry and heartbeat."
+    },
+    "heartbeatPoisonBias": {
+      "label": "Heartbeat Poison Bias",
+      "help": "Extra poison weighting when the trigger is heartbeat."
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "sourcePath": {
+        "type": "string",
+        "default": "style/vibe1.txt"
+      },
+      "topK": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 12,
+        "default": 5
+      },
+      "maxSnippetChars": {
+        "type": "integer",
+        "minimum": 200,
+        "maximum": 2400,
+        "default": 720
+      },
+      "maxTotalChars": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 12000,
+        "default": 4200
+      },
+      "minTokenLength": {
+        "type": "integer",
+        "minimum": 2,
+        "maximum": 8,
+        "default": 3
+      },
+      "maxQueryTokens": {
+        "type": "integer",
+        "minimum": 4,
+        "maximum": 24,
+        "default": 12
+      },
+      "fallbackDocs": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 8,
+        "default": 3
+      },
+      "heartbeatDocs": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 8,
+        "default": 4
+      },
+      "recentBias": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 3,
+        "default": 0.12
+      },
+      "aggressionBias": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 2,
+        "default": 0.35
+      },
+      "poisonBias": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 2,
+        "default": 0.32
+      },
+      "poisonPoolSize": {
+        "type": "integer",
+        "minimum": 50,
+        "maximum": 3000,
+        "default": 700
+      },
+      "heartbeatPoisonBias": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 3,
+        "default": 0.7
+      }
+    }
+  }
+}

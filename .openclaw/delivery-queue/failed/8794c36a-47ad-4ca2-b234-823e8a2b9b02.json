@@ -1,0 +1,19 @@
+{
+  "id": "8794c36a-47ad-4ca2-b234-823e8a2b9b02",
+  "enqueuedAt": 1772987656832,
+  "channel": "telegram",
+  "to": "telegram:-1001137838000",
+  "accountId": "default",
+  "payloads": [
+    {
+      "text": "Да слышу я\n, слышу! 🐕 Работаю как надо.\n\nЧё проверить хочешь?",
+      "mediaUrls": []
+    }
+  ],
+  "threadId": null,
+  "replyToId": null,
+  "bestEffort": false,
+  "retryCount": 1,
+  "lastAttemptAt": 1772987659100,
+  "lastError": "Telegram send failed: chat not found (chat_id=-1001137838000). Likely: bot not started in DM, bot removed from group/channel, group migrated (new -100… id), or wrong bot token. Input was: \"telegram:-1001137838000\"."
+}

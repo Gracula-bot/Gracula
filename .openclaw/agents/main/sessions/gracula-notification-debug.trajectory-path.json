@@ -1,0 +1,6 @@
+{
+  "traceSchema": "openclaw-trajectory-pointer",
+  "schemaVersion": 1,
+  "sessionId": "gracula-notification-debug",
+  "runtimeFile": "/Users/gg/.openclaw/agents/main/sessions/gracula-notification-debug.trajectory.jsonl"
+}

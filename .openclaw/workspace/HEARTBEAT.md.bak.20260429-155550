@@ -1,0 +1,9 @@
+# 24/7 Stream Heartbeat Checklist
+
+- Check recent stream/chat context for unanswered viewer questions.
+- If there is a clear pending user need, send one short helpful answer now.
+- If chat is quiet, send a short engagement prompt (question, poll idea, next-topic teaser).
+- Do not spam: at most one proactive message per ~30 minutes when there is no active discussion.
+- Do not repeat the same engagement line twice in a row.
+- Keep proactive messages concise (1-3 sentences).
+- If no action is needed, return HEARTBEAT_OK.
