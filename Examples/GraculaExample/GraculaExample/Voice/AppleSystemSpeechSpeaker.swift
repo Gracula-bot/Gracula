@@ -2,7 +2,7 @@ import AVFoundation
 import Foundation
 
 @MainActor
-final class AppleSystemSpeechSpeaker: SpeechSpeaking {
+final class AppleSystemSpeechSpeaker {
     static let shared = AppleSystemSpeechSpeaker()
 
     private let synthesizer = AVSpeechSynthesizer()
@@ -16,7 +16,7 @@ final class AppleSystemSpeechSpeaker: SpeechSpeaking {
     ) throws {
         let utterance = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !utterance.isEmpty else {
-            throw VoiceSynthesisError.emptyText
+            throw AppleSystemSpeechError.emptyText
         }
 
         synthesizer.stopSpeaking(at: .immediate)
@@ -30,7 +30,7 @@ final class AppleSystemSpeechSpeaker: SpeechSpeaking {
             speechUtterance.voice = voice
         }
         guard !speechUtterance.speechString.isEmpty else {
-            throw VoiceSynthesisError.emptyText
+            throw AppleSystemSpeechError.emptyText
         }
 
         synthesizer.speak(speechUtterance)
@@ -38,5 +38,16 @@ final class AppleSystemSpeechSpeaker: SpeechSpeaking {
 
     func stop() {
         synthesizer.stopSpeaking(at: .immediate)
+    }
+}
+
+private enum AppleSystemSpeechError: LocalizedError {
+    case emptyText
+
+    var errorDescription: String? {
+        switch self {
+        case .emptyText:
+            return "Speech text is empty."
+        }
     }
 }

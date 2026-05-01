@@ -1,5 +1,6 @@
 import AppKit
 import Automation
+import Darwin
 import Foundation
 
 @MainActor
@@ -26,12 +27,21 @@ final class OpenClawLocalController: ObservableObject {
     private let gatewayHost = "127.0.0.1"
     private let fallbackGatewayPort = "18789"
     private let streamBridgePort = "7071"
+    private let agentTurnTimeoutSeconds: TimeInterval = 180
+    private let directModelTimeoutSeconds: TimeInterval = 120
+    private let directVoiceTinyMaxTokens = 64
+    private let directVoiceShortMaxTokens = 256
+    private let directVoiceNormalMaxTokens = 700
+    private let directMemoryFileLimit = 2
     private let onlyFansPoster = WorkspaceOpeningClient()
     private var chatSessionID = "gracula-local-chat"
     private var gatewayProcess: Process?
     private var streamBridgeProcess: Process?
     private var healthTask: Task<Void, Never>?
+    private var consecutiveHealthFailures = 0
     private var startupTask: Task<Void, Never>?
+    private var directPersonaContextCache: String?
+    private var directCompactPersonaContextCache: String?
 
     init() {
         self.settingsSnapshot = Self.makeSettingsSnapshot()
@@ -78,6 +88,18 @@ final class OpenClawLocalController: ObservableObject {
             try prepareDirectories()
             let environment = try openClawEnvironment()
             settingsSnapshot = Self.makeSettingsSnapshot(environment: environment)
+            let primaryModelRef = currentPrimaryModelRef()
+            if shouldUseDirectCompletion(for: primaryModelRef) {
+                gatewayProcess = nil
+                streamBridgeProcess = nil
+                isRunning = true
+                statusText = "Direct model ready"
+                gatewayStatus = "direct mode"
+                streamBridgeStatus = "disabled"
+                appendLog("Direct model mode active; skipping OpenClaw gateway startup.")
+                appendLog("Selected model uses direct completion: \(primaryModelRef)")
+                return
+            }
 
             do {
                 gatewayProcess = try launchProcess(
@@ -106,11 +128,24 @@ final class OpenClawLocalController: ObservableObject {
                     || normalizedLaunchError.contains("lock timeout")
 
                 if gatewayAlreadyRunning {
+                    let existingGatewayURL = URL(
+                        string: "http://\(gatewayHost):\(environment["OPENCLAW_GATEWAY_PORT"] ?? gatewayPort)/healthz"
+                    )!
+                    let existingGatewayStatus = await checkHealth(url: existingGatewayURL)
+                    guard existingGatewayStatus == "healthy" else {
+                        gatewayProcess = nil
+                        isRunning = false
+                        gatewayStatus = existingGatewayStatus
+                        throw OpenClawLocalControllerError.gatewayUnavailable(
+                            "An existing OpenClaw gateway is occupying http://\(gatewayHost):\(environment["OPENCLAW_GATEWAY_PORT"] ?? gatewayPort)/, but /healthz is \(existingGatewayStatus). Stop that stale process and start OpenClaw again."
+                        )
+                    }
+
                     gatewayProcess = nil
                     isRunning = true
                     statusText = "Using existing OpenClaw gateway..."
-                    gatewayStatus = "existing"
-                    appendLog("OpenClaw gateway is already running outside the app; attaching to http://\(gatewayHost):\(environment["OPENCLAW_GATEWAY_PORT"] ?? gatewayPort)/")
+                    gatewayStatus = "healthy"
+                    appendLog("OpenClaw gateway is already running outside the app and passed health check; attaching to http://\(gatewayHost):\(environment["OPENCLAW_GATEWAY_PORT"] ?? gatewayPort)/")
                 } else {
                     throw error
                 }
@@ -169,6 +204,7 @@ final class OpenClawLocalController: ObservableObject {
     func refreshHealth() async {
         reloadSettings()
         gatewayStatus = await checkHealth(url: URL(string: "http://\(gatewayHost):\(gatewayPort)/healthz")!)
+        updateHealthFailureCount(for: gatewayStatus)
         if streamBridgeProcess?.isRunning == true {
             streamBridgeStatus = await checkHealth(url: URL(string: "http://\(gatewayHost):\(streamBridgePort)/health")!)
         } else if streamBridgeStatus != "disabled" {
@@ -177,12 +213,22 @@ final class OpenClawLocalController: ObservableObject {
         statusText = isRunning ? "Running" : "Stopped"
     }
 
+    private func updateHealthFailureCount(for status: String) {
+        if status == "healthy" {
+            consecutiveHealthFailures = 0
+        } else {
+            consecutiveHealthFailures = min(consecutiveHealthFailures + 1, 8)
+        }
+    }
+
     func reportError(_ message: String) {
         appendChatMessage(.error(message))
     }
 
     func reloadSettings() {
         settingsSnapshot = Self.makeSettingsSnapshot()
+        directPersonaContextCache = nil
+        directCompactPersonaContextCache = nil
         settingsStatusText = "Settings reloaded."
     }
 
@@ -319,43 +365,55 @@ final class OpenClawLocalController: ObservableObject {
 
     @discardableResult
     func sendChatMessage(_ text: String) async -> String? {
+        let turnStartedAt = PerformanceLog.checkpoint()
         let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !message.isEmpty else {
             return nil
         }
 
         do {
-            if shouldResetChatSessionBeforeSending(message) {
+            let primaryModelRef = currentPrimaryModelRef()
+            if !shouldUseDirectCompletion(for: primaryModelRef),
+               shouldResetChatSessionBeforeSending(message) {
                 appendLog("Resetting stale chat session before send.")
                 resetChat()
             }
             isSendingChat = true
             chatStatusText = "Sending to OpenClaw..."
             appendChatMessage(.user(message))
+            appendLog("[latency] Chat turn started; inputCharacters=\(message.count)")
 
             if isExplicitOnlyFansPublishRequest(message) {
                 let reply = try await publishOnlyFansPostFromChatCommand(message)
                 appendChatMessage(.assistant(reply))
+                appendLog("[latency] Assistant reply appended to UI after \(PerformanceLog.elapsedDescription(since: turnStartedAt)); replyCharacters=\(reply.count)")
                 chatStatusText = "OnlyFans post published."
                 isSendingChat = false
                 return reply
             }
-            let primaryModelRef = currentPrimaryModelRef()
             if shouldUseDirectCompletion(for: primaryModelRef) {
                 appendLog("Selected model uses a tool-free chat path; running direct completion.")
+                appendLog("[latency] Direct model request starting; model=\(primaryModelRef)")
+                let assistantMessageID = appendChatMessage(.assistant("…"))
+                chatStatusText = "Waiting for local model..."
                 let reply = try await runDirectModelChat(
                     modelRef: primaryModelRef,
-                    prompt: directChatPrompt()
+                    prompt: directChatPrompt(for: message),
+                    maxTokens: directMaxTokens(for: message),
+                    assistantMessageID: assistantMessageID
                 )
                 guard !reply.isEmpty else {
                     throw OpenClawLocalControllerError.agentFailed("Selected model returned an empty reply.")
                 }
-                appendChatMessage(.assistant(reply))
+                appendLog("[latency] Direct model answer returned after \(PerformanceLog.elapsedDescription(since: turnStartedAt)); replyCharacters=\(reply.count)")
+                appendLog("[latency] Assistant reply appended to UI after \(PerformanceLog.elapsedDescription(since: turnStartedAt)); replyCharacters=\(reply.count)")
                 chatStatusText = "Reply received."
+                appendLog("Direct model reply received. characters=\(reply.count)")
                 isSendingChat = false
                 return reply
             }
 
+            appendLog("[latency] OpenClaw agent turn starting; session=\(chatSessionID)")
             let response = try await runAgentTurn(message: message, sessionID: chatSessionID)
             let reply = response.replyText.trimmingCharacters(in: .whitespacesAndNewlines)
             if looksLikeStaleAssistantReply(reply) {
@@ -373,6 +431,7 @@ final class OpenClawLocalController: ObservableObject {
                     return nil
                 }
                 appendChatMessage(.assistant(retryReply))
+                appendLog("[latency] Assistant retry reply appended to UI after \(PerformanceLog.elapsedDescription(since: turnStartedAt)); replyCharacters=\(retryReply.count)")
                 chatStatusText = "Reply received."
                 isSendingChat = false
                 return retryReply
@@ -385,11 +444,14 @@ final class OpenClawLocalController: ObservableObject {
                 isSendingChat = false
                 return nil
             }
+            appendLog("[latency] OpenClaw agent answer returned after \(PerformanceLog.elapsedDescription(since: turnStartedAt)); replyCharacters=\(reply.count)")
             appendChatMessage(.assistant(reply))
+            appendLog("[latency] Assistant reply appended to UI after \(PerformanceLog.elapsedDescription(since: turnStartedAt)); replyCharacters=\(reply.count)")
             chatStatusText = "Reply received."
             isSendingChat = false
             return reply
         } catch {
+            removePendingAssistantPlaceholder()
             appendChatMessage(.error(error.localizedDescription))
             chatStatusText = "Chat failed."
             appendLog("Chat failed: \(error.localizedDescription)")
@@ -734,8 +796,19 @@ final class OpenClawLocalController: ObservableObject {
             Task { @MainActor in
                 self?.appendLog("\(name) exited with code \(finishedProcess.terminationStatus).")
                 if updateRunningStateOnExit && process === self?.gatewayProcess {
-                    self?.isRunning = false
-                    self?.statusText = "Stopped"
+                    let healthURL = URL(string: "http://\(self?.gatewayHost ?? "127.0.0.1"):\(self?.gatewayPort ?? "18789")/healthz")!
+                    let status = await self?.checkHealth(url: healthURL) ?? "offline"
+                    if status == "healthy" {
+                        self?.gatewayProcess = nil
+                        self?.isRunning = true
+                        self?.gatewayStatus = "healthy"
+                        self?.statusText = "Using existing OpenClaw gateway..."
+                        self?.appendLog("Gateway process handed off to an existing healthy gateway.")
+                    } else {
+                        self?.isRunning = false
+                        self?.gatewayStatus = status
+                        self?.statusText = "Stopped"
+                    }
                 } else if process === self?.streamBridgeProcess {
                     self?.streamBridgeStatus = "stopped"
                     if self?.gatewayProcess?.isRunning == true {
@@ -760,11 +833,11 @@ final class OpenClawLocalController: ObservableObject {
 
     private func scheduleHealthChecks() {
         healthTask?.cancel()
+        appendLog("Gateway health check scheduled once after startup.")
         healthTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(2))
-            while !Task.isCancelled {
+            if !Task.isCancelled {
                 await self?.refreshHealth()
-                try? await Task.sleep(for: .seconds(5))
             }
         }
     }
@@ -774,6 +847,7 @@ final class OpenClawLocalController: ObservableObject {
         while Date() < deadline {
             let status = await checkHealth(url: URL(string: "http://\(gatewayHost):\(gatewayPort)/healthz")!)
             gatewayStatus = status
+            updateHealthFailureCount(for: status)
             if status == "healthy" {
                 if streamBridgeStatus == "not checked" {
                     streamBridgeStatus = "unknown"
@@ -801,7 +875,8 @@ final class OpenClawLocalController: ObservableObject {
                 message,
                 "--json"
             ],
-            environment: environment ?? (try openClawEnvironment())
+            environment: environment ?? (try openClawEnvironment()),
+            timeoutSeconds: agentTurnTimeoutSeconds
         )
 
         guard result.exitCode == 0 else {
@@ -843,11 +918,33 @@ final class OpenClawLocalController: ObservableObject {
         modelRef: String,
         prompt: String,
         environment: [String: String]? = nil,
-        maxTokens: Int = 256
+        maxTokens: Int = 256,
+        assistantMessageID: UUID? = nil
     ) async throws -> String {
+        let startedAt = PerformanceLog.checkpoint()
         let trimmedRef = modelRef.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedRef.isEmpty else {
             throw OpenClawLocalControllerError.agentFailed("Selected model is not set.")
+        }
+
+        let provider = trimmedRef.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: true)
+        guard provider.count == 2 else {
+            throw OpenClawLocalControllerError.agentFailed(
+                "Selected model ref must use provider/model format."
+            )
+        }
+
+        let providerName = String(provider[0]).lowercased()
+        let providerModelID = String(provider[1])
+        let effectiveMaxTokens = directModelMaxTokens(for: trimmedRef, requestedMaxTokens: maxTokens)
+        if providerName == "ollama" {
+            return try await runDirectOllamaChat(
+                modelID: providerModelID,
+                prompt: prompt,
+                maxTokens: effectiveMaxTokens,
+                startedAt: startedAt,
+                assistantMessageID: assistantMessageID
+            )
         }
 
         let activeEnvironment: [String: String]
@@ -863,34 +960,36 @@ final class OpenClawLocalController: ObservableObject {
             )
         }
 
-        let provider = trimmedRef.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: true)
-        guard provider.count == 2 else {
-            throw OpenClawLocalControllerError.agentFailed(
-                "Selected model ref must use provider/model format."
-            )
-        }
-
-        let providerName = String(provider[0])
         let modelId = trimmedRef
-        let reasoningMode = directModelReasoningMode(for: trimmedRef)
+        appendLog(
+            "[latency] Direct model process prepared; provider=\(providerName), model=\(modelId), promptCharacters=\(prompt.count), maxTokens=\(effectiveMaxTokens), reasoning=off"
+        )
+        let promptFileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gracula-direct-prompt-\(UUID().uuidString).txt")
+        try prompt.write(to: promptFileURL, atomically: true, encoding: .utf8)
+        defer {
+            try? FileManager.default.removeItem(at: promptFileURL)
+        }
         let script = """
-        import { completeSimple, getModel } from "@mariozechner/pi-ai";
+        const startedAt = Date.now();
+        const { completeSimple, getModel } = await import("@mariozechner/pi-ai");
+        const { readFileSync } = await import("node:fs");
+        const importedAt = Date.now();
 
         const provider = process.env.GRACULA_MODEL_PROVIDER ?? "";
         const modelId = process.env.GRACULA_MODEL_ID ?? "";
         const apiKey = process.env.GRACULA_MODEL_API_KEY ?? "";
-        const prompt = process.env.GRACULA_MODEL_PROMPT ?? "";
+        const promptFile = process.env.GRACULA_MODEL_PROMPT_FILE ?? "";
+        const prompt = promptFile ? readFileSync(promptFile, "utf8") : (process.env.GRACULA_MODEL_PROMPT ?? "");
         const maxTokens = Number(process.env.GRACULA_MODEL_MAX_TOKENS ?? "256");
-        const reasoning = process.env.GRACULA_MODEL_REASONING ?? "";
         const model = getModel(provider, modelId);
+        const temperature = Number(process.env.GRACULA_MODEL_TEMPERATURE ?? "0.35");
         const options = {
           apiKey,
           maxTokens,
-          temperature: 0
+          temperature
         };
-        if (reasoning) {
-          options.reasoning = reasoning;
-        }
+        const requestStartedAt = Date.now();
         const response = await completeSimple(
           model,
           {
@@ -904,6 +1003,7 @@ final class OpenClawLocalController: ObservableObject {
           },
           options
         );
+        const responseReceivedAt = Date.now();
         const contentBlocks = Array.isArray(response?.content) ? response.content : [];
         const text = contentBlocks
           .filter((block) => block?.type === "text" && typeof block.text === "string")
@@ -911,32 +1011,55 @@ final class OpenClawLocalController: ObservableObject {
           .filter(Boolean)
           .join(" ")
           .trim();
+        const thinkingText = contentBlocks
+          .filter((block) => block?.type === "thinking" && typeof block.thinking === "string")
+          .map((block) => block.thinking.trim())
+          .filter(Boolean)
+          .join("\\n")
+          .trim();
         const fallbackText =
           (typeof response?.text === "string" ? response.text.trim() : "") ||
           (typeof response?.output_text === "string" ? response.output_text.trim() : "");
         const finalText = text || fallbackText;
         if (!finalText) {
-          throw new Error(`Selected model returned an empty reply. Raw response: ${JSON.stringify(response)}`);
+          const contentTypes = contentBlocks.map((block) => block?.type ?? "unknown").join(",");
+          throw new Error(
+            `Selected model returned no visible answer. stopReason=${response?.stopReason ?? "unknown"}, contentTypes=${contentTypes || "none"}, thinkingCharacters=${thinkingText.length}`
+          );
         }
-        console.log(JSON.stringify({ text: finalText }));
+        const finishedAt = Date.now();
+        console.log(JSON.stringify({
+          text: finalText,
+          timing: {
+            importMs: importedAt - startedAt,
+            apiMs: responseReceivedAt - requestStartedAt,
+            parseMs: finishedAt - responseReceivedAt,
+            totalMs: finishedAt - startedAt
+          }
+        }));
         """
         var smokeEnvironment = activeEnvironment
         smokeEnvironment["GRACULA_MODEL_PROVIDER"] = providerName
         smokeEnvironment["GRACULA_MODEL_ID"] = modelId
         smokeEnvironment["GRACULA_MODEL_API_KEY"] = apiKey
-        smokeEnvironment["GRACULA_MODEL_PROMPT"] = prompt
-        smokeEnvironment["GRACULA_MODEL_MAX_TOKENS"] = String(maxTokens)
-        if let reasoningMode {
-            smokeEnvironment["GRACULA_MODEL_REASONING"] = reasoningMode
-        }
+        smokeEnvironment["GRACULA_MODEL_PROMPT"] = nil
+        smokeEnvironment["GRACULA_MODEL_PROMPT_FILE"] = promptFileURL.path
+        smokeEnvironment["GRACULA_MODEL_MAX_TOKENS"] = String(effectiveMaxTokens)
+        smokeEnvironment["GRACULA_MODEL_TEMPERATURE"] = maxTokens <= 64 ? "0" : "0.35"
+        smokeEnvironment["GRACULA_MODEL_REASONING"] = nil
 
+        appendLog("[latency] Direct model process launching.")
         let result = try await runProcess(
             arguments: [
                 "--input-type=module",
                 "-e",
                 script
             ],
-            environment: smokeEnvironment
+            environment: smokeEnvironment,
+            timeoutSeconds: directModelTimeoutSeconds
+        )
+        appendLog(
+            "[latency] Direct model process exited in \(PerformanceLog.elapsedDescription(since: startedAt)); exitCode=\(result.exitCode), stdoutCharacters=\(result.stdout.count), stderrCharacters=\(result.stderr.count)"
         )
 
         guard result.exitCode == 0 else {
@@ -952,14 +1075,135 @@ final class OpenClawLocalController: ObservableObject {
 
         if let decoded = try? JSONSerialization.jsonObject(with: Data(stdout.utf8)) as? [String: Any],
            let text = decoded["text"] as? String {
+            if let timing = decoded["timing"] as? [String: Any] {
+                let importMs = timing["importMs"] ?? "?"
+                let apiMs = timing["apiMs"] ?? "?"
+                let parseMs = timing["parseMs"] ?? "?"
+                let totalMs = timing["totalMs"] ?? "?"
+                appendLog("[latency] Direct model JS timing; importMs=\(importMs), apiMs=\(apiMs), parseMs=\(parseMs), totalMs=\(totalMs)")
+            }
             let reply = text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !reply.isEmpty else {
                 throw OpenClawLocalControllerError.agentFailed("Selected model returned an empty reply.")
             }
+            appendLog("[latency] Direct model JSON decoded in \(PerformanceLog.elapsedDescription(since: startedAt)); replyCharacters=\(reply.count)")
             return reply
         }
 
+        appendLog("[latency] Direct model raw stdout returned in \(PerformanceLog.elapsedDescription(since: startedAt)); characters=\(stdout.count)")
         return stdout
+    }
+
+    private func runDirectOllamaChat(
+        modelID: String,
+        prompt: String,
+        maxTokens: Int,
+        startedAt: UInt64,
+        assistantMessageID: UUID?
+    ) async throws -> String {
+        let numCtx = maxTokens <= directVoiceTinyMaxTokens ? 2_048 : 4_096
+        appendLog(
+            "[latency] Direct Ollama request prepared; model=\(modelID), promptCharacters=\(prompt.count), maxTokens=\(maxTokens), numCtx=\(numCtx), think=false"
+        )
+
+        guard let url = URL(string: "http://127.0.0.1:11434/api/chat") else {
+            throw OpenClawLocalControllerError.agentFailed("Invalid Ollama API URL.")
+        }
+
+        let body: [String: Any] = [
+            "model": modelID,
+            "stream": true,
+            "think": false,
+            "keep_alive": "30m",
+            "messages": [
+                [
+                    "role": "user",
+                    "content": prompt
+                ]
+            ],
+            "options": [
+                "num_ctx": numCtx,
+                "num_predict": maxTokens,
+                "temperature": maxTokens <= 64 ? 0 : 0.35,
+                "top_p": 0.85,
+                "repeat_penalty": 1.08
+            ]
+        ]
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = directModelTimeoutSeconds
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let requestStartedAt = PerformanceLog.checkpoint()
+        appendLog("[latency] Direct Ollama HTTP request starting.")
+        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        appendLog("[latency] Direct Ollama HTTP response headers received in \(PerformanceLog.elapsedDescription(since: requestStartedAt))")
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw OpenClawLocalControllerError.agentFailed("Ollama returned a non-HTTP response.")
+        }
+
+        var replyBuffer = ""
+        var rawLines: [String] = []
+        var sawFirstToken = false
+        var receivedDone = false
+
+        for try await rawLine in bytes.lines {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else {
+                continue
+            }
+
+            rawLines.append(line)
+            guard let lineData = line.data(using: .utf8),
+                  let decoded = try JSONSerialization.jsonObject(with: lineData) as? [String: Any] else {
+                continue
+            }
+
+            if let error = decoded["error"] as? String,
+               !error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                throw OpenClawLocalControllerError.agentFailed("Ollama error: \(error)")
+            }
+
+            if let message = decoded["message"] as? [String: Any],
+               let chunk = message["content"] as? String,
+               !chunk.isEmpty {
+                replyBuffer.append(chunk)
+                if let assistantMessageID {
+                    updateChatMessage(id: assistantMessageID, text: replyBuffer)
+                }
+                if !sawFirstToken {
+                    sawFirstToken = true
+                    chatStatusText = "Receiving local reply..."
+                    appendLog("[latency] Direct Ollama first token received in \(PerformanceLog.elapsedDescription(since: requestStartedAt))")
+                }
+            }
+
+            if let done = decoded["done"] as? Bool, done {
+                receivedDone = true
+                break
+            }
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let bodyText = rawLines.joined(separator: "\n")
+            throw OpenClawLocalControllerError.agentFailed(
+                bodyText.isEmpty ? "Ollama HTTP \(httpResponse.statusCode)." : "Ollama HTTP \(httpResponse.statusCode): \(bodyText)"
+            )
+        }
+
+        let reply = replyBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !reply.isEmpty else {
+            throw OpenClawLocalControllerError.agentFailed("Ollama returned an empty reply.")
+        }
+
+        if !receivedDone {
+            appendLog("[latency] Direct Ollama stream ended without explicit done flag.")
+        }
+        appendLog("[latency] Direct Ollama answer decoded after \(PerformanceLog.elapsedDescription(since: startedAt)); replyCharacters=\(reply.count)")
+        return reply
     }
 
     private func directModelSmokeTestAPIKey(from environment: [String: String], modelRef: String) -> String {
@@ -974,9 +1218,6 @@ final class OpenClawLocalController: ObservableObject {
         }
         if lowercased.hasPrefix("anthropic/") {
             return environment["ANTHROPIC_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        }
-        if lowercased.hasPrefix("kilocode/") {
-            return environment["KILOCODE_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         }
         if lowercased.hasPrefix("openai/") || lowercased.hasPrefix("openai-codex/") {
             return environment["OPENAI_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -994,7 +1235,9 @@ final class OpenClawLocalController: ObservableObject {
 
     private func shouldUseDirectModelSmokeTest(for modelRef: String) -> Bool {
         let normalized = modelRef.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return normalized == "openrouter/free"
+        return normalized.hasPrefix("ollama/")
+            || normalized == "google/gemini-3-flash-preview"
+            || normalized == "openrouter/free"
     }
 
     private func shouldUseDirectCompletion(for modelRef: String) -> Bool {
@@ -1002,33 +1245,143 @@ final class OpenClawLocalController: ObservableObject {
     }
 
     private func directModelReasoningMode(for modelRef: String) -> String? {
-        let normalized = modelRef.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if normalized == "openrouter/free" {
-            return "medium"
-        }
         return nil
+    }
+
+    private func directModelMaxTokens(for modelRef: String, requestedMaxTokens: Int) -> Int {
+        return requestedMaxTokens
+    }
+
+    private func directMaxTokens(for message: String) -> Int {
+        let normalizedCount = message.trimmingCharacters(in: .whitespacesAndNewlines).count
+        if normalizedCount <= 12 {
+            return directVoiceTinyMaxTokens
+        }
+        return normalizedCount <= 160 ? directVoiceShortMaxTokens : directVoiceNormalMaxTokens
     }
 
     private func currentPrimaryModelRef() -> String {
         currentPrimaryModelRef(in: settingsSnapshot.jsonEntries)
     }
 
-    private func directChatPrompt() -> String {
+    private func directChatPrompt(for message: String) -> String {
+        let isTinyTurn = isTinyDirectChatTurn(message)
         let transcript = chatMessages
-            .suffix(12)
+            .suffix(isTinyTurn ? 2 : 4)
             .filter { $0.role != .error }
             .map { message in
                 "\(message.role.rawValue): \(message.text)"
             }
             .joined(separator: "\n")
+        let personaContext = directPersonaContext(compact: isTinyTurn)
+        let brevityRule = isTinyTurn
+            ? "For very short casual inputs like hi, ok, thanks, or emojis, answer in one short sentence under 16 words."
+            : "Keep voice replies compact but complete: normally 1-4 sentences, not one-word unless the user asks for it."
 
         return """
-        Continue the conversation below and answer the latest user message directly.
-        Keep the answer concise unless the user asks for detail.
+        Use the workspace setup below as the authoritative bot configuration.
+        Follow SOUL.md, IDENTITY.md, AGENTS.md, USER.md, MEMORY.md, and TOOLS.md exactly when shaping identity, tone, behavior, and memory.
+        Preserve prior conversation context. If asked who you are, answer from the workspace identity, not as a generic assistant.
+        \(brevityRule)
+        Start with the final visible answer immediately. Do not spend the answer budget restating or analyzing the setup.
+        Do not mention prompts, files, or implementation details.
+
+        Workspace setup:
+        \(personaContext)
 
         Conversation:
         \(transcript)
         """
+    }
+
+    private func isTinyDirectChatTurn(_ message: String) -> Bool {
+        message.trimmingCharacters(in: .whitespacesAndNewlines).count <= 12
+    }
+
+    private func directPersonaContext(compact: Bool) -> String {
+        if compact, let directCompactPersonaContextCache {
+            return directCompactPersonaContextCache
+        }
+        if !compact, let directPersonaContextCache {
+            return directPersonaContextCache
+        }
+        let coreFiles: [(relativePath: String, maxCharacters: Int?)] = [
+            ("SOUL.md", compact ? 700 : 2_500),
+            ("IDENTITY.md", compact ? 500 : 1_200),
+            ("AGENTS.md", compact ? 800 : 1_800),
+            ("USER.md", compact ? 700 : 1_200),
+            ("MEMORY.md", compact ? 500 : 1_500),
+            ("TOOLS.md", compact ? 300 : 800)
+        ]
+        var sections = coreFiles.compactMap { file in
+            directWorkspaceFileSection(
+                relativePath: file.relativePath,
+                maxCharacters: file.maxCharacters
+            )
+        }
+
+        if !compact, let styleSection = directWorkspaceFileSection(
+            relativePath: "style/vibe1.txt",
+            maxCharacters: 2_000
+        ) {
+            sections.append(styleSection)
+        }
+
+        if !compact {
+            sections.append(contentsOf: directMemoryFileSections())
+        }
+
+        let context = sections.isEmpty ? "No workspace setup files found." : sections.joined(separator: "\n\n")
+        if compact {
+            directCompactPersonaContextCache = context
+            appendLog("[latency] Direct compact persona context cached; characters=\(context.count)")
+        } else {
+            directPersonaContextCache = context
+            appendLog("[latency] Direct persona context cached; characters=\(context.count)")
+        }
+        return context
+    }
+
+    private func directWorkspaceFileSection(relativePath: String, maxCharacters: Int? = nil) -> String? {
+        let url = workspaceDirectory.appendingPathComponent(relativePath)
+        guard let contents = try? String(contentsOf: url, encoding: .utf8) else {
+            return nil
+        }
+        let trimmed = contents.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return nil
+        }
+
+        let body: String
+        if let maxCharacters, trimmed.count > maxCharacters {
+            body = String(trimmed.prefix(maxCharacters))
+                + "\n\n[truncated for direct voice speed; full file remains in workspace]"
+        } else {
+            body = trimmed
+        }
+        return "## \(relativePath)\n\(body)"
+    }
+
+    private func directMemoryFileSections() -> [String] {
+        let memoryDirectory = workspaceDirectory.appendingPathComponent("memory", isDirectory: true)
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: memoryDirectory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+
+        return urls
+            .filter { $0.pathExtension == "md" }
+            .sorted { $0.lastPathComponent > $1.lastPathComponent }
+            .prefix(directMemoryFileLimit)
+            .compactMap { url in
+                directWorkspaceFileSection(
+                    relativePath: "memory/\(url.lastPathComponent)",
+                    maxCharacters: 1_000
+                )
+            }
     }
 
     private func prepareTestDirectories(configDirectory: URL, workspaceDirectory: URL) throws {
@@ -1045,7 +1398,11 @@ final class OpenClawLocalController: ObservableObject {
         )
     }
 
-    private func runProcess(arguments: [String], environment: [String: String]) async throws -> ProcessOutput {
+    private func runProcess(
+        arguments: [String],
+        environment: [String: String],
+        timeoutSeconds: TimeInterval? = nil
+    ) async throws -> ProcessOutput {
         try await withCheckedThrowingContinuation { continuation in
             let process = Process()
             process.executableURL = nodeURL
@@ -1056,6 +1413,34 @@ final class OpenClawLocalController: ObservableObject {
             let stdoutPipe = Pipe()
             let stderrPipe = Pipe()
             let buffer = ProcessOutputBuffer()
+            let completion = ProcessCompletionState()
+
+            @Sendable func finish(
+                _ result: Result<ProcessOutput, Error>,
+                terminateIfRunning: Bool = false
+            ) {
+                guard completion.claim() else {
+                    return
+                }
+
+                stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                stderrPipe.fileHandleForReading.readabilityHandler = nil
+
+                if terminateIfRunning, process.isRunning {
+                    let processIdentifier = process.processIdentifier
+                    process.terminate()
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 1) {
+                        Darwin.kill(processIdentifier, SIGKILL)
+                    }
+                }
+
+                switch result {
+                case let .success(output):
+                    continuation.resume(returning: output)
+                case let .failure(error):
+                    continuation.resume(throwing: error)
+                }
+            }
 
             stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
                 let data = handle.availableData
@@ -1074,21 +1459,36 @@ final class OpenClawLocalController: ObservableObject {
             process.standardError = stderrPipe
 
             process.terminationHandler = { finished in
-                stdoutPipe.fileHandleForReading.readabilityHandler = nil
-                stderrPipe.fileHandleForReading.readabilityHandler = nil
                 let snapshot = buffer.snapshot()
                 let output = ProcessOutput(
                     stdout: snapshot.stdout,
                     stderr: snapshot.stderr,
                     exitCode: finished.terminationStatus
                 )
-                continuation.resume(returning: output)
+                finish(.success(output))
             }
 
             do {
                 try process.run()
             } catch {
-                continuation.resume(throwing: error)
+                finish(.failure(error))
+                return
+            }
+
+            if let timeoutSeconds {
+                DispatchQueue.global().asyncAfter(deadline: .now() + timeoutSeconds) {
+                    let snapshot = buffer.snapshot()
+                    let stderr = snapshot.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let suffix = stderr.isEmpty ? "" : " Last error output: \(String(stderr.suffix(1200)))"
+                    finish(
+                        .failure(
+                            OpenClawLocalControllerError.agentFailed(
+                                "OpenClaw command timed out after \(Int(timeoutSeconds)) seconds.\(suffix)"
+                            )
+                        ),
+                        terminateIfRunning: true
+                    )
+                }
             }
         }
     }
@@ -1349,11 +1749,27 @@ final class OpenClawLocalController: ObservableObject {
         return String(text[start...end])
     }
 
-    private func appendChatMessage(_ message: OpenClawChatMessage) {
+    @discardableResult
+    private func appendChatMessage(_ message: OpenClawChatMessage) -> UUID {
         chatMessages.append(message)
         if chatMessages.count > 100 {
             chatMessages.removeFirst(chatMessages.count - 100)
         }
+        return message.id
+    }
+
+    private func updateChatMessage(id: UUID, text: String) {
+        guard let index = chatMessages.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        chatMessages[index].text = text
+    }
+
+    private func removePendingAssistantPlaceholder() {
+        guard let index = chatMessages.lastIndex(where: { $0.role == .assistant && $0.text == "…" }) else {
+            return
+        }
+        chatMessages.remove(at: index)
     }
 
     private nonisolated func checkHealth(url: URL) async -> String {
@@ -1649,97 +2065,39 @@ struct OpenClawSettingsReader {
         var normalized = entries
 
         ensureEntry(
-            key: "models.providers.google.baseUrl",
-            value: "https://generativelanguage.googleapis.com/v1beta",
+            key: "models.providers.ollama.baseUrl",
+            value: "http://127.0.0.1:11434",
             in: &normalized
         )
         ensureEntry(
-            key: "models.providers.google.api",
-            value: "google-generative-ai",
+            key: "models.providers.ollama.api",
+            value: "ollama",
             in: &normalized
         )
         ensureEntry(
-            key: "models.providers.google.models",
+            key: "models.providers.ollama.authHeader",
+            value: "false",
+            kind: .bool,
+            in: &normalized
+        )
+        ensureEntry(
+            key: "models.providers.ollama.models",
             value: """
             [
               {
-                "id": "gemini-3.1-pro-preview",
-                "name": "Gemini 3.1 Pro Preview",
-                "api": "google-generative-ai",
-                "reasoning": true,
-                "input": ["text", "image"],
-                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-                "contextWindow": 1048576,
-                "maxTokens": 65536
-              },
-              {
-                "id": "gemini-3-flash-preview",
-                "name": "Gemini 3 Flash Preview",
-                "api": "google-generative-ai",
-                "reasoning": false,
-                "input": ["text", "image"],
-                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-                "contextWindow": 1048576,
-                "maxTokens": 65536
-              }
-            ]
-            """,
-            kind: .array,
-            in: &normalized
-        )
-
-        ensureEntry(
-            key: "models.providers.kilocode.baseUrl",
-            value: "https://api.kilo.ai/api/gateway/",
-            in: &normalized
-        )
-        ensureEntry(
-            key: "models.providers.kilocode.api",
-            value: "openai-completions",
-            in: &normalized
-        )
-        ensureEntry(
-            key: "models.providers.kilocode.models",
-            value: """
-            [
-              {
-                "id": "kilo/auto",
-                "name": "Kilo Auto",
-                "reasoning": true,
-                "input": ["text", "image"],
-                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-                "contextWindow": 1000000,
-                "maxTokens": 128000
-              }
-            ]
-            """,
-            kind: .array,
-            in: &normalized
-        )
-
-        ensureEntry(
-            key: "models.providers.openrouter.baseUrl",
-            value: "https://openrouter.ai/api/v1",
-            in: &normalized
-        )
-        ensureEntry(
-            key: "models.providers.openrouter.api",
-            value: "openai-completions",
-            in: &normalized
-        )
-        ensureEntry(
-            key: "models.providers.openrouter.models",
-            value: """
-            [
-              {
-                "id": "free",
-                "name": "OpenRouter Free",
-                "api": "openai-completions",
+                "id": "qwen3:14b",
+                "name": "Qwen3 14B (local Ollama)",
+                "api": "ollama",
                 "reasoning": false,
                 "input": ["text"],
                 "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-                "contextWindow": 128000,
+                "contextWindow": 65536,
                 "maxTokens": 8192,
+                "params": {
+                  "think": false,
+                  "keep_alive": "30m",
+                  "num_ctx": 65536
+                },
                 "compat": {
                   "supportsTools": false
                 }
@@ -2353,6 +2711,23 @@ private final class ProcessOutputBuffer: @unchecked Sendable {
     }
 }
 
+private final class ProcessCompletionState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var didComplete = false
+
+    func claim() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard !didComplete else {
+            return false
+        }
+
+        didComplete = true
+        return true
+    }
+}
+
 enum OpenClawLocalControllerError: LocalizedError {
     case missingRuntime(String)
     case gatewayUnavailable(String)
@@ -2378,10 +2753,17 @@ struct OpenClawChatMessage: Identifiable, Equatable {
         case error
     }
 
-    let id = UUID()
+    let id: UUID
     let role: Role
-    let text: String
-    let timestamp = Date()
+    var text: String
+    let timestamp: Date
+
+    init(id: UUID = UUID(), role: Role, text: String, timestamp: Date = Date()) {
+        self.id = id
+        self.role = role
+        self.text = text
+        self.timestamp = timestamp
+    }
 
     static func system(_ text: String) -> OpenClawChatMessage {
         OpenClawChatMessage(role: .system, text: text)

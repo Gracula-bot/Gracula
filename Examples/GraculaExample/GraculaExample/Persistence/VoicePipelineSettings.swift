@@ -8,8 +8,6 @@ enum SpeechRecognitionBackend: String, Codable, CaseIterable, Sendable {
 enum SpeechSynthesisBackend: String, Codable, CaseIterable, Sendable {
     case disabled
     case appleSystem
-    case voxcpmLocal
-    case voxcpmServer
 }
 
 struct VoicePipelineSettings: Codable, Sendable {
@@ -24,10 +22,6 @@ struct VoicePipelineSettings: Codable, Sendable {
         static let appleSystemVoiceIdentifier: String? = "com.apple.voice.compact.ru-RU.Milena"
         static let appleSystemSpeechRate: Float = 0.42
         static let appleSystemSpeechPitch: Float = 0.65
-        static let voxcpmServerBaseURL = "http://127.0.0.1:8000"
-        static let voxcpmModelName = "openbmb/VoxCPM2"
-        static let voxcpmVoiceName = "default"
-        static let voxcpmDevice = "cpu"
     }
 
     var speechRecognitionBackend: SpeechRecognitionBackend = .whisper
@@ -41,10 +35,6 @@ struct VoicePipelineSettings: Codable, Sendable {
     var appleSystemVoiceIdentifier: String? = Defaults.appleSystemVoiceIdentifier
     var appleSystemSpeechRate: Float = Defaults.appleSystemSpeechRate
     var appleSystemSpeechPitch: Float = Defaults.appleSystemSpeechPitch
-    var voxcpmServerBaseURL: String = Defaults.voxcpmServerBaseURL
-    var voxcpmModelName: String = Defaults.voxcpmModelName
-    var voxcpmVoiceName: String = Defaults.voxcpmVoiceName
-    var voxcpmDevice: String = Defaults.voxcpmDevice
 
     var startVoiceAutomatically: Bool {
         get { speakRecognizedText }
@@ -90,10 +80,6 @@ struct VoicePipelineSettings: Codable, Sendable {
         case appleSystemVoiceIdentifier
         case appleSystemSpeechRate
         case appleSystemSpeechPitch
-        case voxcpmServerBaseURL
-        case voxcpmModelName
-        case voxcpmVoiceName
-        case voxcpmDevice
         case recognitionModelName
         case recognitionLanguageCode
     }
@@ -115,8 +101,9 @@ struct VoicePipelineSettings: Codable, Sendable {
             ?? Defaults.parakeetModelName
         parakeetLanguageCode = try container.decodeIfPresent(String.self, forKey: .parakeetLanguageCode)
             ?? Defaults.parakeetLanguageCode
-        speechSynthesisBackend = try container.decodeIfPresent(SpeechSynthesisBackend.self, forKey: .speechSynthesisBackend)
-            ?? Defaults.speechSynthesisBackend
+        speechSynthesisBackend = Self.normalizedSpeechSynthesisBackend(
+            try container.decodeIfPresent(String.self, forKey: .speechSynthesisBackend)
+        )
         speakRecognizedText = try container.decodeIfPresent(Bool.self, forKey: .speakRecognizedText)
             ?? Defaults.speakRecognizedText
         appleSystemVoiceLanguageCode = try container.decodeIfPresent(String.self, forKey: .appleSystemVoiceLanguageCode)
@@ -127,14 +114,6 @@ struct VoicePipelineSettings: Codable, Sendable {
             ?? Defaults.appleSystemSpeechRate
         appleSystemSpeechPitch = try container.decodeIfPresent(Float.self, forKey: .appleSystemSpeechPitch)
             ?? Defaults.appleSystemSpeechPitch
-        voxcpmServerBaseURL = try container.decodeIfPresent(String.self, forKey: .voxcpmServerBaseURL)
-            ?? Defaults.voxcpmServerBaseURL
-        voxcpmModelName = try container.decodeIfPresent(String.self, forKey: .voxcpmModelName)
-            ?? Defaults.voxcpmModelName
-        voxcpmVoiceName = try container.decodeIfPresent(String.self, forKey: .voxcpmVoiceName)
-            ?? Defaults.voxcpmVoiceName
-        voxcpmDevice = try container.decodeIfPresent(String.self, forKey: .voxcpmDevice)
-            ?? Defaults.voxcpmDevice
     }
 
     func encode(to encoder: Encoder) throws {
@@ -150,10 +129,6 @@ struct VoicePipelineSettings: Codable, Sendable {
         try container.encodeIfPresent(appleSystemVoiceIdentifier, forKey: .appleSystemVoiceIdentifier)
         try container.encode(appleSystemSpeechRate, forKey: .appleSystemSpeechRate)
         try container.encode(appleSystemSpeechPitch, forKey: .appleSystemSpeechPitch)
-        try container.encode(voxcpmServerBaseURL, forKey: .voxcpmServerBaseURL)
-        try container.encode(voxcpmModelName, forKey: .voxcpmModelName)
-        try container.encode(voxcpmVoiceName, forKey: .voxcpmVoiceName)
-        try container.encode(voxcpmDevice, forKey: .voxcpmDevice)
     }
 
     private static func normalizedWhisperModelName(_ modelName: String) -> String {
@@ -163,6 +138,14 @@ struct VoicePipelineSettings: Codable, Sendable {
         default:
             return modelName
         }
+    }
+
+    private static func normalizedSpeechSynthesisBackend(_ rawValue: String?) -> SpeechSynthesisBackend {
+        guard let rawValue,
+              let backend = SpeechSynthesisBackend(rawValue: rawValue) else {
+            return Defaults.speechSynthesisBackend
+        }
+        return backend
     }
 }
 

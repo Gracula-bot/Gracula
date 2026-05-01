@@ -4,6 +4,7 @@ import SwiftUI
 struct AudioRecorderExampleView: View {
     @StateObject private var viewModel: AudioRecorderViewModel
     @StateObject private var openClawController = OpenClawLocalController()
+    @State private var didBootstrapOpenClaw = false
 
     init(viewModel: AudioRecorderViewModel) {
         _viewModel = StateObject(wrappedValue: viewModel)
@@ -30,6 +31,12 @@ struct AudioRecorderExampleView: View {
         .frame(minWidth: 900, minHeight: 700)
         .task {
             await viewModel.loadRecordings()
+            guard !didBootstrapOpenClaw else {
+                return
+            }
+            didBootstrapOpenClaw = true
+            openClawController.stop()
+            openClawController.start()
         }
     }
 }
@@ -170,11 +177,8 @@ struct BrainSettingsSection: View {
     let snapshot: OpenClawSettingsSnapshot
     @Binding var environmentEntries: [OpenClawEditableSetting]
     @Binding var jsonEntries: [OpenClawEditableSetting]
-    @State private var selectedPreset: BrainPreset = .googleGeminiPro
+    @State private var selectedPreset: BrainPreset = .localQwen
     @State private var customModelRef = ""
-    @State private var googleApiKey = ""
-    @State private var openRouterApiKey = ""
-    @State private var kiloCodeApiKey = ""
     @State private var isSyncing = false
 
     init(
@@ -214,53 +218,7 @@ struct BrainSettingsSection: View {
                     applyCustomModelRef(newValue)
                 }
 
-            SecureField("Google Gemini API key", text: $googleApiKey)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.caption, design: .monospaced))
-                .onChange(of: googleApiKey) { _, newValue in
-                    guard !isSyncing else { return }
-                    upsertJSONSetting(
-                        key: "models.providers.google.apiKey",
-                        value: newValue,
-                        isSecret: true
-                    )
-                }
-
-            SecureField("OpenRouter API key", text: $openRouterApiKey)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.caption, design: .monospaced))
-                .onChange(of: openRouterApiKey) { _, newValue in
-                    guard !isSyncing else { return }
-                    upsertEnvironmentSetting(
-                        key: "OPENROUTER_API_KEY",
-                        value: newValue,
-                        isSecret: true
-                    )
-                    upsertJSONSetting(
-                        key: "models.providers.openrouter.apiKey",
-                        value: newValue,
-                        isSecret: true
-                    )
-                }
-
-            SecureField("KiloCode API key", text: $kiloCodeApiKey)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.caption, design: .monospaced))
-                .onChange(of: kiloCodeApiKey) { _, newValue in
-                    guard !isSyncing else { return }
-                    upsertEnvironmentSetting(
-                        key: "KILOCODE_API_KEY",
-                        value: newValue,
-                        isSecret: true
-                    )
-                    upsertJSONSetting(
-                        key: "models.providers.kilocode.apiKey",
-                        value: newValue,
-                        isSecret: true
-                    )
-                }
-
-            Text("Google Gemini works with `google/gemini-3.1-pro-preview` or `google/gemini-3-flash-preview`. OpenClaw also accepts `GEMINI_API_KEY` and `GOOGLE_API_KEY` for provider auth.")
+            Text("Local Ollama runs on `http://127.0.0.1:11434` with `qwen3:14b`, no cloud API key required.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -279,20 +237,12 @@ struct BrainSettingsSection: View {
 
         let currentModel = currentPrimaryModelRef()
         if currentModel.isEmpty {
-            selectedPreset = .googleGeminiPro
+            selectedPreset = .localQwen
             customModelRef = selectedPreset.modelRef
         } else {
             selectedPreset = BrainPreset.allCases.first(where: { $0.modelRef == currentModel }) ?? .custom
             customModelRef = currentModel
         }
-        googleApiKey = value(for: "models.providers.google.apiKey") ?? ""
-        openRouterApiKey = environmentValue(for: "OPENROUTER_API_KEY")
-            ?? value(for: "models.providers.openrouter.apiKey")
-            ?? ""
-        kiloCodeApiKey = environmentValue(for: "KILOCODE_API_KEY")
-            ?? value(for: "models.providers.kilocode.apiKey")
-            ?? ""
-        ensureProviderDefaults()
     }
 
     private var activeBrainDisplayName: String {
@@ -426,9 +376,28 @@ struct BrainSettingsSection: View {
     }
 
     private func ensureProviderDefaults() {
-        ensureGoogleProviderDefaults()
-        ensureKilocodeProviderDefaults()
-        ensureOpenRouterProviderDefaults()
+        ensureJSONSetting(
+            key: "agents.defaults.model.primary",
+            value: BrainPreset.localQwen.modelRef,
+            isSecret: false
+        )
+        ensureJSONSetting(
+            key: "agents.defaults.model.fallbacks",
+            value: "[]",
+            isSecret: false,
+            kind: .array
+        )
+        ensureJSONSetting(
+            key: "agents.defaults.thinkingDefault",
+            value: "off",
+            isSecret: false
+        )
+        ensureJSONSetting(
+            key: "agents.defaults.reasoningDefault",
+            value: "off",
+            isSecret: false
+        )
+        ensureOllamaProviderDefaults()
     }
 
     private func clearModelFallbacks() {
@@ -440,61 +409,27 @@ struct BrainSettingsSection: View {
         )
     }
 
-    private func ensureGoogleProviderDefaults() {
-        let providerPrefix = "models.providers.google"
+    private func ensureOllamaProviderDefaults() {
+        let providerPrefix = "models.providers.ollama"
         ensureJSONSetting(
             key: "\(providerPrefix).baseUrl",
-            value: "https://generativelanguage.googleapis.com/v1beta",
+            value: "http://127.0.0.1:11434",
             isSecret: false
         )
         ensureJSONSetting(
             key: "\(providerPrefix).api",
-            value: "google-generative-ai",
+            value: "ollama",
             isSecret: false
         )
         ensureJSONSetting(
-            key: "\(providerPrefix).models",
-            value: Self.googleProviderModelsJSON,
+            key: "\(providerPrefix).authHeader",
+            value: "false",
             isSecret: false,
-            kind: .array
-        )
-    }
-
-    private func ensureKilocodeProviderDefaults() {
-        let providerPrefix = "models.providers.kilocode"
-        ensureJSONSetting(
-            key: "\(providerPrefix).baseUrl",
-            value: "https://api.kilo.ai/api/gateway/",
-            isSecret: false
-        )
-        ensureJSONSetting(
-            key: "\(providerPrefix).api",
-            value: "openai-completions",
-            isSecret: false
+            kind: .bool
         )
         ensureJSONSetting(
             key: "\(providerPrefix).models",
-            value: Self.kilocodeProviderModelsJSON,
-            isSecret: false,
-            kind: .array
-        )
-    }
-
-    private func ensureOpenRouterProviderDefaults() {
-        let providerPrefix = "models.providers.openrouter"
-        ensureJSONSetting(
-            key: "\(providerPrefix).baseUrl",
-            value: "https://openrouter.ai/api/v1",
-            isSecret: false
-        )
-        ensureJSONSetting(
-            key: "\(providerPrefix).api",
-            value: "openai-completions",
-            isSecret: false
-        )
-        ensureJSONSetting(
-            key: "\(providerPrefix).models",
-            value: Self.openRouterProviderModelsJSON,
+            value: Self.ollamaProviderModelsJSON,
             isSecret: false,
             kind: .array
         )
@@ -513,61 +448,23 @@ struct BrainSettingsSection: View {
         upsertJSONSetting(key: key, value: settingValue, isSecret: isSecret, kind: kind)
     }
 
-    private static var googleProviderModelsJSON: String {
+    private static var ollamaProviderModelsJSON: String {
         """
         [
           {
-            "id": "gemini-3.1-pro-preview",
-            "name": "Gemini 3.1 Pro Preview",
-            "api": "google-generative-ai",
-            "reasoning": true,
-            "input": ["text", "image"],
-            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-            "contextWindow": 1048576,
-            "maxTokens": 65536
-          },
-          {
-            "id": "gemini-3-flash-preview",
-            "name": "Gemini 3 Flash Preview",
-            "api": "google-generative-ai",
-            "reasoning": false,
-            "input": ["text", "image"],
-            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-            "contextWindow": 1048576,
-            "maxTokens": 65536
-          }
-        ]
-        """
-    }
-
-    private static var kilocodeProviderModelsJSON: String {
-        """
-        [
-          {
-            "id": "kilo/auto",
-            "name": "Kilo Auto",
-            "reasoning": true,
-            "input": ["text", "image"],
-            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-            "contextWindow": 1000000,
-            "maxTokens": 128000
-          }
-        ]
-        """
-    }
-
-    private static var openRouterProviderModelsJSON: String {
-        """
-        [
-          {
-            "id": "free",
-            "name": "OpenRouter Free",
-            "api": "openai-completions",
+            "id": "qwen3:14b",
+            "name": "Qwen3 14B (local Ollama)",
+            "api": "ollama",
             "reasoning": false,
             "input": ["text"],
             "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-            "contextWindow": 128000,
+            "contextWindow": 65536,
             "maxTokens": 8192,
+            "params": {
+              "think": false,
+              "keep_alive": "30m",
+              "num_ctx": 65536
+            },
             "compat": {
               "supportsTools": false
             }
@@ -578,36 +475,15 @@ struct BrainSettingsSection: View {
 }
 
 enum BrainPreset: String, CaseIterable, Identifiable {
-    case openaiGPT54 = "openai/gpt-5.4"
-    case openaiCodexGPT54 = "openai-codex/gpt-5.4"
-    case anthropicOpus46 = "anthropic/claude-opus-4-6"
-    case anthropicSonnet46 = "anthropic/claude-sonnet-4-6"
-    case kiloAutoFree = "openrouter/free"
-    case kilocodeAuto = "kilocode/kilo/auto"
-    case googleGeminiPro = "google/gemini-3.1-pro-preview"
-    case googleGeminiFlash = "google/gemini-3-flash-preview"
+    case localQwen = "ollama/qwen3:14b"
     case custom
 
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
-        case .openaiGPT54:
-            return "OpenAI GPT-5.4"
-        case .openaiCodexGPT54:
-            return "OpenAI Codex GPT-5.4"
-        case .anthropicOpus46:
-            return "Anthropic Claude Opus 4.6"
-        case .anthropicSonnet46:
-            return "Anthropic Claude Sonnet 4.6"
-        case .kiloAutoFree:
-            return "Kilo Auto Free"
-        case .kilocodeAuto:
-            return "KiloCode Kilo Auto"
-        case .googleGeminiPro:
-            return "Google Gemini 3.1 Pro"
-        case .googleGeminiFlash:
-            return "Google Gemini 3 Flash"
+        case .localQwen:
+            return "Local Qwen3 14B"
         case .custom:
             return "Custom"
         }
@@ -617,10 +493,6 @@ enum BrainPreset: String, CaseIterable, Identifiable {
         switch self {
         case .custom:
             return ""
-        case .kiloAutoFree:
-            return "openrouter/free"
-        case .kilocodeAuto:
-            return "kilocode/kilo/auto"
         default:
             return rawValue
         }
@@ -757,11 +629,6 @@ private struct VoicePipelineSettingsEditorView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-
-                TextField("VoxCPM server base URL", text: $draft.voxcpmServerBaseURL)
-                TextField("VoxCPM model", text: $draft.voxcpmModelName)
-                TextField("VoxCPM voice", text: $draft.voxcpmVoiceName)
-                TextField("VoxCPM device", text: $draft.voxcpmDevice)
             }
 
             HStack {
@@ -816,10 +683,6 @@ private struct VoicePipelineSettingsEditorView: View {
             return "Disabled"
         case .appleSystem:
             return "Apple System"
-        case .voxcpmLocal:
-            return "VoxCPM Local"
-        case .voxcpmServer:
-            return "VoxCPM Server"
         }
     }
 }
