@@ -13,6 +13,8 @@ final class AudioRecorderViewModel: ObservableObject {
     @Published private(set) var inputDevices: [AudioInputDevice] = []
     @Published private(set) var systemVoices: [SystemSpeechVoice] = []
     @Published private(set) var diagnostics: [String] = []
+    @Published private(set) var notificationMonitorStatus = "Not started"
+    @Published private(set) var latestNotificationText = "No local notifications announced yet."
     @Published var selectedInputDeviceID: String?
     @Published var selectedSystemVoiceID: String {
         didSet {
@@ -31,6 +33,10 @@ final class AudioRecorderViewModel: ObservableObject {
     private var voicePipeline: VoicePipeline
     private var voiceSettings: VoicePipelineSettings
     private let diagnosticsFileURL: URL
+    private let notificationReader = LocalNotificationReader()
+    private var notificationMonitorTask: Task<Void, Never>?
+    private var localNotificationProcessor: ((LocalNotification, String) async -> String?)?
+    private var lastSeenNotificationID: Int64 = 0
     private var didFinishInitializing = false
     private var isApplyingVoiceSettings = false
 
@@ -60,6 +66,11 @@ final class AudioRecorderViewModel: ObservableObject {
         Task {
             await voicePipeline.prewarm()
         }
+        restartNotificationMonitor()
+    }
+
+    deinit {
+        notificationMonitorTask?.cancel()
     }
 
     var buttonTitle: String {
@@ -115,6 +126,7 @@ final class AudioRecorderViewModel: ObservableObject {
             await transcriber.prewarm()
             await voicePipeline.prewarm()
         }
+        restartNotificationMonitor()
     }
 
     func loadRecordings() async {
@@ -179,6 +191,81 @@ final class AudioRecorderViewModel: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([diagnosticsFileURL])
     }
 
+    func setLocalNotificationProcessor(_ processor: @escaping (LocalNotification, String) async -> String?) {
+        localNotificationProcessor = processor
+    }
+
+    func openPrivacySettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    func restartNotificationMonitor() {
+        notificationMonitorTask?.cancel()
+        notificationMonitorTask = nil
+
+        guard voiceSettings.announceLocalNotifications else {
+            notificationMonitorStatus = "Disabled"
+            appendDiagnostic("Local notification announcements disabled.")
+            return
+        }
+
+        notificationMonitorStatus = "Starting..."
+        appendDiagnostic("Starting local notification monitor.")
+        let pollInterval = max(1.0, voiceSettings.localNotificationPollIntervalSeconds)
+
+        notificationMonitorTask = Task { [weak self] in
+            guard let self else {
+                return
+            }
+
+            do {
+                let latestID = try await notificationReader.latestNotificationID()
+                await MainActor.run {
+                    self.lastSeenNotificationID = latestID
+                    self.notificationMonitorStatus = "Watching for new notifications"
+                    self.appendDiagnostic("Local notification monitor ready. baselineID=\(latestID)")
+                }
+            } catch {
+                await MainActor.run {
+                    self.notificationMonitorStatus = "Needs Full Disk Access"
+                    self.appendDiagnostic("Local notification monitor failed to start: \(error.localizedDescription)")
+                }
+                return
+            }
+
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(pollInterval))
+                guard !Task.isCancelled else {
+                    return
+                }
+
+                do {
+                    let notifications = try await notificationReader.notifications(
+                        after: await MainActor.run { self.lastSeenNotificationID },
+                        limit: 5
+                    )
+                    guard !notifications.isEmpty else {
+                        continue
+                    }
+
+                    for notification in notifications {
+                        await MainActor.run {
+                            self.lastSeenNotificationID = max(self.lastSeenNotificationID, notification.id)
+                        }
+                        await self.announce(notification)
+                    }
+                } catch {
+                    await MainActor.run {
+                        self.notificationMonitorStatus = "Read failed"
+                        self.appendDiagnostic("Local notification monitor read failed: \(error.localizedDescription)")
+                    }
+                }
+            }
+        }
+    }
+
     private func startRecording(reportError: ((String) -> Void)?) async {
         let startedAt = PerformanceLog.checkpoint()
         do {
@@ -200,6 +287,66 @@ final class AudioRecorderViewModel: ObservableObject {
             reportError?(error.localizedDescription)
             log.error("startRecording failed after \(PerformanceLog.elapsedDescription(since: startedAt)): \(error.localizedDescription)")
         }
+    }
+
+    private func announce(_ notification: LocalNotification) async {
+        let text = notificationSpokenText(notification)
+        guard !text.isEmpty else {
+            await MainActor.run {
+                self.lastSeenNotificationID = max(self.lastSeenNotificationID, notification.id)
+            }
+            return
+        }
+
+        await MainActor.run {
+            self.latestNotificationText = text
+            self.notificationMonitorStatus = "Sending notification to OpenClaw"
+            self.appendDiagnostic("Sending local notification to OpenClaw. app=\(notification.appIdentifier), id=\(notification.id)")
+        }
+
+        if let localNotificationProcessor,
+           let reply = await localNotificationProcessor(notification, text)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !reply.isEmpty {
+            await MainActor.run {
+                self.latestNotificationText = reply
+                self.notificationMonitorStatus = "Speaking OpenClaw notification reply"
+                self.appendDiagnostic("OpenClaw processed notification. replyCharacters=\(reply.count)")
+            }
+            let didSpeak = await voicePipeline.speakLocalNotificationText(reply)
+
+            await MainActor.run {
+                self.notificationMonitorStatus = didSpeak ? "Watching for new notifications" : "Speech unavailable"
+                if !didSpeak {
+                    self.appendDiagnostic("Local notification was processed by OpenClaw but speech synthesis did not run.")
+                }
+            }
+        } else {
+            await MainActor.run {
+                self.notificationMonitorStatus = "OpenClaw unavailable"
+                self.appendDiagnostic("OpenClaw did not return a notification reply; notification was not spoken.")
+            }
+        }
+    }
+
+    private func notificationSpokenText(_ notification: LocalNotification) -> String {
+        let parts: [String]
+        if voiceSettings.includeNotificationAppName {
+            parts = [
+                "Уведомление",
+                notification.spokenText
+            ]
+        } else {
+            parts = [
+                notification.title,
+                notification.subtitle,
+                notification.body
+            ]
+        }
+
+        return parts
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: ". ")
     }
 
     private func stopRecording(

@@ -28,6 +28,9 @@ struct VoicePipelineSettings: Codable, Sendable {
         static let voxcpmModelName = "openbmb/VoxCPM2"
         static let voxcpmVoiceName = "default"
         static let voxcpmDevice = "cpu"
+        static let announceLocalNotifications = true
+        static let localNotificationPollIntervalSeconds = 2.0
+        static let includeNotificationAppName = true
     }
 
     var speechRecognitionBackend: SpeechRecognitionBackend = .whisper
@@ -45,6 +48,9 @@ struct VoicePipelineSettings: Codable, Sendable {
     var voxcpmModelName: String = Defaults.voxcpmModelName
     var voxcpmVoiceName: String = Defaults.voxcpmVoiceName
     var voxcpmDevice: String = Defaults.voxcpmDevice
+    var announceLocalNotifications: Bool = Defaults.announceLocalNotifications
+    var localNotificationPollIntervalSeconds: Double = Defaults.localNotificationPollIntervalSeconds
+    var includeNotificationAppName: Bool = Defaults.includeNotificationAppName
 
     var startVoiceAutomatically: Bool {
         get { speakRecognizedText }
@@ -94,6 +100,9 @@ struct VoicePipelineSettings: Codable, Sendable {
         case voxcpmModelName
         case voxcpmVoiceName
         case voxcpmDevice
+        case announceLocalNotifications
+        case localNotificationPollIntervalSeconds
+        case includeNotificationAppName
         case recognitionModelName
         case recognitionLanguageCode
     }
@@ -135,6 +144,12 @@ struct VoicePipelineSettings: Codable, Sendable {
             ?? Defaults.voxcpmVoiceName
         voxcpmDevice = try container.decodeIfPresent(String.self, forKey: .voxcpmDevice)
             ?? Defaults.voxcpmDevice
+        announceLocalNotifications = try container.decodeIfPresent(Bool.self, forKey: .announceLocalNotifications)
+            ?? Defaults.announceLocalNotifications
+        localNotificationPollIntervalSeconds = try container.decodeIfPresent(Double.self, forKey: .localNotificationPollIntervalSeconds)
+            ?? Defaults.localNotificationPollIntervalSeconds
+        includeNotificationAppName = try container.decodeIfPresent(Bool.self, forKey: .includeNotificationAppName)
+            ?? Defaults.includeNotificationAppName
     }
 
     func encode(to encoder: Encoder) throws {
@@ -154,6 +169,9 @@ struct VoicePipelineSettings: Codable, Sendable {
         try container.encode(voxcpmModelName, forKey: .voxcpmModelName)
         try container.encode(voxcpmVoiceName, forKey: .voxcpmVoiceName)
         try container.encode(voxcpmDevice, forKey: .voxcpmDevice)
+        try container.encode(announceLocalNotifications, forKey: .announceLocalNotifications)
+        try container.encode(localNotificationPollIntervalSeconds, forKey: .localNotificationPollIntervalSeconds)
+        try container.encode(includeNotificationAppName, forKey: .includeNotificationAppName)
     }
 
     private static func normalizedWhisperModelName(_ modelName: String) -> String {

@@ -48,6 +48,14 @@ actor VoicePipeline {
             return false
         }
 
+        return await speak(text)
+    }
+
+    func speakLocalNotificationText(_ text: String) async -> Bool {
+        await speak(text)
+    }
+
+    private func speak(_ text: String) async -> Bool {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedText.isEmpty else {
             return false

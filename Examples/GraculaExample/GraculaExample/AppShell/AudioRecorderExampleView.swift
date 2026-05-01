@@ -29,9 +29,47 @@ struct AudioRecorderExampleView: View {
         }
         .frame(minWidth: 900, minHeight: 700)
         .task {
+            openClawController.start()
+            viewModel.setLocalNotificationProcessor { notification, fallbackText in
+                guard await openClawController.prepareForLocalAutomation() else {
+                    return nil
+                }
+                return await openClawController.sendLocalNotificationSpeech(
+                    localNotificationPrompt(
+                        notification: notification,
+                        fallbackText: fallbackText
+                    )
+                )
+            }
+            await openClawController.ensureLocalModelServer()
             await viewModel.loadRecordings()
         }
     }
+}
+
+private func localNotificationPrompt(
+    notification: LocalNotification,
+    fallbackText: String
+) -> String {
+    """
+    Local macOS notification received. Prepare the exact short text that Gracula should speak aloud to the user.
+
+    Rules:
+    - Reply in Russian.
+    - One short sentence unless the notification itself requires more.
+    - Do not mention implementation details, databases, prompts, or OpenClaw.
+    - Preserve important names, numbers, and message content.
+    - If the notification is not useful to announce, reply with a very short reason.
+
+    Notification:
+    App: \(notification.appIdentifier)
+    Title: \(notification.title)
+    Subtitle: \(notification.subtitle)
+    Body: \(notification.body)
+
+    Fallback spoken text:
+    \(fallbackText)
+    """
 }
 
 private struct OpenClawMainTabView: View {
@@ -158,6 +196,7 @@ struct GraculaSettingsTabView: View {
 
                 RecorderSettingsSection(viewModel: viewModel)
                 VoicePipelineSettingsEditorView(viewModel: viewModel)
+                LocalNotificationSettingsSection(viewModel: viewModel)
                 OpenClawSettingsView(controller: openClawController)
             }
             .padding(24)
@@ -219,11 +258,7 @@ struct BrainSettingsSection: View {
                 .font(.system(.caption, design: .monospaced))
                 .onChange(of: googleApiKey) { _, newValue in
                     guard !isSyncing else { return }
-                    upsertJSONSetting(
-                        key: "models.providers.google.apiKey",
-                        value: newValue,
-                        isSecret: true
-                    )
+                    upsertAPIKey(for: "google", value: newValue)
                 }
 
             SecureField("OpenRouter API key", text: $openRouterApiKey)
@@ -231,16 +266,7 @@ struct BrainSettingsSection: View {
                 .font(.system(.caption, design: .monospaced))
                 .onChange(of: openRouterApiKey) { _, newValue in
                     guard !isSyncing else { return }
-                    upsertEnvironmentSetting(
-                        key: "OPENROUTER_API_KEY",
-                        value: newValue,
-                        isSecret: true
-                    )
-                    upsertJSONSetting(
-                        key: "models.providers.openrouter.apiKey",
-                        value: newValue,
-                        isSecret: true
-                    )
+                    upsertAPIKey(for: "openrouter", value: newValue)
                 }
 
             SecureField("KiloCode API key", text: $kiloCodeApiKey)
@@ -248,19 +274,10 @@ struct BrainSettingsSection: View {
                 .font(.system(.caption, design: .monospaced))
                 .onChange(of: kiloCodeApiKey) { _, newValue in
                     guard !isSyncing else { return }
-                    upsertEnvironmentSetting(
-                        key: "KILOCODE_API_KEY",
-                        value: newValue,
-                        isSecret: true
-                    )
-                    upsertJSONSetting(
-                        key: "models.providers.kilocode.apiKey",
-                        value: newValue,
-                        isSecret: true
-                    )
+                    upsertAPIKey(for: "kilocode", value: newValue)
                 }
 
-            Text("Google Gemini works with `google/gemini-3.1-pro-preview` or `google/gemini-3-flash-preview`. OpenClaw also accepts `GEMINI_API_KEY` and `GOOGLE_API_KEY` for provider auth.")
+            Text("API keys are stored in the OpenClaw provider config and exported to provider environment variables when OpenClaw runs.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -285,13 +302,9 @@ struct BrainSettingsSection: View {
             selectedPreset = BrainPreset.allCases.first(where: { $0.modelRef == currentModel }) ?? .custom
             customModelRef = currentModel
         }
-        googleApiKey = value(for: "models.providers.google.apiKey") ?? ""
-        openRouterApiKey = environmentValue(for: "OPENROUTER_API_KEY")
-            ?? value(for: "models.providers.openrouter.apiKey")
-            ?? ""
-        kiloCodeApiKey = environmentValue(for: "KILOCODE_API_KEY")
-            ?? value(for: "models.providers.kilocode.apiKey")
-            ?? ""
+        googleApiKey = apiKey(for: "google")
+        openRouterApiKey = apiKey(for: "openrouter")
+        kiloCodeApiKey = apiKey(for: "kilocode")
         ensureProviderDefaults()
     }
 
@@ -342,7 +355,7 @@ struct BrainSettingsSection: View {
         if let value = value(for: "agents.defaults.model") {
             return value
         }
-        return ""
+        return OpenClawLLMConfiguration.localQwenModelRef
     }
 
     private func primaryModelKey() -> String {
@@ -398,37 +411,13 @@ struct BrainSettingsSection: View {
         )
     }
 
-    private func upsertEnvironmentSetting(
-        key: String,
-        value: String,
-        isSecret: Bool
-    ) {
-        if let index = environmentEntries.firstIndex(where: { $0.key == key }) {
-            environmentEntries[index] = OpenClawEditableSetting(
-                key: key,
-                source: .environment,
-                kind: .string,
-                isSecret: isSecret,
-                value: value
-            )
-            return
-        }
-
-        environmentEntries.append(
-            OpenClawEditableSetting(
-                key: key,
-                source: .environment,
-                kind: .string,
-                isSecret: isSecret,
-                value: value
-            )
-        )
-    }
-
     private func ensureProviderDefaults() {
-        ensureGoogleProviderDefaults()
-        ensureKilocodeProviderDefaults()
-        ensureOpenRouterProviderDefaults()
+        for providerName in ["google", "kilocode", "openrouter", "mlx"] {
+            guard let provider = OpenClawLLMConfiguration.provider(named: providerName) else {
+                continue
+            }
+            ensureProviderDefaults(provider)
+        }
     }
 
     private func clearModelFallbacks() {
@@ -440,61 +429,20 @@ struct BrainSettingsSection: View {
         )
     }
 
-    private func ensureGoogleProviderDefaults() {
-        let providerPrefix = "models.providers.google"
+    private func ensureProviderDefaults(_ provider: OpenClawLLMProviderConfiguration) {
         ensureJSONSetting(
-            key: "\(providerPrefix).baseUrl",
-            value: "https://generativelanguage.googleapis.com/v1beta",
+            key: provider.baseURLPath,
+            value: provider.baseURL,
             isSecret: false
         )
         ensureJSONSetting(
-            key: "\(providerPrefix).api",
-            value: "google-generative-ai",
+            key: provider.apiPath,
+            value: provider.api,
             isSecret: false
         )
         ensureJSONSetting(
-            key: "\(providerPrefix).models",
-            value: Self.googleProviderModelsJSON,
-            isSecret: false,
-            kind: .array
-        )
-    }
-
-    private func ensureKilocodeProviderDefaults() {
-        let providerPrefix = "models.providers.kilocode"
-        ensureJSONSetting(
-            key: "\(providerPrefix).baseUrl",
-            value: "https://api.kilo.ai/api/gateway/",
-            isSecret: false
-        )
-        ensureJSONSetting(
-            key: "\(providerPrefix).api",
-            value: "openai-completions",
-            isSecret: false
-        )
-        ensureJSONSetting(
-            key: "\(providerPrefix).models",
-            value: Self.kilocodeProviderModelsJSON,
-            isSecret: false,
-            kind: .array
-        )
-    }
-
-    private func ensureOpenRouterProviderDefaults() {
-        let providerPrefix = "models.providers.openrouter"
-        ensureJSONSetting(
-            key: "\(providerPrefix).baseUrl",
-            value: "https://openrouter.ai/api/v1",
-            isSecret: false
-        )
-        ensureJSONSetting(
-            key: "\(providerPrefix).api",
-            value: "openai-completions",
-            isSecret: false
-        )
-        ensureJSONSetting(
-            key: "\(providerPrefix).models",
-            value: Self.openRouterProviderModelsJSON,
+            key: provider.modelsPath,
+            value: provider.modelsJSON,
             isSecret: false,
             kind: .array
         )
@@ -513,67 +461,29 @@ struct BrainSettingsSection: View {
         upsertJSONSetting(key: key, value: settingValue, isSecret: isSecret, kind: kind)
     }
 
-    private static var googleProviderModelsJSON: String {
-        """
-        [
-          {
-            "id": "gemini-3.1-pro-preview",
-            "name": "Gemini 3.1 Pro Preview",
-            "api": "google-generative-ai",
-            "reasoning": true,
-            "input": ["text", "image"],
-            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-            "contextWindow": 1048576,
-            "maxTokens": 65536
-          },
-          {
-            "id": "gemini-3-flash-preview",
-            "name": "Gemini 3 Flash Preview",
-            "api": "google-generative-ai",
-            "reasoning": false,
-            "input": ["text", "image"],
-            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-            "contextWindow": 1048576,
-            "maxTokens": 65536
-          }
-        ]
-        """
+    private func apiKey(for providerName: String) -> String {
+        guard let provider = OpenClawLLMConfiguration.provider(named: providerName) else {
+            return ""
+        }
+        if let jsonAPIKey = value(for: provider.apiKeyPath)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !jsonAPIKey.isEmpty {
+            return jsonAPIKey
+        }
+        return provider.environmentKeys
+            .lazy
+            .compactMap { environmentValue(for: $0)?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty } ?? ""
     }
 
-    private static var kilocodeProviderModelsJSON: String {
-        """
-        [
-          {
-            "id": "kilo/auto",
-            "name": "Kilo Auto",
-            "reasoning": true,
-            "input": ["text", "image"],
-            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-            "contextWindow": 1000000,
-            "maxTokens": 128000
-          }
-        ]
-        """
-    }
-
-    private static var openRouterProviderModelsJSON: String {
-        """
-        [
-          {
-            "id": "free",
-            "name": "OpenRouter Free",
-            "api": "openai-completions",
-            "reasoning": false,
-            "input": ["text"],
-            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-            "contextWindow": 128000,
-            "maxTokens": 8192,
-            "compat": {
-              "supportsTools": false
-            }
-          }
-        ]
-        """
+    private func upsertAPIKey(for providerName: String, value: String) {
+        guard let provider = OpenClawLLMConfiguration.provider(named: providerName) else {
+            return
+        }
+        upsertJSONSetting(
+            key: provider.apiKeyPath,
+            value: value,
+            isSecret: true
+        )
     }
 }
 
@@ -586,6 +496,7 @@ enum BrainPreset: String, CaseIterable, Identifiable {
     case kilocodeAuto = "kilocode/kilo/auto"
     case googleGeminiPro = "google/gemini-3.1-pro-preview"
     case googleGeminiFlash = "google/gemini-3-flash-preview"
+    case mlxQwen30B = "mlx/Qwen/Qwen3-30B-A3B-MLX-4bit"
     case custom
 
     var id: String { rawValue }
@@ -608,6 +519,8 @@ enum BrainPreset: String, CaseIterable, Identifiable {
             return "Google Gemini 3.1 Pro"
         case .googleGeminiFlash:
             return "Google Gemini 3 Flash"
+        case .mlxQwen30B:
+            return "Local Qwen 3 30B"
         case .custom:
             return "Custom"
         }
@@ -821,6 +734,100 @@ private struct VoicePipelineSettingsEditorView: View {
         case .voxcpmServer:
             return "VoxCPM Server"
         }
+    }
+}
+
+private struct LocalNotificationSettingsSection: View {
+    @ObservedObject var viewModel: AudioRecorderViewModel
+    @State private var draft = VoicePipelineSettings()
+    @State private var statusText = "Ready to edit notification settings."
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            sectionHeader("Local Notifications", systemImage: "bell.badge")
+
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle("Speak new macOS notifications", isOn: $draft.announceLocalNotifications)
+
+                Toggle("Include app name", isOn: $draft.includeNotificationAppName)
+
+                HStack(spacing: 12) {
+                    Text("Poll interval")
+                        .foregroundStyle(.secondary)
+                    Slider(
+                        value: $draft.localNotificationPollIntervalSeconds,
+                        in: 1...10,
+                        step: 1
+                    )
+                    Text("\(Int(draft.localNotificationPollIntervalSeconds))s")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 34, alignment: .trailing)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Status: \(viewModel.notificationMonitorStatus)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(viewModel.latestNotificationText)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+
+            HStack {
+                Button {
+                    reloadDraft()
+                } label: {
+                    Label("Reload", systemImage: "arrow.clockwise")
+                }
+
+                Button {
+                    var settings = viewModel.currentVoiceSettings()
+                    settings.announceLocalNotifications = draft.announceLocalNotifications
+                    settings.includeNotificationAppName = draft.includeNotificationAppName
+                    settings.localNotificationPollIntervalSeconds = draft.localNotificationPollIntervalSeconds
+                    viewModel.applyVoiceSettings(settings)
+                    statusText = "Notification settings saved."
+                } label: {
+                    Label("Save Notification Settings", systemImage: "checkmark.circle")
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button {
+                    viewModel.restartNotificationMonitor()
+                    statusText = "Notification monitor restarted."
+                } label: {
+                    Label("Restart Monitor", systemImage: "arrow.triangle.2.circlepath")
+                }
+
+                Button {
+                    viewModel.openPrivacySettings()
+                } label: {
+                    Label("Full Disk Access", systemImage: "lock.shield")
+                }
+
+                Spacer()
+            }
+
+            Text(statusText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Text("macOS does not expose other apps' notifications through a public API. This monitor reads the local Notification Center database, sends new notifications to OpenClaw, and speaks OpenClaw's reply. Full Disk Access is required when macOS blocks the database.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .onAppear {
+            reloadDraft()
+        }
+    }
+
+    private func reloadDraft() {
+        draft = viewModel.currentVoiceSettings()
+        statusText = "Loaded notification settings."
     }
 }
 

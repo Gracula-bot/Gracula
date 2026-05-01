@@ -5,6 +5,7 @@
 ## User settings
 xcuserdata/
 .DS_Store
+.openclaw/
 
 ## Obj-C/Swift specific
 *.hmap

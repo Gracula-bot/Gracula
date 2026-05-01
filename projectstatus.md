@@ -183,7 +183,7 @@ Status: completed
 | --- | --- | --- |
 | 1. Add local OpenClaw controller | Done | Added a local Node-based controller for starting the OpenClaw gateway/stream bridge and sending local agent turns. |
 | 2. Add OpenClaw controls and chat UI | Done | Added status, logs, dashboard controls, chat transcript, send, and reset controls. |
-| 3. Resolve configured gateway port | Done | Controller reads `OPENCLAW_GATEWAY_PORT` or `~/.openclaw/openclaw.json` and avoids stale hardcoded gateway checks. |
+| 3. Resolve configured gateway port | Done | Controller reads `OPENCLAW_GATEWAY_PORT` or project-local `.openclaw/openclaw.json` and avoids stale hardcoded gateway checks. |
 | 4. Parse and recover OpenClaw replies | Done | Chat handles root/result payloads and recovers latest assistant text from OpenClaw session transcripts when CLI payloads are empty. |
 | 5. Route voice messages to OpenClaw | Done | Microphone recordings are transcribed, sent to OpenClaw, appended to chat, and bot replies are spoken. |
 | 6. Add macOS bot voice selection | Done | Added a `Bot Voice` picker backed by `AVSpeechSynthesisVoice`, persisted selected voice identifier, and routed system TTS through it. |

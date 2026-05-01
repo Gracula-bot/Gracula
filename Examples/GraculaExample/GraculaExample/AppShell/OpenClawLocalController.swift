@@ -2,6 +2,1144 @@ import AppKit
 import Automation
 import Foundation
 
+enum OpenClawRuntimePaths {
+    static var configDirectory: URL {
+        resolveGraculaProjectDirectory()
+            .appendingPathComponent(".openclaw", isDirectory: true)
+    }
+
+    static var workspaceDirectory: URL {
+        configDirectory.appendingPathComponent("workspace", isDirectory: true)
+    }
+
+    static var configURL: URL {
+        configDirectory.appendingPathComponent("openclaw.json")
+    }
+}
+
+struct OpenClawLLMProviderConfiguration {
+    let name: String
+    let modelPrefixes: [String]
+    let environmentKeys: [String]
+    let baseURL: String
+    let api: String
+    let modelsJSON: String
+    let directSmokeReasoningMode: String?
+
+    var providerPrefix: String {
+        "models.providers.\(name)"
+    }
+
+    var apiKeyPath: String {
+        "\(providerPrefix).apiKey"
+    }
+
+    var baseURLPath: String {
+        "\(providerPrefix).baseUrl"
+    }
+
+    var apiPath: String {
+        "\(providerPrefix).api"
+    }
+
+    var modelsPath: String {
+        "\(providerPrefix).models"
+    }
+}
+
+enum OpenClawLLMConfiguration {
+    static let localQwenModelRef = "mlx/Qwen/Qwen3-30B-A3B-MLX-4bit"
+
+    static let providers: [OpenClawLLMProviderConfiguration] = [
+        OpenClawLLMProviderConfiguration(
+            name: "google",
+            modelPrefixes: ["google/"],
+            environmentKeys: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+            baseURL: "https://generativelanguage.googleapis.com/v1beta",
+            api: "google-generative-ai",
+            modelsJSON: """
+            [
+              {
+                "id": "gemini-3.1-pro-preview",
+                "name": "Gemini 3.1 Pro Preview",
+                "api": "google-generative-ai",
+                "reasoning": true,
+                "input": ["text", "image"],
+                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+                "contextWindow": 1048576,
+                "maxTokens": 65536
+              },
+              {
+                "id": "gemini-3-flash-preview",
+                "name": "Gemini 3 Flash Preview",
+                "api": "google-generative-ai",
+                "reasoning": false,
+                "input": ["text", "image"],
+                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+                "contextWindow": 1048576,
+                "maxTokens": 65536
+              }
+            ]
+            """,
+            directSmokeReasoningMode: nil
+        ),
+        OpenClawLLMProviderConfiguration(
+            name: "kilocode",
+            modelPrefixes: ["kilocode/"],
+            environmentKeys: ["KILOCODE_API_KEY"],
+            baseURL: "https://api.kilo.ai/api/gateway/",
+            api: "openai-completions",
+            modelsJSON: """
+            [
+              {
+                "id": "kilo/auto",
+                "name": "Kilo Auto",
+                "reasoning": true,
+                "input": ["text", "image"],
+                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+                "contextWindow": 1000000,
+                "maxTokens": 128000
+              }
+            ]
+            """,
+            directSmokeReasoningMode: nil
+        ),
+        OpenClawLLMProviderConfiguration(
+            name: "openrouter",
+            modelPrefixes: ["openrouter/"],
+            environmentKeys: ["OPENROUTER_API_KEY"],
+            baseURL: "https://openrouter.ai/api/v1",
+            api: "openai-completions",
+            modelsJSON: """
+            [
+              {
+                "id": "free",
+                "name": "OpenRouter Free",
+                "api": "openai-completions",
+                "reasoning": false,
+                "input": ["text"],
+                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+                "contextWindow": 128000,
+                "maxTokens": 8192,
+                "compat": {
+                  "supportsTools": false
+                }
+              }
+            ]
+            """,
+            directSmokeReasoningMode: "medium"
+        ),
+        OpenClawLLMProviderConfiguration(
+            name: "mlx",
+            modelPrefixes: ["mlx/"],
+            environmentKeys: ["MLX_API_KEY"],
+            baseURL: "http://127.0.0.1:8080/v1",
+            api: "openai-completions",
+            modelsJSON: """
+            [
+              {
+                "id": "\(localQwenModelRef.dropFirst(4))",
+                "name": "\(localQwenModelRef.dropFirst(4))",
+                "api": "openai-completions",
+                "reasoning": false,
+                "input": ["text"],
+                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+                "contextWindow": 32768,
+                "maxTokens": 4096,
+                "compat": {
+                  "supportsTools": true,
+                  "supportsStrictMode": false
+                },
+                "contextTokens": 16384
+              }
+            ]
+            """,
+            directSmokeReasoningMode: nil
+        ),
+        OpenClawLLMProviderConfiguration(
+            name: "anthropic",
+            modelPrefixes: ["anthropic/"],
+            environmentKeys: ["ANTHROPIC_API_KEY"],
+            baseURL: "",
+            api: "anthropic",
+            modelsJSON: "[]",
+            directSmokeReasoningMode: nil
+        ),
+        OpenClawLLMProviderConfiguration(
+            name: "openai",
+            modelPrefixes: ["openai/", "openai-codex/"],
+            environmentKeys: ["OPENAI_API_KEY"],
+            baseURL: "",
+            api: "openai-responses",
+            modelsJSON: "[]",
+            directSmokeReasoningMode: nil
+        )
+    ]
+
+    static func provider(named name: String) -> OpenClawLLMProviderConfiguration? {
+        providers.first { $0.name == name }
+    }
+
+    static func provider(forModelRef modelRef: String) -> OpenClawLLMProviderConfiguration? {
+        let normalized = modelRef.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return providers.first { provider in
+            provider.modelPrefixes.contains { normalized.hasPrefix($0) }
+        }
+    }
+
+    static func mergeOpenClawJSONEnvironment(from configURL: URL, into environment: inout [String: String]) {
+        guard let data = try? Data(contentsOf: configURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            applyKiloCLIAuthFallback(to: &environment)
+            return
+        }
+
+        mergeEnvVars(from: object, into: &environment)
+        mergeProviderAPIKeys(from: object, into: &environment)
+        applyKiloCLIAuthFallback(to: &environment)
+    }
+
+    static func apiKey(from environment: [String: String], modelRef: String) -> String {
+        guard let provider = provider(forModelRef: modelRef) else {
+            return ""
+        }
+        return provider.environmentKeys
+            .lazy
+            .compactMap { environment[$0]?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty } ?? ""
+    }
+
+    static func directSmokeReasoningMode(for modelRef: String) -> String? {
+        provider(forModelRef: modelRef)?.directSmokeReasoningMode
+    }
+
+    static func mergeEnvironmentSources(
+        repositoryEnvURL: URL,
+        configEnvURL: URL,
+        configURL: URL,
+        into environment: inout [String: String]
+    ) {
+        mergeEnvFile(repositoryEnvURL, into: &environment)
+        mergeEnvFile(configEnvURL, into: &environment)
+        mergeOpenClawJSONEnvironment(from: configURL, into: &environment)
+    }
+
+    static func entriesWithProviderDefaults(_ entries: [OpenClawEditableSetting]) -> [OpenClawEditableSetting] {
+        var normalized = entries
+        for provider in providers where provider.name == "google" || provider.name == "kilocode" || provider.name == "openrouter" || provider.name == "mlx" {
+            ensureEntry(key: provider.baseURLPath, value: provider.baseURL, in: &normalized)
+            ensureEntry(key: provider.apiPath, value: provider.api, in: &normalized)
+            ensureEntry(key: provider.modelsPath, value: provider.modelsJSON, kind: .array, in: &normalized)
+        }
+        return normalized
+    }
+
+    private static func mergeEnvVars(from rootObject: [String: Any], into environment: inout [String: String]) {
+        guard let envObject = rootObject["env"] as? [String: Any],
+              let vars = envObject["vars"] as? [String: Any] else {
+            return
+        }
+
+        for (key, rawValue) in vars {
+            guard isValidEnvironmentKey(key) else {
+                continue
+            }
+            if let value = rawValue as? String {
+                environment[key] = value
+            } else if let value = rawValue as? NSNumber {
+                environment[key] = value.stringValue
+            }
+        }
+    }
+
+    private static func mergeEnvFile(_ url: URL, into environment: inout [String: String]) {
+        guard let contents = try? String(contentsOf: url) else {
+            return
+        }
+
+        for rawLine in contents.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty, !line.hasPrefix("#"), let separatorIndex = line.firstIndex(of: "=") else {
+                continue
+            }
+
+            let key = String(line[..<separatorIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard isValidEnvironmentKey(key) else {
+                continue
+            }
+
+            var value = String(line[line.index(after: separatorIndex)...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if value.count >= 2,
+               let first = value.first,
+               let last = value.last,
+               (first == "\"" && last == "\"") || (first == "'" && last == "'") {
+                value.removeFirst()
+                value.removeLast()
+            }
+            environment[key] = value
+        }
+    }
+
+    private static func mergeProviderAPIKeys(from rootObject: [String: Any], into environment: inout [String: String]) {
+        guard let models = rootObject["models"] as? [String: Any],
+              let providerObjects = models["providers"] as? [String: Any] else {
+            return
+        }
+
+        for provider in providers {
+            guard let providerObject = providerObjects[provider.name] as? [String: Any],
+                  let rawAPIKey = providerObject["apiKey"] as? String else {
+                continue
+            }
+            let apiKey = rawAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !apiKey.isEmpty else {
+                continue
+            }
+            for environmentKey in provider.environmentKeys {
+                if (environment[environmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty {
+                    environment[environmentKey] = apiKey
+                }
+            }
+        }
+    }
+
+    private static func applyKiloCLIAuthFallback(to environment: inout [String: String]) {
+        guard let token = resolveKiloCLIAccessToken() else {
+            return
+        }
+        let current = environment["KILOCODE_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard current.isEmpty else {
+            return
+        }
+        environment["KILOCODE_API_KEY"] = token
+    }
+
+    private static func ensureEntry(
+        key: String,
+        value: String,
+        kind: OpenClawEditableSetting.ValueKind = .string,
+        in entries: inout [OpenClawEditableSetting]
+    ) {
+        guard !entries.contains(where: { $0.key == key }) else {
+            return
+        }
+        entries.append(
+            OpenClawEditableSetting(
+                key: key,
+                source: .json,
+                kind: kind,
+                isSecret: false,
+                value: value
+            )
+        )
+    }
+
+    private static func isValidEnvironmentKey(_ key: String) -> Bool {
+        key.range(of: #"^[A-Za-z_][A-Za-z0-9_]*$"#, options: .regularExpression) != nil
+    }
+}
+
+private struct OpenClawTaskProfile: Equatable {
+    let name: String
+    let runtimeContextWindow: Int
+    let maxOutputTokens: Int
+    let reserveTokens: Int
+    let includeCorePersona: Bool
+    let includeStyleCard: Bool
+    let includeHistory: Bool
+    let maxHistoryMessages: Int
+    let includeMemorySummary: Bool
+    let maxMemoryTokens: Int
+    let includeWorkspaceFiles: Bool
+    let includeTools: Bool
+    let includeSkills: Bool
+    let includeFullMemory: Bool
+    let includeFullPersonaFiles: Bool
+    let includeRag: Bool
+    let maxRagExcerpts: Int
+    let maxRagTokens: Int
+    let maxRetrievedSnippets: Int
+    let maxRetrievedTokens: Int
+    let minRetrievedScore: Double
+    let corePersonaTokens: Int
+    let styleCardTokens: Int
+    let disableThinking: Bool
+
+    static let notificationSpeech = OpenClawTaskProfile(
+        name: "notification_speech",
+        runtimeContextWindow: 4096,
+        maxOutputTokens: 128,
+        reserveTokens: 512,
+        includeCorePersona: true,
+        includeStyleCard: true,
+        includeHistory: false,
+        maxHistoryMessages: 0,
+        includeMemorySummary: false,
+        maxMemoryTokens: 0,
+        includeWorkspaceFiles: false,
+        includeTools: false,
+        includeSkills: false,
+        includeFullMemory: false,
+        includeFullPersonaFiles: false,
+        includeRag: true,
+        maxRagExcerpts: 2,
+        maxRagTokens: 600,
+        maxRetrievedSnippets: 2,
+        maxRetrievedTokens: 600,
+        minRetrievedScore: 0.28,
+        corePersonaTokens: 340,
+        styleCardTokens: 160,
+        disableThinking: true
+    )
+
+    static let simpleChat = OpenClawTaskProfile(
+        name: "simple_chat",
+        runtimeContextWindow: 8192,
+        maxOutputTokens: 512,
+        reserveTokens: 1024,
+        includeCorePersona: true,
+        includeStyleCard: true,
+        includeHistory: true,
+        maxHistoryMessages: 6,
+        includeMemorySummary: true,
+        maxMemoryTokens: 800,
+        includeWorkspaceFiles: false,
+        includeTools: false,
+        includeSkills: false,
+        includeFullMemory: false,
+        includeFullPersonaFiles: false,
+        includeRag: true,
+        maxRagExcerpts: 3,
+        maxRagTokens: 1000,
+        maxRetrievedSnippets: 3,
+        maxRetrievedTokens: 1000,
+        minRetrievedScore: 0.22,
+        corePersonaTokens: 340,
+        styleCardTokens: 160,
+        disableThinking: true
+    )
+
+    static let deepPersona = OpenClawTaskProfile(
+        name: "deep_persona",
+        runtimeContextWindow: 32768,
+        maxOutputTokens: 2048,
+        reserveTokens: 4096,
+        includeCorePersona: true,
+        includeStyleCard: true,
+        includeHistory: true,
+        maxHistoryMessages: 20,
+        includeMemorySummary: true,
+        maxMemoryTokens: 2000,
+        includeWorkspaceFiles: false,
+        includeTools: false,
+        includeSkills: false,
+        includeFullMemory: true,
+        includeFullPersonaFiles: true,
+        includeRag: true,
+        maxRagExcerpts: 6,
+        maxRagTokens: 5000,
+        maxRetrievedSnippets: 6,
+        maxRetrievedTokens: 5000,
+        minRetrievedScore: 0.16,
+        corePersonaTokens: 800,
+        styleCardTokens: 400,
+        disableThinking: false
+    )
+}
+
+private struct OpenClawPromptSection: Equatable {
+    let name: String
+    let text: String
+}
+
+private struct OpenClawLayeredPrompt: Equatable {
+    let text: String
+    let breakdown: OpenClawPromptBreakdown
+}
+
+private struct OpenClawPromptBreakdown: Equatable {
+    struct Section: Equatable {
+        let name: String
+        let estimatedTokens: Int
+        let characters: Int
+    }
+
+    let taskProfile: String
+    let modelName: String
+    let providerName: String
+    let qdrantQuery: String
+    let qdrantFilters: String
+    let retrievedSnippetIDs: [String]
+    let retrievedSnippetSources: [String]
+    let retrievedSnippetScores: [Double]
+    let retrievedTokenCount: Int
+    let systemTokens: Int
+    let userTokens: Int
+    let historyTokens: Int
+    let workspaceTokens: Int
+    let toolsSkillsTokens: Int
+    let memoryTokens: Int
+    let ragTokens: Int
+    let totalTokens: Int
+    let runtimeContextWindow: Int
+    let modelContextWindow: Int
+    let reserveTokens: Int
+    let maxOutputTokens: Int
+    let shrinkingApplied: Bool
+    let dropped: [String]
+    let sections: [Section]
+}
+
+private struct OpenClawRetrievalQuery: Equatable {
+    enum Mode: String, Equatable {
+        case notificationSpeech
+        case simpleChat
+        case deepPersona
+    }
+
+    let mode: Mode
+    let text: String
+    let language: String
+    let app: String?
+    let title: String?
+    let channel: String?
+    let body: String?
+
+    static func notificationSpeech(from prompt: String) -> OpenClawRetrievalQuery {
+        let app = labeledValue("App", in: prompt)
+        let title = labeledValue("Title", in: prompt)
+        let subtitle = labeledValue("Subtitle", in: prompt)
+        let body = labeledValue("Body", in: prompt)
+        let fallback = prompt.components(separatedBy: "Fallback spoken text:")
+            .last?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let queryText = [
+            app,
+            title,
+            subtitle,
+            body,
+            fallback
+        ]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+        return OpenClawRetrievalQuery(
+            mode: .notificationSpeech,
+            text: queryText.isEmpty ? prompt : queryText,
+            language: "ru",
+            app: app,
+            title: title,
+            channel: labeledValue("Channel", in: prompt),
+            body: body
+        )
+    }
+
+    static func simpleChat(_ text: String) -> OpenClawRetrievalQuery {
+        OpenClawRetrievalQuery(
+            mode: .simpleChat,
+            text: text,
+            language: "ru",
+            app: nil,
+            title: nil,
+            channel: nil,
+            body: nil
+        )
+    }
+
+    static func labeledValue(_ label: String, in text: String) -> String? {
+        let prefix = "\(label):"
+        for line in text.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.hasPrefix(prefix) else {
+                continue
+            }
+            let value = trimmed.dropFirst(prefix.count)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.isEmpty ? nil : value
+        }
+        return nil
+    }
+}
+
+private struct OpenClawRetrievedSnippet: Equatable {
+    let id: String
+    let kind: String
+    let profile: String
+    let source: String
+    let language: String
+    let channel: String?
+    let app: String?
+    let priority: Int
+    let tokenEstimate: Int
+    let text: String
+    let score: Double
+}
+
+private struct OpenClawSelectiveMemoryResult: Equatable {
+    let text: String
+    let snippets: [OpenClawRetrievedSnippet]
+    let query: OpenClawRetrievalQuery
+    let filters: String
+
+    static func empty(query: OpenClawRetrievalQuery, profile: OpenClawTaskProfile) -> OpenClawSelectiveMemoryResult {
+        OpenClawSelectiveMemoryResult(
+            text: "",
+            snippets: [],
+            query: query,
+            filters: OpenClawQdrantClient.memoryFilterDescription(profile: profile, language: query.language),
+        )
+    }
+}
+
+private struct OpenClawNotificationCacheResult: Equatable {
+    enum Action: Equatable {
+        case reuseSpokenText
+        case reuseSkip
+        case useAsExample
+    }
+
+    let id: String
+    let action: Action
+    let spokenText: String
+    let score: Double
+    let app: String
+    let title: String
+}
+
+private struct OpenClawQdrantClient {
+    let baseURL: URL
+    let apiKey: String?
+
+    static let memoryCollection = "gracula_memory"
+    static let notificationCacheCollection = "gracula_notification_cache"
+
+    static func make(environment: [String: String]) -> OpenClawQdrantClient? {
+        if boolFlag(environment["GRACULA_QDRANT_DISABLED"]) || boolFlag(environment["OPENCLAW_QDRANT_DISABLED"]) {
+            return nil
+        }
+        let rawBaseURL = [
+            environment["GRACULA_QDRANT_URL"],
+            environment["OPENCLAW_QDRANT_URL"],
+            environment["QDRANT_URL"]
+        ]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty } ?? "http://127.0.0.1:6333"
+        guard let baseURL = URL(string: rawBaseURL) else {
+            return nil
+        }
+        let apiKey = [
+            environment["GRACULA_QDRANT_API_KEY"],
+            environment["OPENCLAW_QDRANT_API_KEY"],
+            environment["QDRANT_API_KEY"]
+        ]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+        return OpenClawQdrantClient(baseURL: baseURL, apiKey: apiKey)
+    }
+
+    private static func boolFlag(_ rawValue: String?) -> Bool {
+        guard let rawValue else {
+            return false
+        }
+        switch rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "1", "true", "yes", "on":
+            return true
+        default:
+            return false
+        }
+    }
+
+    func ensurePayloadIndexes() async {
+        let memoryFields: [(String, String)] = [
+            ("kind", "keyword"),
+            ("profile", "keyword"),
+            ("source", "keyword"),
+            ("language", "keyword"),
+            ("channel", "keyword"),
+            ("app", "keyword"),
+            ("priority", "integer"),
+            ("created_at", "datetime")
+        ]
+        let cacheFields: [(String, String)] = [
+            ("kind", "keyword"),
+            ("app", "keyword"),
+            ("channel", "keyword"),
+            ("language", "keyword"),
+            ("created_at", "datetime")
+        ]
+
+        for field in memoryFields {
+            try? await createPayloadIndex(collection: Self.memoryCollection, fieldName: field.0, fieldSchema: field.1)
+        }
+        for field in cacheFields {
+            try? await createPayloadIndex(collection: Self.notificationCacheCollection, fieldName: field.0, fieldSchema: field.1)
+        }
+    }
+
+    func retrieve(query: OpenClawRetrievalQuery, profile: OpenClawTaskProfile) async throws -> [OpenClawRetrievedSnippet] {
+        let kinds = allowedKinds(for: profile)
+        guard !kinds.isEmpty, profile.maxRetrievedSnippets > 0, profile.maxRetrievedTokens > 0 else {
+            return []
+        }
+
+        let points = try await scrollMemory(profile: profile.name, language: query.language, kinds: kinds)
+        let queryTokens = lexicalTokens(query.text)
+        let scored = points.compactMap { point -> OpenClawRetrievedSnippet? in
+            guard var snippet = point.snippet else {
+                return nil
+            }
+            guard channelMatches(snippet.channel, queryChannel: query.channel) else {
+                return nil
+            }
+            let score = relevanceScore(
+                snippet: snippet,
+                query: query,
+                queryTokens: queryTokens
+            )
+            guard score >= profile.minRetrievedScore else {
+                return nil
+            }
+            snippet = OpenClawRetrievedSnippet(
+                id: snippet.id,
+                kind: snippet.kind,
+                profile: snippet.profile,
+                source: snippet.source,
+                language: snippet.language,
+                channel: snippet.channel,
+                app: snippet.app,
+                priority: snippet.priority,
+                tokenEstimate: snippet.tokenEstimate,
+                text: snippet.text,
+                score: score
+            )
+            return snippet
+        }
+            .sorted { lhs, rhs in
+                if lhs.score == rhs.score {
+                    return lhs.priority > rhs.priority
+                }
+                return lhs.score > rhs.score
+            }
+
+        var selected: [OpenClawRetrievedSnippet] = []
+        var tokenTotal = 0
+        for snippet in scored {
+            guard selected.count < profile.maxRetrievedSnippets else {
+                break
+            }
+            let snippetTokens = min(snippet.tokenEstimate, estimatedTokenCount(snippet.text))
+            guard tokenTotal + snippetTokens <= profile.maxRetrievedTokens else {
+                continue
+            }
+            tokenTotal += snippetTokens
+            selected.append(snippet)
+        }
+        return selected
+    }
+
+    func storeNotificationCache(inputPrompt: String, spokenText: String, decision: String) async {
+        let query = OpenClawRetrievalQuery.notificationSpeech(from: inputPrompt)
+        let now = ISO8601DateFormatter().string(from: Date())
+        var payload: [String: Any] = [
+            "kind": "notification_cache",
+            "spoken_text": spokenText,
+            "decision": decision,
+            "language": query.language,
+            "created_at": now,
+            "last_used_at": now
+        ]
+        payload["app"] = query.app ?? ""
+        payload["title"] = query.title ?? ""
+        payload["channel"] = query.channel ?? ""
+        payload["body"] = query.body ?? query.text
+        let point: [String: Any] = [
+            "id": UUID().uuidString,
+            "payload": payload
+        ]
+        let body: [String: Any] = [
+            "points": [point]
+        ]
+        _ = try? await request(
+            path: "/collections/\(Self.notificationCacheCollection)/points",
+            method: "PUT",
+            body: body
+        )
+    }
+
+    func notificationCacheResult(query: OpenClawRetrievalQuery) async throws -> OpenClawNotificationCacheResult? {
+        let points = try await scrollNotificationCache(language: query.language, app: query.app)
+        let queryTokens = lexicalTokens(cacheComparableText(app: query.app, title: query.title, body: query.body ?? query.text))
+        guard !queryTokens.isEmpty else {
+            return nil
+        }
+
+        let scored = points.compactMap { point -> (point: QdrantPoint, score: Double)? in
+            let spokenText = point.string("spoken_text")
+            let decision = point.string("decision")
+            guard decision == "speak" || decision == "skip" else {
+                return nil
+            }
+            let cacheTokens = lexicalTokens(cacheComparableText(
+                app: point.optionalString("app"),
+                title: point.optionalString("title"),
+                body: point.optionalString("body")
+            ))
+            guard !cacheTokens.isEmpty else {
+                return nil
+            }
+            let intersection = queryTokens.intersection(cacheTokens).count
+            let union = queryTokens.union(cacheTokens).count
+            let score = Double(intersection) / Double(max(1, union))
+            guard score >= 0.54 else {
+                return nil
+            }
+            guard !spokenText.isEmpty || decision == "skip" else {
+                return nil
+            }
+            return (point, score)
+        }
+            .sorted { $0.score > $1.score }
+
+        guard let best = scored.first else {
+            return nil
+        }
+
+        let decision = best.point.string("decision")
+        let spokenText = best.point.string("spoken_text")
+        let action: OpenClawNotificationCacheResult.Action
+        if best.score >= 0.72 {
+            action = decision == "skip" ? .reuseSkip : .reuseSpokenText
+            await updateNotificationCacheLastUsed(pointID: best.point.id)
+        } else {
+            guard decision == "speak", !spokenText.isEmpty else {
+                return nil
+            }
+            action = .useAsExample
+        }
+
+        return OpenClawNotificationCacheResult(
+            id: best.point.id,
+            action: action,
+            spokenText: spokenText.isEmpty ? "Пропускаю шумное уведомление." : spokenText,
+            score: best.score,
+            app: best.point.string("app"),
+            title: best.point.string("title")
+        )
+    }
+
+    private func allowedKinds(for profile: OpenClawTaskProfile) -> [String] {
+        switch profile.name {
+        case OpenClawTaskProfile.notificationSpeech.name:
+            return ["style_hint", "channel_rule", "notification_example"]
+        case OpenClawTaskProfile.simpleChat.name:
+            return ["style_hint", "channel_rule", "memory_fact"]
+        case OpenClawTaskProfile.deepPersona.name:
+            return ["core_persona", "style_hint", "channel_rule", "memory_fact", "notification_example", "deep_persona"]
+        default:
+            return []
+        }
+    }
+
+    static func memoryFilterDescription(profile: OpenClawTaskProfile, language: String) -> String {
+        let kinds: [String]
+        switch profile.name {
+        case OpenClawTaskProfile.notificationSpeech.name:
+            kinds = ["style_hint", "channel_rule", "notification_example"]
+        case OpenClawTaskProfile.simpleChat.name:
+            kinds = ["style_hint", "channel_rule", "memory_fact"]
+        case OpenClawTaskProfile.deepPersona.name:
+            kinds = ["core_persona", "style_hint", "channel_rule", "memory_fact", "notification_example", "deep_persona"]
+        default:
+            kinds = []
+        }
+        return "profile=\(profile.name), language=\(language), kind in [\(kinds.joined(separator: ", "))]"
+    }
+
+    private func createPayloadIndex(collection: String, fieldName: String, fieldSchema: String) async throws {
+        let body: [String: Any] = [
+            "field_name": fieldName,
+            "field_schema": fieldSchema
+        ]
+        try await request(
+            path: "/collections/\(collection)/index",
+            method: "PUT",
+            body: body,
+            acceptedStatusCodes: Set(200..<300).union([409])
+        )
+    }
+
+    private func scrollMemory(profile: String, language: String, kinds: [String]) async throws -> [QdrantPoint] {
+        let filter: [String: Any] = [
+            "must": [
+                ["key": "profile", "match": ["value": profile]],
+                ["key": "language", "match": ["value": language]],
+                ["key": "kind", "match": ["any": kinds]]
+            ]
+        ]
+        let body: [String: Any] = [
+            "filter": filter,
+            "limit": 48,
+            "with_payload": true,
+            "with_vector": false
+        ]
+        let data = try await request(
+            path: "/collections/\(Self.memoryCollection)/points/scroll",
+            method: "POST",
+            body: body
+        )
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let result = root["result"] as? [String: Any],
+              let points = result["points"] as? [[String: Any]] else {
+            return []
+        }
+        return points.compactMap(QdrantPoint.init)
+    }
+
+    private func scrollNotificationCache(language: String, app: String?) async throws -> [QdrantPoint] {
+        var must: [[String: Any]] = [
+            ["key": "kind", "match": ["value": "notification_cache"]],
+            ["key": "language", "match": ["value": language]]
+        ]
+        if let app, !app.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            must.append(["key": "app", "match": ["value": app]])
+        }
+        let body: [String: Any] = [
+            "filter": ["must": must],
+            "limit": 32,
+            "with_payload": true,
+            "with_vector": false
+        ]
+        let data = try await request(
+            path: "/collections/\(Self.notificationCacheCollection)/points/scroll",
+            method: "POST",
+            body: body
+        )
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let result = root["result"] as? [String: Any],
+              let points = result["points"] as? [[String: Any]] else {
+            return []
+        }
+        return points.compactMap(QdrantPoint.init)
+    }
+
+    private func updateNotificationCacheLastUsed(pointID: String) async {
+        guard !pointID.isEmpty else {
+            return
+        }
+        let body: [String: Any] = [
+            "payload": [
+                "last_used_at": ISO8601DateFormatter().string(from: Date())
+            ],
+            "points": [pointID]
+        ]
+        _ = try? await request(
+            path: "/collections/\(Self.notificationCacheCollection)/points/payload",
+            method: "POST",
+            body: body
+        )
+    }
+
+    @discardableResult
+    private func request(
+        path: String,
+        method: String,
+        body: [String: Any],
+        acceptedStatusCodes: Set<Int> = Set(200..<300)
+    ) async throws -> Data {
+        let url = baseURL.appendingPathComponent(path.trimmingCharacters(in: CharacterSet(charactersIn: "/")))
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = 1.5
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let apiKey, !apiKey.isEmpty {
+            request.setValue(apiKey, forHTTPHeaderField: "api-key")
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              acceptedStatusCodes.contains(httpResponse.statusCode) else {
+            throw OpenClawLocalControllerError.agentFailed("Qdrant request failed for \(path).")
+        }
+        return data
+    }
+
+    private struct QdrantPoint {
+        let id: String
+        let payload: [String: Any]
+
+        init?(_ object: [String: Any]) {
+            guard let payload = object["payload"] as? [String: Any] else {
+                return nil
+            }
+            if let id = object["id"] as? String {
+                self.id = id
+            } else if let id = object["id"] as? NSNumber {
+                self.id = id.stringValue
+            } else {
+                self.id = ""
+            }
+            self.payload = payload
+        }
+
+        var snippet: OpenClawRetrievedSnippet? {
+            let text = string("text")
+            guard !text.isEmpty else {
+                return nil
+            }
+            let kind = string("kind")
+            let profile = string("profile")
+            guard !kind.isEmpty, !profile.isEmpty else {
+                return nil
+            }
+            return OpenClawRetrievedSnippet(
+                id: id,
+                kind: kind,
+                profile: profile,
+                source: string("source", fallback: "qdrant"),
+                language: string("language", fallback: "ru"),
+                channel: optionalString("channel"),
+                app: optionalString("app"),
+                priority: int("priority"),
+                tokenEstimate: max(1, int("token_estimate", fallback: estimatedTokenCount(text))),
+                text: text,
+                score: 0
+            )
+        }
+
+        func string(_ key: String, fallback: String = "") -> String {
+            optionalString(key) ?? fallback
+        }
+
+        func optionalString(_ key: String) -> String? {
+            guard let value = payload[key] as? String else {
+                return nil
+            }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+
+        private func int(_ key: String, fallback: Int = 0) -> Int {
+            if let value = payload[key] as? Int {
+                return value
+            }
+            if let value = payload[key] as? NSNumber {
+                return value.intValue
+            }
+            if let value = payload[key] as? String,
+               let intValue = Int(value) {
+                return intValue
+            }
+            return fallback
+        }
+    }
+}
+
+private func relevanceScore(
+    snippet: OpenClawRetrievedSnippet,
+    query: OpenClawRetrievalQuery,
+    queryTokens: Set<String>
+) -> Double {
+    let snippetText = [
+        snippet.text,
+        snippet.source,
+        snippet.app,
+        snippet.channel,
+        snippet.kind
+    ]
+        .compactMap { $0 }
+        .joined(separator: " ")
+    let snippetTokens = lexicalTokens(snippetText)
+    let overlap = queryTokens.intersection(snippetTokens)
+    let denominator = max(1, min(queryTokens.count, 16))
+    var score = min(0.55, Double(overlap.count) / Double(denominator))
+
+    let normalizedSnippet = normalizedRetrievalText(snippetText)
+    if let title = query.title, !title.isEmpty, normalizedSnippet.contains(normalizedRetrievalText(title)) {
+        score += 0.18
+    }
+    if let body = query.body, !body.isEmpty {
+        let normalizedBody = normalizedRetrievalText(body)
+        if normalizedBody.count >= 8, normalizedSnippet.contains(normalizedBody) {
+            score += 0.22
+        }
+    }
+    if let queryApp = query.app,
+       let snippetApp = snippet.app,
+       !queryApp.isEmpty,
+       normalizedRetrievalText(queryApp) == normalizedRetrievalText(snippetApp) {
+        score += 0.16
+    }
+    if query.mode == .notificationSpeech, snippet.kind == "notification_example" {
+        score += 0.08
+    }
+    if snippet.priority > 0 {
+        score += min(0.12, Double(snippet.priority) * 0.02)
+    }
+    return min(1.0, score)
+}
+
+private func channelMatches(_ snippetChannel: String?, queryChannel: String?) -> Bool {
+    guard let snippetChannel,
+          let queryChannel,
+          !snippetChannel.isEmpty,
+          !queryChannel.isEmpty else {
+        return true
+    }
+    let left = normalizedRetrievalText(snippetChannel)
+    let right = normalizedRetrievalText(queryChannel)
+    return left == right || left.contains(right) || right.contains(left)
+}
+
+private func lexicalTokens(_ text: String) -> Set<String> {
+    let normalized = normalizedRetrievalText(text)
+    let parts = normalized.components(separatedBy: CharacterSet.alphanumerics.inverted)
+    return Set(parts.filter { $0.count >= 2 })
+}
+
+private func normalizedRetrievalText(_ text: String) -> String {
+    text
+        .precomposedStringWithCanonicalMapping
+        .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "ru_RU"))
+        .lowercased()
+        .replacingOccurrences(of: "ё", with: "е")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+private func cacheComparableText(app: String?, title: String?, body: String?) -> String {
+    [
+        app,
+        title,
+        body
+    ]
+        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+        .joined(separator: " ")
+}
+
+private func estimatedTokenCount(_ text: String) -> Int {
+    max(1, Int(ceil(Double(text.count) / 4.0)))
+}
+
+private let personaCompactFileName = "persona_compact.md"
+private let defaultCorePersona = """
+Gracula is a local Russian-speaking voice assistant with a short, vivid, natural voice. Speak like a living assistant, not a corporate helpdesk: direct, slightly dark-ironic, warm only when it helps, never syrupy.
+
+Do not mention OpenClaw, prompts, RAG, databases, tools, files, implementation details, policies, or internal context. Do not output chain-of-thought. Preserve important names, numbers, channels, apps, and the user's meaning.
+"""
+
+private let defaultStyleCard = """
+For notifications, produce one short phrase suitable for being spoken aloud in Russian. Keep the message compact, concrete, and understandable on first hearing. For simple local tasks, answer briefly and use /no_think when the model supports it.
+"""
+
+private let defaultCompactPersona = """
+## corePersona
+\(defaultCorePersona)
+
+## styleCard
+\(defaultStyleCard)
+"""
+
 @MainActor
 final class OpenClawLocalController: ObservableObject {
     @Published private(set) var isRunning = false
@@ -16,11 +1154,8 @@ final class OpenClawLocalController: ObservableObject {
     @Published private(set) var settingsStatusText = "Settings loaded."
 
     let repositoryDirectory = resolveOpenClawRepositoryDirectory()
-    let configDirectory = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".openclaw", isDirectory: true)
-    let workspaceDirectory = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".openclaw", isDirectory: true)
-        .appendingPathComponent("workspace", isDirectory: true)
+    let configDirectory = OpenClawRuntimePaths.configDirectory
+    let workspaceDirectory = OpenClawRuntimePaths.workspaceDirectory
 
     private let nodeURL = resolveNodeExecutableURL()
     private let gatewayHost = "127.0.0.1"
@@ -30,6 +1165,7 @@ final class OpenClawLocalController: ObservableObject {
     private var chatSessionID = "gracula-local-chat"
     private var gatewayProcess: Process?
     private var streamBridgeProcess: Process?
+    private var localModelProcess: Process?
     private var healthTask: Task<Void, Never>?
     private var startupTask: Task<Void, Never>?
 
@@ -52,6 +1188,7 @@ final class OpenClawLocalController: ObservableObject {
     deinit {
         gatewayProcess?.terminate()
         streamBridgeProcess?.terminate()
+        localModelProcess?.terminate()
         healthTask?.cancel()
     }
 
@@ -139,6 +1276,7 @@ final class OpenClawLocalController: ObservableObject {
             }
 
             scheduleHealthChecks()
+            await ensureLocalModelServer()
         } catch {
             stop()
             statusText = "Start failed"
@@ -179,6 +1317,21 @@ final class OpenClawLocalController: ObservableObject {
 
     func reportError(_ message: String) {
         appendChatMessage(.error(message))
+    }
+
+    func prepareForLocalAutomation() async -> Bool {
+        do {
+            try validateRuntime()
+            try prepareDirectories()
+            let environment = try openClawEnvironment()
+            settingsSnapshot = Self.makeSettingsSnapshot(environment: environment)
+            return true
+        } catch {
+            let message = "OpenClaw is not ready for local automation: \(error.localizedDescription)"
+            appendLog(message)
+            appendChatMessage(.error(message))
+            return false
+        }
     }
 
     func reloadSettings() {
@@ -318,6 +1471,72 @@ final class OpenClawLocalController: ObservableObject {
     }
 
     @discardableResult
+    func sendLocalNotificationSpeech(_ text: String) async -> String? {
+        let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !message.isEmpty else {
+            return nil
+        }
+
+        do {
+            isSendingChat = true
+            chatStatusText = "Preparing notification speech..."
+            try prepareDirectories()
+            let primaryModelRef = currentPrimaryModelRef()
+            let retrievalQuery = OpenClawRetrievalQuery.notificationSpeech(from: message)
+            var promptMessage = message
+            if let cacheResult = await notificationCacheResult(query: retrievalQuery) {
+                appendLog(
+                    String(
+                        format: "Notification cache hit id=%@ action=%@ app=%@ title=%@ score=%.3f.",
+                        cacheResult.id,
+                        String(describing: cacheResult.action),
+                        cacheResult.app,
+                        cacheResult.title,
+                        cacheResult.score
+                    )
+                )
+                switch cacheResult.action {
+                case .reuseSpokenText:
+                    chatStatusText = "Notification speech reused from cache."
+                    isSendingChat = false
+                    return cacheResult.spokenText
+                case .reuseSkip:
+                    chatStatusText = "Notification skipped from cache."
+                    isSendingChat = false
+                    return cacheResult.spokenText
+                case .useAsExample:
+                    promptMessage += "\n\nSimilar previous spoken text:\n\(cacheResult.spokenText)"
+                }
+            }
+            let prompt = await layeredPrompt(
+                userMessage: promptMessage,
+                profile: .notificationSpeech,
+                modelRef: primaryModelRef,
+                retrievalQuery: retrievalQuery
+            )
+            appendPromptDiagnostics(prompt.breakdown)
+            let reply = try await runDirectModelChat(
+                modelRef: primaryModelRef,
+                prompt: prompt.text,
+                maxTokens: OpenClawTaskProfile.notificationSpeech.maxOutputTokens
+            )
+            guard !reply.isEmpty else {
+                throw OpenClawLocalControllerError.agentFailed("Selected model returned an empty notification reply.")
+            }
+            await storeNotificationCache(inputPrompt: message, spokenText: reply)
+            appendLog("OpenClaw notification speech reply received.")
+            chatStatusText = "Notification speech ready."
+            isSendingChat = false
+            return reply
+        } catch {
+            chatStatusText = "OpenClaw unavailable"
+            appendLog("Notification speech failed: \(error.localizedDescription)")
+            isSendingChat = false
+            return nil
+        }
+    }
+
+    @discardableResult
     func sendChatMessage(_ text: String) async -> String? {
         let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !message.isEmpty else {
@@ -342,10 +1561,19 @@ final class OpenClawLocalController: ObservableObject {
             }
             let primaryModelRef = currentPrimaryModelRef()
             if shouldUseDirectCompletion(for: primaryModelRef) {
-                appendLog("Selected model uses a tool-free chat path; running direct completion.")
+                appendLog("Selected model uses a compact simple_chat path; running direct completion.")
+                try prepareDirectories()
+                let prompt = await layeredPrompt(
+                    userMessage: message,
+                    profile: .simpleChat,
+                    modelRef: primaryModelRef,
+                    retrievalQuery: .simpleChat(message)
+                )
+                appendPromptDiagnostics(prompt.breakdown)
                 let reply = try await runDirectModelChat(
                     modelRef: primaryModelRef,
-                    prompt: directChatPrompt()
+                    prompt: prompt.text,
+                    maxTokens: OpenClawTaskProfile.simpleChat.maxOutputTokens
                 )
                 guard !reply.isEmpty else {
                     throw OpenClawLocalControllerError.agentFailed("Selected model returned an empty reply.")
@@ -557,6 +1785,7 @@ final class OpenClawLocalController: ObservableObject {
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: configDirectory, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: workspaceDirectory, withIntermediateDirectories: true)
+        try seedCompactPersonaIfNeeded()
         try fileManager.createDirectory(
             at: configDirectory.appendingPathComponent("canvas", isDirectory: true),
             withIntermediateDirectories: true
@@ -565,6 +1794,15 @@ final class OpenClawLocalController: ObservableObject {
             at: configDirectory.appendingPathComponent("cron", isDirectory: true),
             withIntermediateDirectories: true
         )
+    }
+
+    private func seedCompactPersonaIfNeeded() throws {
+        let url = workspaceDirectory.appendingPathComponent(personaCompactFileName)
+        guard !FileManager.default.fileExists(atPath: url.path) else {
+            return
+        }
+        try defaultCompactPersona.write(to: url, atomically: true, encoding: .utf8)
+        appendLog("Created compact persona at \(url.path).")
     }
 
     private func openClawEnvironment(
@@ -588,12 +1826,12 @@ final class OpenClawLocalController: ObservableObject {
             "/sbin"
         ].joined(separator: ":")
 
-        mergeEnvFile(repositoryDirectory.appendingPathComponent(".env"), into: &environment)
-        mergeEnvFile(configDirectory.appendingPathComponent(".env"), into: &environment)
-        if (environment["KILOCODE_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty,
-           let token = resolveKiloCLIAccessToken() {
-            environment["KILOCODE_API_KEY"] = token
-        }
+        OpenClawLLMConfiguration.mergeEnvironmentSources(
+            repositoryEnvURL: repositoryDirectory.appendingPathComponent(".env"),
+            configEnvURL: configDirectory.appendingPathComponent(".env"),
+            configURL: configDirectory.appendingPathComponent("openclaw.json"),
+            into: &environment
+        )
 
         environment["OPENCLAW_CONFIG_DIR"] = configDirectory.path
         environment["OPENCLAW_WORKSPACE_DIR"] = workspaceDirectory.path
@@ -676,43 +1914,30 @@ final class OpenClawLocalController: ObservableObject {
         }
     }
 
-    private func mergeEnvFile(_ url: URL, into environment: inout [String: String]) {
-        guard let contents = try? String(contentsOf: url) else {
-            return
-        }
-
-        for rawLine in contents.components(separatedBy: .newlines) {
-            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !line.isEmpty, !line.hasPrefix("#"), let separatorIndex = line.firstIndex(of: "=") else {
-                continue
-            }
-
-            let key = String(line[..<separatorIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard key.range(of: #"^[A-Za-z_][A-Za-z0-9_]*$"#, options: .regularExpression) != nil else {
-                continue
-            }
-
-            var value = String(line[line.index(after: separatorIndex)...])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if value.count >= 2,
-               let first = value.first,
-               let last = value.last,
-               (first == "\"" && last == "\"") || (first == "'" && last == "'") {
-                value.removeFirst()
-                value.removeLast()
-            }
-            environment[key] = value
-        }
-    }
-
     private func launchProcess(
         name: String,
         arguments: [String],
         environment: [String: String],
         updateRunningStateOnExit: Bool = true
     ) throws -> Process {
+        try launchExecutableProcess(
+            name: name,
+            executableURL: nodeURL,
+            arguments: arguments,
+            environment: environment,
+            updateRunningStateOnExit: updateRunningStateOnExit
+        )
+    }
+
+    private func launchExecutableProcess(
+        name: String,
+        executableURL: URL,
+        arguments: [String],
+        environment: [String: String],
+        updateRunningStateOnExit: Bool = true
+    ) throws -> Process {
         let process = Process()
-        process.executableURL = nodeURL
+        process.executableURL = executableURL
         process.arguments = arguments
         process.currentDirectoryURL = repositoryDirectory
         process.environment = environment
@@ -856,12 +2081,13 @@ final class OpenClawLocalController: ObservableObject {
         } else {
             activeEnvironment = try openClawEnvironment()
         }
-        let apiKey = directModelSmokeTestAPIKey(from: activeEnvironment, modelRef: trimmedRef)
+        let apiKey = OpenClawLLMConfiguration.apiKey(from: activeEnvironment, modelRef: trimmedRef)
         guard !apiKey.isEmpty else {
             throw OpenClawLocalControllerError.agentFailed(
                 "No API key is available for the selected model."
             )
         }
+        await ensureLocalModelServer(modelRef: trimmedRef, environment: activeEnvironment)
 
         let provider = trimmedRef.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: true)
         guard provider.count == 2 else {
@@ -872,17 +2098,47 @@ final class OpenClawLocalController: ObservableObject {
 
         let providerName = String(provider[0])
         let modelId = trimmedRef
+        let modelName = String(provider[1])
+        let providerConfiguration = OpenClawLLMConfiguration.provider(forModelRef: trimmedRef)
         let reasoningMode = directModelReasoningMode(for: trimmedRef)
         let script = """
         import { completeSimple, getModel } from "@mariozechner/pi-ai";
 
         const provider = process.env.GRACULA_MODEL_PROVIDER ?? "";
         const modelId = process.env.GRACULA_MODEL_ID ?? "";
+        const modelName = process.env.GRACULA_MODEL_NAME ?? modelId;
         const apiKey = process.env.GRACULA_MODEL_API_KEY ?? "";
+        const api = process.env.GRACULA_MODEL_API ?? "";
+        const baseUrl = process.env.GRACULA_MODEL_BASE_URL ?? "";
         const prompt = process.env.GRACULA_MODEL_PROMPT ?? "";
         const maxTokens = Number(process.env.GRACULA_MODEL_MAX_TOKENS ?? "256");
         const reasoning = process.env.GRACULA_MODEL_REASONING ?? "";
-        const model = getModel(provider, modelId);
+        function resolveModel() {
+          try {
+            const registered = getModel(provider, modelId) ?? getModel(provider, modelName);
+            if (registered) {
+              return registered;
+            }
+          } catch {
+            // Fall through to explicit OpenAI-compatible provider config.
+          }
+          if (!api || !baseUrl) {
+            throw new Error(`No registered model or provider config for ${modelId}.`);
+          }
+          return {
+            id: modelName,
+            name: modelName,
+            api,
+            provider,
+            baseUrl,
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 32768,
+            maxTokens: 4096
+          };
+        }
+        const model = resolveModel();
         const options = {
           apiKey,
           maxTokens,
@@ -923,7 +2179,10 @@ final class OpenClawLocalController: ObservableObject {
         var smokeEnvironment = activeEnvironment
         smokeEnvironment["GRACULA_MODEL_PROVIDER"] = providerName
         smokeEnvironment["GRACULA_MODEL_ID"] = modelId
+        smokeEnvironment["GRACULA_MODEL_NAME"] = modelName
         smokeEnvironment["GRACULA_MODEL_API_KEY"] = apiKey
+        smokeEnvironment["GRACULA_MODEL_API"] = providerConfiguration?.api ?? ""
+        smokeEnvironment["GRACULA_MODEL_BASE_URL"] = providerConfiguration?.baseURL ?? ""
         smokeEnvironment["GRACULA_MODEL_PROMPT"] = prompt
         smokeEnvironment["GRACULA_MODEL_MAX_TOKENS"] = String(maxTokens)
         if let reasoningMode {
@@ -962,51 +2221,25 @@ final class OpenClawLocalController: ObservableObject {
         return stdout
     }
 
-    private func directModelSmokeTestAPIKey(from environment: [String: String], modelRef: String) -> String {
-        let lowercased = modelRef.lowercased()
-        if lowercased.hasPrefix("openrouter/") {
-            return environment["OPENROUTER_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        }
-        if lowercased.hasPrefix("google/") {
-            return environment["GEMINI_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines)
-                ?? environment["GOOGLE_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines)
-                ?? ""
-        }
-        if lowercased.hasPrefix("anthropic/") {
-            return environment["ANTHROPIC_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        }
-        if lowercased.hasPrefix("kilocode/") {
-            return environment["KILOCODE_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        }
-        if lowercased.hasPrefix("openai/") || lowercased.hasPrefix("openai-codex/") {
-            return environment["OPENAI_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        }
-        return ""
-    }
-
     private func currentPrimaryModelRef(in jsonEntries: [OpenClawEditableSetting]) -> String {
         if let value = jsonEntries.first(where: { $0.key == "agents.defaults.model.primary" })?.value
             ?? jsonEntries.first(where: { $0.key == "agents.defaults.model" })?.value {
             return value
         }
-        return ""
+        return OpenClawLLMConfiguration.localQwenModelRef
     }
 
     private func shouldUseDirectModelSmokeTest(for modelRef: String) -> Bool {
         let normalized = modelRef.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return normalized == "openrouter/free"
+        return normalized == "openrouter/free" || isLocalQwenModel(modelRef)
     }
 
     private func shouldUseDirectCompletion(for modelRef: String) -> Bool {
-        shouldUseDirectModelSmokeTest(for: modelRef)
+        shouldUseDirectModelSmokeTest(for: modelRef) || isLocalQwenModel(modelRef)
     }
 
     private func directModelReasoningMode(for modelRef: String) -> String? {
-        let normalized = modelRef.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if normalized == "openrouter/free" {
-            return "medium"
-        }
-        return nil
+        OpenClawLLMConfiguration.directSmokeReasoningMode(for: modelRef)
     }
 
     private func currentPrimaryModelRef() -> String {
@@ -1029,6 +2262,567 @@ final class OpenClawLocalController: ObservableObject {
         Conversation:
         \(transcript)
         """
+    }
+
+    private func layeredPrompt(
+        userMessage: String,
+        profile: OpenClawTaskProfile,
+        modelRef: String,
+        retrievalQuery: OpenClawRetrievalQuery
+    ) async -> OpenClawLayeredPrompt {
+        let providerParts = modelRef.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: true)
+        let providerName = providerParts.first.map(String.init) ?? ""
+        let modelName = providerParts.count == 2 ? String(providerParts[1]) : modelRef
+        let corePersona = profile.includeCorePersona
+            ? limitedTokens(personaSection(named: "corePersona") ?? defaultCorePersona, maxTokens: profile.corePersonaTokens)
+            : ""
+        let styleCard = profile.includeStyleCard
+            ? limitedTokens(personaSection(named: "styleCard") ?? defaultStyleCard, maxTokens: profile.styleCardTokens)
+            : ""
+        let memorySummary = profile.includeMemorySummary
+            ? limitedTokens(readWorkspaceText(named: "memory_summary.md") ?? "", maxTokens: profile.maxMemoryTokens)
+            : ""
+        let history = profile.includeHistory
+            ? limitedHistory(maxMessages: profile.maxHistoryMessages)
+            : ""
+        let fullPersona = profile.includeFullPersonaFiles
+            ? limitedTokens(fullPersonaText(), maxTokens: profile.maxRetrievedTokens)
+            : ""
+        let fullMemory = profile.includeFullMemory
+            ? limitedTokens(readWorkspaceText(named: "MEMORY.md") ?? "", maxTokens: profile.maxMemoryTokens)
+            : ""
+        let retrieval = profile.includeRag
+            ? await selectiveMemoryContext(query: retrievalQuery, profile: profile)
+            : .empty(query: retrievalQuery, profile: profile)
+        var retrievedMemory = retrieval.text
+
+        var baseSections = [
+            OpenClawPromptSection(name: "corePersona", text: corePersona),
+            OpenClawPromptSection(name: "styleCard", text: styleCard),
+            OpenClawPromptSection(name: "memorySummary", text: memorySummary),
+            OpenClawPromptSection(name: "history", text: history),
+            OpenClawPromptSection(name: "fullPersona", text: fullPersona),
+            OpenClawPromptSection(name: "fullMemory", text: fullMemory),
+            OpenClawPromptSection(name: "retrievedMemory", text: retrievedMemory),
+        ].filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+        let suffix = profile.disableThinking && isLocalQwenModel(modelRef) ? "\n\n/no_think" : ""
+        let budget = max(256, profile.runtimeContextWindow - profile.reserveTokens - profile.maxOutputTokens)
+        var dropped: [String] = []
+        var shrinkingApplied = false
+        var userMessageForPrompt = profile.name == OpenClawTaskProfile.notificationSpeech.name
+            ? notificationUserMessage(userMessage, includeFallback: true, includeExtraMetadata: true)
+            : userMessage
+        if profile.name == OpenClawTaskProfile.notificationSpeech.name {
+            userMessageForPrompt = limitedTokens(userMessageForPrompt, maxTokens: 2500)
+        }
+
+        var sections = baseSections + [OpenClawPromptSection(name: "user", text: userMessageForPrompt + suffix)]
+        var text = sections
+            .map { "## \($0.name)\n\($0.text)" }
+            .joined(separator: "\n\n")
+
+        if estimatedTokens(text) > budget {
+            shrinkingApplied = true
+            dropped.append("Qdrant snippets")
+            baseSections.removeAll { $0.name == "retrievedMemory" }
+            retrievedMemory = ""
+            sections = baseSections + [OpenClawPromptSection(name: "user", text: userMessageForPrompt + suffix)]
+            text = sections.map { "## \($0.name)\n\($0.text)" }.joined(separator: "\n\n")
+        }
+
+        if profile.name == OpenClawTaskProfile.notificationSpeech.name, estimatedTokens(text) > budget {
+            shrinkingApplied = true
+            dropped.append("fallback spoken text")
+            userMessageForPrompt = notificationUserMessage(userMessage, includeFallback: false, includeExtraMetadata: true)
+            userMessageForPrompt = limitedTokens(userMessageForPrompt, maxTokens: 2500)
+            sections = baseSections + [OpenClawPromptSection(name: "user", text: userMessageForPrompt + suffix)]
+            text = sections.map { "## \($0.name)\n\($0.text)" }.joined(separator: "\n\n")
+        }
+
+        if profile.name == OpenClawTaskProfile.notificationSpeech.name, estimatedTokens(text) > budget {
+            shrinkingApplied = true
+            dropped.append("extra notification metadata")
+            userMessageForPrompt = notificationUserMessage(userMessage, includeFallback: false, includeExtraMetadata: false)
+            userMessageForPrompt = limitedTokens(userMessageForPrompt, maxTokens: 2500)
+            sections = baseSections + [OpenClawPromptSection(name: "user", text: userMessageForPrompt + suffix)]
+            text = sections.map { "## \($0.name)\n\($0.text)" }.joined(separator: "\n\n")
+        }
+
+        if estimatedTokens(text) > budget {
+            for sectionName in ["history", "workspaceFiles", "tools", "skills", "fullMemory", "fullPersona"] {
+                guard estimatedTokens(text) > budget else {
+                    break
+                }
+                if baseSections.contains(where: { $0.name == sectionName }) {
+                    shrinkingApplied = true
+                    dropped.append(sectionName)
+                    baseSections.removeAll { $0.name == sectionName }
+                    sections = baseSections + [OpenClawPromptSection(name: "user", text: userMessageForPrompt + suffix)]
+                    text = sections.map { "## \($0.name)\n\($0.text)" }.joined(separator: "\n\n")
+                }
+            }
+        }
+
+        if profile.name == OpenClawTaskProfile.notificationSpeech.name, estimatedTokens(text) > budget {
+            shrinkingApplied = true
+            userMessageForPrompt = minimalNotificationUserMessage(userMessage)
+            sections = baseSections + [OpenClawPromptSection(name: "user", text: userMessageForPrompt + suffix)]
+            text = sections.map { "## \($0.name)\n\($0.text)" }.joined(separator: "\n\n")
+        }
+
+        let totalTokens = estimatedTokens(text)
+        let breakdown = OpenClawPromptBreakdown(
+            taskProfile: profile.name,
+            modelName: modelName,
+            providerName: providerName,
+            qdrantQuery: limitedTokens(retrievalQuery.text.replacingOccurrences(of: "\n", with: " "), maxTokens: 80),
+            qdrantFilters: retrieval.filters,
+            retrievedSnippetIDs: retrieval.snippets.map(\.id),
+            retrievedSnippetSources: retrieval.snippets.map(\.source),
+            retrievedSnippetScores: retrieval.snippets.map(\.score),
+            retrievedTokenCount: tokenCount(retrievedMemory),
+            systemTokens: tokenCount(corePersona + "\n" + styleCard),
+            userTokens: tokenCount(userMessageForPrompt + suffix),
+            historyTokens: tokenCount(sections.first(where: { $0.name == "history" })?.text ?? ""),
+            workspaceTokens: 0,
+            toolsSkillsTokens: 0,
+            memoryTokens: tokenCount([memorySummary, fullMemory].filter { !$0.isEmpty }.joined(separator: "\n")),
+            ragTokens: tokenCount(retrievedMemory),
+            totalTokens: totalTokens,
+            runtimeContextWindow: profile.runtimeContextWindow,
+            modelContextWindow: modelContextWindow(for: modelRef) ?? profile.runtimeContextWindow,
+            reserveTokens: profile.reserveTokens,
+            maxOutputTokens: profile.maxOutputTokens,
+            shrinkingApplied: shrinkingApplied,
+            dropped: dropped,
+            sections: sections.map { section in
+                OpenClawPromptBreakdown.Section(
+                    name: section.name,
+                    estimatedTokens: estimatedTokens(section.text),
+                    characters: section.text.count
+                )
+            }
+        )
+        return OpenClawLayeredPrompt(text: text, breakdown: breakdown)
+    }
+
+    private func selectiveMemoryContext(
+        query: OpenClawRetrievalQuery,
+        profile: OpenClawTaskProfile
+    ) async -> OpenClawSelectiveMemoryResult {
+        guard let qdrant = qdrantClient() else {
+            return .empty(query: query, profile: profile)
+        }
+
+        await qdrant.ensurePayloadIndexes()
+        do {
+            let snippets = try await qdrant.retrieve(query: query, profile: profile)
+            guard !snippets.isEmpty else {
+                appendLog("Qdrant retrieval for \(profile.name): no relevant snippets above score threshold.")
+                return .empty(query: query, profile: profile)
+            }
+
+            for snippet in snippets {
+                appendLog(
+                    String(
+                        format: "Qdrant snippet id=%@ source=%@ kind=%@ profile=%@ score=%.3f token_estimate=%d",
+                        snippet.id,
+                        snippet.source,
+                        snippet.kind,
+                        snippet.profile,
+                        snippet.score,
+                        snippet.tokenEstimate
+                    )
+                )
+            }
+
+            var remainingTokens = profile.maxRetrievedTokens
+            let context = snippets.compactMap { snippet -> String? in
+                guard remainingTokens > 0 else {
+                    return nil
+                }
+                let snippetTokenBudget = min(remainingTokens, max(1, snippet.tokenEstimate))
+                let clippedText = limitedTokens(snippet.text, maxTokens: snippetTokenBudget)
+                let clippedTokens = estimatedTokens(clippedText)
+                remainingTokens -= clippedTokens
+                return """
+                [source=\(snippet.source), kind=\(snippet.kind), score=\(String(format: "%.3f", snippet.score))]
+                \(clippedText)
+                """
+            }
+                .joined(separator: "\n\n")
+            return OpenClawSelectiveMemoryResult(
+                text: limitedTokens(context, maxTokens: profile.maxRetrievedTokens),
+                snippets: snippets,
+                query: query,
+                filters: OpenClawQdrantClient.memoryFilterDescription(profile: profile, language: query.language)
+            )
+        } catch {
+            appendLog("Qdrant retrieval for \(profile.name) skipped: \(error.localizedDescription)")
+            return .empty(query: query, profile: profile)
+        }
+    }
+
+    private func qdrantClient() -> OpenClawQdrantClient? {
+        let environment = (try? openClawEnvironment()) ?? ProcessInfo.processInfo.environment
+        return OpenClawQdrantClient.make(environment: environment)
+    }
+
+    func ensureLocalModelServer(modelRef: String? = nil, environment: [String: String]? = nil) async {
+        let activeModelRef = (modelRef ?? currentPrimaryModelRef()).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard shouldAutoStartLocalModel(for: activeModelRef) else {
+            return
+        }
+
+        let resolvedEnvironment = environment ?? (try? openClawEnvironment()) ?? ProcessInfo.processInfo.environment
+        let provider = OpenClawLLMConfiguration.provider(forModelRef: activeModelRef)
+        let baseURLString = provider?.baseURL ?? "http://127.0.0.1:8080/v1"
+        guard let baseURL = URL(string: baseURLString) else {
+            appendLog("Local MLX model server skipped: invalid base URL \(baseURLString).")
+            return
+        }
+
+        if await localModelServerHasTargetModel(baseURL: baseURL, modelRef: activeModelRef) {
+            appendLog("Local MLX model server is already available for \(activeModelRef).")
+            return
+        }
+
+        guard localModelProcess == nil else {
+            appendLog("Waiting for local MLX model server to become ready for \(activeModelRef).")
+            await waitForLocalModelServer(baseURL: baseURL, modelRef: activeModelRef)
+            return
+        }
+
+        guard let executableURL = resolveLocalMlxServerExecutableURL(environment: resolvedEnvironment) else {
+            appendLog("Local MLX model server skipped: could not find mlx_lm.server or python3 in /Users/gg/mlx-qwen/.venv/bin.")
+            return
+        }
+        guard let modelPath = resolveLocalMlxModelPath(environment: resolvedEnvironment) else {
+            appendLog("Local MLX model server skipped: could not find a cached model directory for \(activeModelRef).")
+            return
+        }
+
+        let arguments = localMlxServerArguments(executableURL: executableURL, modelPath: modelPath)
+        do {
+            localModelProcess = try launchExecutableProcess(
+                name: "mlx-model",
+                executableURL: executableURL,
+                arguments: arguments,
+                environment: resolvedEnvironment,
+                updateRunningStateOnExit: false
+            )
+            appendLog("Started local MLX model server for \(activeModelRef) using \(modelPath.path).")
+        } catch {
+            localModelProcess = nil
+            appendLog("Local MLX model server start failed: \(error.localizedDescription)")
+            return
+        }
+
+        await waitForLocalModelServer(baseURL: baseURL, modelRef: activeModelRef)
+    }
+
+    private func storeNotificationCache(inputPrompt: String, spokenText: String) async {
+        guard let qdrant = qdrantClient() else {
+            return
+        }
+        await qdrant.storeNotificationCache(
+            inputPrompt: inputPrompt,
+            spokenText: spokenText,
+            decision: "speak"
+        )
+    }
+
+    private func notificationCacheResult(query: OpenClawRetrievalQuery) async -> OpenClawNotificationCacheResult? {
+        guard let qdrant = qdrantClient() else {
+            return nil
+        }
+        await qdrant.ensurePayloadIndexes()
+        do {
+            let result = try await qdrant.notificationCacheResult(query: query)
+            if result == nil {
+                appendLog("Notification cache lookup: no similar cached notification above threshold.")
+            }
+            return result
+        } catch {
+            appendLog("Notification cache lookup skipped: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private func appendPromptDiagnostics(_ breakdown: OpenClawPromptBreakdown) {
+        let sectionSummary = breakdown.sections
+            .map { "\($0.name)=\($0.estimatedTokens)t/\($0.characters)c" }
+            .joined(separator: ", ")
+        appendLog(
+            """
+            Prompt diagnostics: profile=\(breakdown.taskProfile), model=\(breakdown.modelName), provider=\(breakdown.providerName), qdrantQuery=\(breakdown.qdrantQuery), filters=\(breakdown.qdrantFilters), retrievedIDs=\(breakdown.retrievedSnippetIDs), retrievedSources=\(breakdown.retrievedSnippetSources), retrievedScores=\(breakdown.retrievedSnippetScores), retrievedTokens=\(breakdown.retrievedTokenCount), system=\(breakdown.systemTokens)t, user=\(breakdown.userTokens)t, history=\(breakdown.historyTokens)t, workspace=\(breakdown.workspaceTokens)t, toolsSkills=\(breakdown.toolsSkillsTokens)t, memory=\(breakdown.memoryTokens)t, rag=\(breakdown.ragTokens)t, total=\(breakdown.totalTokens)t, runtimeWindow=\(breakdown.runtimeContextWindow)t, modelWindow=\(breakdown.modelContextWindow)t, maxOutput=\(breakdown.maxOutputTokens)t, reserve=\(breakdown.reserveTokens)t, shrinking=\(breakdown.shrinkingApplied), dropped=\(breakdown.dropped), sections=[\(sectionSummary)].
+            """
+        )
+    }
+
+    private func personaSection(named name: String) -> String? {
+        guard let compactPersona = readWorkspaceText(named: personaCompactFileName) else {
+            return nil
+        }
+        let marker = "## \(name)"
+        guard let start = compactPersona.range(of: marker) else {
+            return name == "corePersona"
+                ? compactPersona.trimmingCharacters(in: .whitespacesAndNewlines)
+                : nil
+        }
+        let sectionStart = start.upperBound
+        let rest = compactPersona[sectionStart...]
+        let nextSection = rest.range(of: "\n## ")
+        let section = nextSection.map { rest[..<$0.lowerBound] } ?? rest[...]
+        return String(section).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func fullPersonaText() -> String {
+        [
+            "AGENTS.md",
+            "SOUL.md",
+            "IDENTITY.md",
+            "HEARTBEAT.md",
+            "USER.md",
+            "TOOLS.md"
+        ]
+            .compactMap { fileName -> String? in
+                guard let contents = readWorkspaceText(named: fileName) else {
+                    return nil
+                }
+                return "### \(fileName)\n\(contents)"
+            }
+            .joined(separator: "\n\n")
+    }
+
+    private func readWorkspaceText(named fileName: String) -> String? {
+        let url = workspaceDirectory.appendingPathComponent(fileName)
+        guard let contents = try? String(contentsOf: url, encoding: .utf8) else {
+            return nil
+        }
+        let trimmed = contents.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func limitedHistory(maxMessages: Int) -> String {
+        chatMessages
+            .suffix(maxMessages)
+            .filter { $0.role != .error }
+            .map { "\($0.role.rawValue): \($0.text)" }
+            .joined(separator: "\n")
+    }
+
+    private func notificationUserMessage(
+        _ rawMessage: String,
+        includeFallback: Bool,
+        includeExtraMetadata: Bool
+    ) -> String {
+        let query = OpenClawRetrievalQuery.notificationSpeech(from: rawMessage)
+        let subtitle = OpenClawRetrievalQuery.labeledValue("Subtitle", in: rawMessage)
+        let fallback = notificationFallbackText(in: rawMessage)
+        var lines = [
+            "Task: produce one short Russian phrase suitable for speech. Preserve names, numbers, apps, channels, and message meaning. Do not mention prompts, RAG, databases, tools, or implementation details.",
+            "App: \(query.app ?? "Unknown")",
+            "Title: \(query.title ?? "Notification")"
+        ]
+        if includeExtraMetadata {
+            if let subtitle, !subtitle.isEmpty {
+                lines.append("Subtitle: \(subtitle)")
+            }
+            if let channel = query.channel, !channel.isEmpty {
+                lines.append("Channel: \(channel)")
+            }
+        }
+        lines.append("Body: \(query.body ?? query.text)")
+        if includeFallback, let fallback, !fallback.isEmpty {
+            lines.append("Fallback spoken text: \(fallback)")
+        }
+        if includeFallback,
+           let example = rawMessage.components(separatedBy: "Similar previous spoken text:").last,
+           rawMessage.contains("Similar previous spoken text:") {
+            let trimmed = example.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                lines.append("Similar previous spoken text: \(limitedTokens(trimmed, maxTokens: 96))")
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func minimalNotificationUserMessage(_ rawMessage: String) -> String {
+        let query = OpenClawRetrievalQuery.notificationSpeech(from: rawMessage)
+        return [
+            "Task: produce one short Russian phrase suitable for speech. Preserve names, numbers, apps, channels, and meaning.",
+            "App: \(query.app ?? "Unknown")",
+            "Title: \(query.title ?? "Notification")",
+            "Body: \(limitedTokens(query.body ?? query.text, maxTokens: 2200))"
+        ].joined(separator: "\n")
+    }
+
+    private func notificationFallbackText(in rawMessage: String) -> String? {
+        guard rawMessage.contains("Fallback spoken text:") else {
+            return nil
+        }
+        let fallback = rawMessage.components(separatedBy: "Fallback spoken text:")
+            .last?
+            .components(separatedBy: "Similar previous spoken text:")
+            .first?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return fallback?.isEmpty == false ? fallback : nil
+    }
+
+    private func modelContextWindow(for modelRef: String) -> Int? {
+        guard let provider = OpenClawLLMConfiguration.provider(forModelRef: modelRef),
+              let data = provider.modelsJSON.data(using: .utf8),
+              let models = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return nil
+        }
+        let modelName = modelRef.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: true).dropFirst().first.map(String.init) ?? modelRef
+        let model = models.first { object in
+            (object["id"] as? String) == modelName || (object["name"] as? String) == modelName
+        }
+        return (model?["contextTokens"] as? Int)
+            ?? (model?["contextWindow"] as? Int)
+            ?? (model?["contextTokens"] as? NSNumber)?.intValue
+            ?? (model?["contextWindow"] as? NSNumber)?.intValue
+    }
+
+    private func limitedTokens(_ text: String, maxTokens: Int) -> String {
+        let maxCharacters = max(0, maxTokens * 4)
+        guard text.count > maxCharacters else {
+            return text
+        }
+        return String(text.prefix(maxCharacters)).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func estimatedTokens(_ text: String) -> Int {
+        max(1, Int(ceil(Double(text.count) / 4.0)))
+    }
+
+    private func tokenCount(_ text: String) -> Int {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : estimatedTokens(text)
+    }
+
+    private func isLocalQwenModel(_ modelRef: String) -> Bool {
+        let normalized = modelRef.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized.contains("qwen3") || normalized.contains("/qwen/")
+    }
+
+    private func shouldAutoStartLocalModel(for modelRef: String) -> Bool {
+        OpenClawLLMConfiguration.provider(forModelRef: modelRef)?.name == "mlx"
+    }
+
+    private func localMlxServerArguments(executableURL: URL, modelPath: URL) -> [String] {
+        let baseArguments = [
+            "--model",
+            modelPath.path,
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8080",
+            "--use-default-chat-template",
+            "--log-level",
+            "INFO"
+        ]
+        if executableURL.lastPathComponent == "python3" {
+            return ["-m", "mlx_lm.server"] + baseArguments
+        }
+        return baseArguments
+    }
+
+    private func resolveLocalMlxServerExecutableURL(environment: [String: String]) -> URL? {
+        let candidates = [
+            environment["GRACULA_MLX_SERVER_BIN"],
+            environment["OPENCLAW_MLX_SERVER_BIN"],
+            environment["MLX_LM_SERVER_BIN"]
+        ]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .map { URL(filePath: $0, directoryHint: .notDirectory) }
+
+        if let found = candidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }) {
+            return found
+        }
+
+        let defaultScript = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("mlx-qwen", isDirectory: true)
+            .appendingPathComponent(".venv", isDirectory: true)
+            .appendingPathComponent("bin", isDirectory: true)
+            .appendingPathComponent("mlx_lm.server")
+        if FileManager.default.fileExists(atPath: defaultScript.path) {
+            return defaultScript
+        }
+
+        let pythonBinary = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("mlx-qwen", isDirectory: true)
+            .appendingPathComponent(".venv", isDirectory: true)
+            .appendingPathComponent("bin", isDirectory: true)
+            .appendingPathComponent("python3")
+        if FileManager.default.fileExists(atPath: pythonBinary.path) {
+            return pythonBinary
+        }
+
+        return nil
+    }
+
+    private func resolveLocalMlxModelPath(environment: [String: String]) -> URL? {
+        let candidates = [
+            environment["GRACULA_MLX_MODEL_PATH"],
+            environment["OPENCLAW_MLX_MODEL_PATH"],
+            environment["MLX_MODEL_PATH"]
+        ]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .map { URL(filePath: $0, directoryHint: .isDirectory) }
+
+        if let found = candidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }) {
+            return found
+        }
+
+        let cacheRoot = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache", isDirectory: true)
+            .appendingPathComponent("huggingface", isDirectory: true)
+            .appendingPathComponent("hub", isDirectory: true)
+            .appendingPathComponent("models--Qwen--Qwen3-30B-A3B-MLX-4bit", isDirectory: true)
+            .appendingPathComponent("snapshots", isDirectory: true)
+
+        guard let snapshotDirectories = try? FileManager.default.contentsOfDirectory(
+            at: cacheRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return nil
+        }
+
+        return snapshotDirectories.first(where: { FileManager.default.fileExists(atPath: $0.path) })
+    }
+
+    private func localModelServerHasTargetModel(baseURL: URL, modelRef: String) async -> Bool {
+        let url = baseURL.appendingPathComponent("models")
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else {
+                return false
+            }
+            let text = String(decoding: data, as: UTF8.self)
+            let modelName = modelRef.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: true).dropFirst().first.map(String.init) ?? modelRef
+            return text.contains(modelName) || text.contains(modelRef)
+        } catch {
+            return false
+        }
+    }
+
+    private func waitForLocalModelServer(baseURL: URL, modelRef: String, timeoutSeconds: Int = 180) async {
+        let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
+        while Date() < deadline {
+            if await localModelServerHasTargetModel(baseURL: baseURL, modelRef: modelRef) {
+                appendLog("Local MLX model server is ready for \(modelRef).")
+                return
+            }
+            try? await Task.sleep(for: .seconds(1))
+        }
+        appendLog("Local MLX model server did not become ready for \(modelRef) within \(timeoutSeconds)s.")
     }
 
     private func prepareTestDirectories(configDirectory: URL, workspaceDirectory: URL) throws {
@@ -1485,11 +3279,8 @@ enum OpenClawSettingsApplyError: LocalizedError {
 
 struct OpenClawSettingsReader {
     private let repositoryDirectory = resolveOpenClawRepositoryDirectory()
-    private let configDirectory = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".openclaw", isDirectory: true)
-    private let workspaceDirectory = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".openclaw", isDirectory: true)
-        .appendingPathComponent("workspace", isDirectory: true)
+    private let configDirectory = OpenClawRuntimePaths.configDirectory
+    private let workspaceDirectory = OpenClawRuntimePaths.workspaceDirectory
     private let nodeURL = resolveNodeExecutableURL()
     private let gatewayHost = "127.0.0.1"
     private let fallbackGatewayPort = "18789"
@@ -1498,14 +3289,14 @@ struct OpenClawSettingsReader {
 
     init(environment: [String: String]? = nil) {
         var mergedEnvironment = ProcessInfo.processInfo.environment
-        Self.mergeEnvFile(repositoryDirectory.appendingPathComponent(".env"), into: &mergedEnvironment)
-        Self.mergeEnvFile(configDirectory.appendingPathComponent(".env"), into: &mergedEnvironment)
+        OpenClawLLMConfiguration.mergeEnvironmentSources(
+            repositoryEnvURL: repositoryDirectory.appendingPathComponent(".env"),
+            configEnvURL: configDirectory.appendingPathComponent(".env"),
+            configURL: configDirectory.appendingPathComponent("openclaw.json"),
+            into: &mergedEnvironment
+        )
         if let environment {
             mergedEnvironment.merge(environment) { _, newValue in newValue }
-        }
-        if (mergedEnvironment["KILOCODE_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty,
-           let token = resolveKiloCLIAccessToken() {
-            mergedEnvironment["KILOCODE_API_KEY"] = token
         }
         self.environment = mergedEnvironment
     }
@@ -1606,10 +3397,7 @@ struct OpenClawSettingsReader {
     }
 
     static func writeJSON(entries: [OpenClawEditableSetting]) throws {
-        let url = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".openclaw", isDirectory: true)
-            .appendingPathComponent("openclaw.json")
-        try writeJSON(entries: entries, to: url)
+        try writeJSON(entries: entries, to: OpenClawRuntimePaths.configURL)
     }
 
     static func writeJSON(entries: [OpenClawEditableSetting], to url: URL) throws {
@@ -1621,7 +3409,7 @@ struct OpenClawSettingsReader {
             try? fileManager.copyItem(at: url, to: backupURL)
         }
 
-        let normalizedEntries = entriesWithProviderDefaults(entries)
+        let normalizedEntries = OpenClawLLMConfiguration.entriesWithProviderDefaults(entries)
         let rootObject: NSMutableDictionary
         if let data = try? Data(contentsOf: url),
            !data.isEmpty,
@@ -1645,139 +3433,8 @@ struct OpenClawSettingsReader {
         try data.write(to: url, options: [.atomic])
     }
 
-    private static func entriesWithProviderDefaults(_ entries: [OpenClawEditableSetting]) -> [OpenClawEditableSetting] {
-        var normalized = entries
-
-        ensureEntry(
-            key: "models.providers.google.baseUrl",
-            value: "https://generativelanguage.googleapis.com/v1beta",
-            in: &normalized
-        )
-        ensureEntry(
-            key: "models.providers.google.api",
-            value: "google-generative-ai",
-            in: &normalized
-        )
-        ensureEntry(
-            key: "models.providers.google.models",
-            value: """
-            [
-              {
-                "id": "gemini-3.1-pro-preview",
-                "name": "Gemini 3.1 Pro Preview",
-                "api": "google-generative-ai",
-                "reasoning": true,
-                "input": ["text", "image"],
-                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-                "contextWindow": 1048576,
-                "maxTokens": 65536
-              },
-              {
-                "id": "gemini-3-flash-preview",
-                "name": "Gemini 3 Flash Preview",
-                "api": "google-generative-ai",
-                "reasoning": false,
-                "input": ["text", "image"],
-                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-                "contextWindow": 1048576,
-                "maxTokens": 65536
-              }
-            ]
-            """,
-            kind: .array,
-            in: &normalized
-        )
-
-        ensureEntry(
-            key: "models.providers.kilocode.baseUrl",
-            value: "https://api.kilo.ai/api/gateway/",
-            in: &normalized
-        )
-        ensureEntry(
-            key: "models.providers.kilocode.api",
-            value: "openai-completions",
-            in: &normalized
-        )
-        ensureEntry(
-            key: "models.providers.kilocode.models",
-            value: """
-            [
-              {
-                "id": "kilo/auto",
-                "name": "Kilo Auto",
-                "reasoning": true,
-                "input": ["text", "image"],
-                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-                "contextWindow": 1000000,
-                "maxTokens": 128000
-              }
-            ]
-            """,
-            kind: .array,
-            in: &normalized
-        )
-
-        ensureEntry(
-            key: "models.providers.openrouter.baseUrl",
-            value: "https://openrouter.ai/api/v1",
-            in: &normalized
-        )
-        ensureEntry(
-            key: "models.providers.openrouter.api",
-            value: "openai-completions",
-            in: &normalized
-        )
-        ensureEntry(
-            key: "models.providers.openrouter.models",
-            value: """
-            [
-              {
-                "id": "free",
-                "name": "OpenRouter Free",
-                "api": "openai-completions",
-                "reasoning": false,
-                "input": ["text"],
-                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-                "contextWindow": 128000,
-                "maxTokens": 8192,
-                "compat": {
-                  "supportsTools": false
-                }
-              }
-            ]
-            """,
-            kind: .array,
-            in: &normalized
-        )
-
-        return normalized
-    }
-
-    private static func ensureEntry(
-        key: String,
-        value: String,
-        kind: OpenClawEditableSetting.ValueKind = .string,
-        in entries: inout [OpenClawEditableSetting]
-    ) {
-        guard !entries.contains(where: { $0.key == key }) else {
-            return
-        }
-        entries.append(
-            OpenClawEditableSetting(
-                key: key,
-                source: .json,
-                kind: kind,
-                isSecret: false,
-                value: value
-            )
-        )
-    }
-
     static func writeWorkspaceFiles(_ files: [OpenClawWorkspaceFile]) throws {
-        let workspaceDirectory = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".openclaw", isDirectory: true)
-            .appendingPathComponent("workspace", isDirectory: true)
-        try writeWorkspaceFiles(files, to: workspaceDirectory)
+        try writeWorkspaceFiles(files, to: OpenClawRuntimePaths.workspaceDirectory)
     }
 
     static func writeWorkspaceFiles(_ files: [OpenClawWorkspaceFile], to workspaceDirectory: URL) throws {
@@ -1930,46 +3587,6 @@ struct OpenClawSettingsReader {
         return String(port)
     }
 
-    private static func mergeEnvFile(_ url: URL, into environment: inout [String: String]) {
-        guard let contents = try? String(contentsOf: url) else {
-            return
-        }
-
-        for rawLine in contents.components(separatedBy: .newlines) {
-            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !line.isEmpty, !line.hasPrefix("#"), let separatorIndex = line.firstIndex(of: "=") else {
-                continue
-            }
-
-            let key = String(line[..<separatorIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard key.range(of: #"^[A-Za-z_][A-Za-z0-9_]*$"#, options: .regularExpression) != nil else {
-                continue
-            }
-
-            var value = String(line[line.index(after: separatorIndex)...])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if value.count >= 2,
-               let first = value.first,
-               let last = value.last,
-               (first == "\"" && last == "\"") || (first == "'" && last == "'") {
-                value.removeFirst()
-                value.removeLast()
-            }
-            environment[key] = value
-        }
-    }
-
-    private func applyKiloCLIAuthFallback(to environment: inout [String: String]) {
-        guard let token = resolveKiloCLIAccessToken() else {
-            return
-        }
-        let current = environment["KILOCODE_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard current.isEmpty else {
-            return
-        }
-        environment["KILOCODE_API_KEY"] = token
-    }
-
     private func redacted(_ value: String, forKey key: String) -> String {
         guard !value.isEmpty else {
             return "Not set"
@@ -2092,7 +3709,10 @@ struct OpenClawSettingsReader {
             "MEMORY.md",
             "SOUL.md",
             "TOOLS.md",
-            "USER.md"
+            "USER.md",
+            "memory_summary.md",
+            "persona_compact.md",
+            "rag_excerpts.md"
         ]
         return allowedNames.contains(relativePath)
             || relativePath.hasPrefix("IDENTITY")
@@ -2240,6 +3860,29 @@ private func resolveOpenClawRepositoryDirectory() -> URL {
     }
 
     return userRuntimeCandidate
+}
+
+private func resolveGraculaProjectDirectory() -> URL {
+    let fileManager = FileManager.default
+    let env = ProcessInfo.processInfo.environment
+
+    if let override = env["GRACULA_PROJECT_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !override.isEmpty {
+        return URL(filePath: override, directoryHint: .isDirectory)
+    }
+
+    let currentDirectory = URL(filePath: fileManager.currentDirectoryPath, directoryHint: .isDirectory)
+    var candidate = currentDirectory.standardizedFileURL
+    while candidate.path != "/" {
+        if fileManager.fileExists(atPath: candidate.appendingPathComponent("Package.swift").path),
+           fileManager.fileExists(atPath: candidate.appendingPathComponent("Examples", isDirectory: true).path) {
+            return candidate
+        }
+        candidate = candidate.deletingLastPathComponent()
+    }
+
+    return fileManager.homeDirectoryForCurrentUser
+        .appendingPathComponent("Gracula", isDirectory: true)
 }
 
 private func resolveNodeExecutableURL() -> URL {
