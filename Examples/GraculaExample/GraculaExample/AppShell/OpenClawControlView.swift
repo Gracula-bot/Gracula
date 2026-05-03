@@ -22,12 +22,15 @@ struct OpenClawControlView: View {
                 }
             } label: {
                 Label(
-                    controller.isRunning ? "Stop Bot" : "Start Bot",
+                    controller.isRunning
+                        ? (controller.isSendingChat ? "Chat Running" : "Stop Bot")
+                        : "Start Bot",
                     systemImage: controller.isRunning ? "stop.fill" : "play.fill"
                 )
                 .frame(minWidth: 110)
             }
             .buttonStyle(.borderedProminent)
+            .disabled(controller.isSendingChat)
         }
     }
 }
@@ -37,9 +40,9 @@ struct OpenClawSettingsView: View {
     @State private var isRuntimeExpanded = true
     @State private var isPermissionsExpanded = true
     @State private var isToolsExpanded = true
-    @State private var isEnvironmentExpanded = true
-    @State private var isJSONExpanded = true
-    @State private var isWorkspaceExpanded = true
+    @State private var isEnvironmentExpanded = false
+    @State private var isJSONExpanded = false
+    @State private var isWorkspaceExpanded = false
     @State private var environmentEntries: [OpenClawEditableSetting] = []
     @State private var jsonEntries: [OpenClawEditableSetting] = []
     @State private var workspaceFiles: [OpenClawWorkspaceFile] = []
@@ -171,11 +174,18 @@ struct OpenClawSettingsView: View {
                         SecureField("Value", text: $entry.value)
                             .textFieldStyle(.roundedBorder)
                             .font(.system(.caption, design: .monospaced))
+                    } else if entry.kind == .array || entry.kind == .object {
+                        TextEditor(text: $entry.value)
+                            .font(.system(.caption, design: .monospaced))
+                            .frame(minHeight: jsonEditorHeight(for: entry.value), maxHeight: 220)
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(.quaternary)
+                            }
                     } else {
-                        TextField("Value", text: $entry.value, axis: .vertical)
+                        TextField("Value", text: $entry.value)
                             .textFieldStyle(.roundedBorder)
                             .font(.system(.caption, design: .monospaced))
-                            .lineLimit(1...4)
                     }
                 }
             }
@@ -205,6 +215,11 @@ struct OpenClawSettingsView: View {
 
     private func editorHeight(for contents: String) -> CGFloat {
         let lineCount = max(6, min(28, contents.split(separator: "\n", omittingEmptySubsequences: false).count))
+        return CGFloat(lineCount * 18 + 24)
+    }
+
+    private func jsonEditorHeight(for contents: String) -> CGFloat {
+        let lineCount = max(4, min(10, contents.split(separator: "\n", omittingEmptySubsequences: false).count))
         return CGFloat(lineCount * 18 + 24)
     }
 

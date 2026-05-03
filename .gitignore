@@ -67,3 +67,9 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+# Local GraculaExample runtime state
+Examples/GraculaExample/openclaw/
+Examples/GraculaExample/.whisper-venv.broken-python313-*/
+Examples/GraculaExample/.whisper-venv/bin/__pycache__/
+Examples/GraculaExample/openclaw/.env.bak.*

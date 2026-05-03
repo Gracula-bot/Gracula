@@ -8,8 +8,6 @@ enum SpeechRecognitionBackend: String, Codable, CaseIterable, Sendable {
 enum SpeechSynthesisBackend: String, Codable, CaseIterable, Sendable {
     case disabled
     case appleSystem
-    case voxcpmLocal
-    case voxcpmServer
 }
 
 struct VoicePipelineSettings: Codable, Sendable {
@@ -124,8 +122,9 @@ struct VoicePipelineSettings: Codable, Sendable {
             ?? Defaults.parakeetModelName
         parakeetLanguageCode = try container.decodeIfPresent(String.self, forKey: .parakeetLanguageCode)
             ?? Defaults.parakeetLanguageCode
-        speechSynthesisBackend = try container.decodeIfPresent(SpeechSynthesisBackend.self, forKey: .speechSynthesisBackend)
-            ?? Defaults.speechSynthesisBackend
+        speechSynthesisBackend = Self.normalizedSpeechSynthesisBackend(
+            try container.decodeIfPresent(String.self, forKey: .speechSynthesisBackend)
+        )
         speakRecognizedText = try container.decodeIfPresent(Bool.self, forKey: .speakRecognizedText)
             ?? Defaults.speakRecognizedText
         appleSystemVoiceLanguageCode = try container.decodeIfPresent(String.self, forKey: .appleSystemVoiceLanguageCode)
@@ -181,6 +180,14 @@ struct VoicePipelineSettings: Codable, Sendable {
         default:
             return modelName
         }
+    }
+
+    private static func normalizedSpeechSynthesisBackend(_ rawValue: String?) -> SpeechSynthesisBackend {
+        guard let rawValue,
+              let backend = SpeechSynthesisBackend(rawValue: rawValue) else {
+            return Defaults.speechSynthesisBackend
+        }
+        return backend
     }
 }
 

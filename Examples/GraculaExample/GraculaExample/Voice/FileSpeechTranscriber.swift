@@ -69,7 +69,7 @@ struct LocalSpeechRuntimeConfiguration: Sendable {
 
         guard let pythonURL = pythonCandidates.first(where: { fileManager.isExecutableFile(atPath: $0.path) }) else {
             throw FileSpeechTranscriberError.runtimeMissing(
-                "Python runtime not found. Expected `GRACULA_WHISPER_PYTHON` or `Examples/GraculaExample/.whisper-venv/bin/python` under the Gracula checkout."
+                "Python runtime not found. Expected `GRACULA_WHISPER_PYTHON`, `~/Library/Application Support/GraculaExample/PythonRuntime/bin/python`, or `Examples/GraculaExample/.whisper-venv/bin/python` under the Gracula checkout."
             )
         }
 
@@ -303,13 +303,13 @@ final class FileSpeechTranscriber: @unchecked Sendable {
     }
 }
 
-private final class WhisperTranscriptionWorker: @unchecked Sendable {
+private actor WhisperTranscriptionWorker {
     private let runtime: LocalSpeechRuntimeConfiguration
-    private let queue = DispatchQueue(label: "GraculaExample.WhisperWorker")
-    private let stdoutSemaphore = DispatchSemaphore(value: 0)
-    private let stdoutLock = NSLock()
+    private var operationInProgress = false
     private var stdoutBuffer = ""
     private var stdoutLines: [String] = []
+    private var pendingOperationContinuations: [CheckedContinuation<Void, Never>] = []
+    private var pendingLineContinuation: CheckedContinuation<String, Error>?
     private var process: Process?
     private var stdinHandle: FileHandle?
     private var terminationStatus: Int32?
@@ -320,33 +320,42 @@ private final class WhisperTranscriptionWorker: @unchecked Sendable {
     }
 
     func prewarm() async throws -> String {
-        try await withCheckedThrowingContinuation { continuation in
-            queue.async {
-                do {
-                    let ready = try self.ensureStarted()
-                    continuation.resume(returning: ready)
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
+        await beginOperation()
+        defer { endOperation() }
+
+        return try await ensureStarted()
     }
 
     func transcribe(fileURL: URL) async throws -> String {
-        try await withCheckedThrowingContinuation { continuation in
-            queue.async {
-                do {
-                    _ = try self.ensureStarted()
-                    let response = try self.sendTranscriptionRequest(fileURL: fileURL)
-                    continuation.resume(returning: response)
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
+        await beginOperation()
+        defer { endOperation() }
+
+        _ = try await ensureStarted()
+        return try await sendTranscriptionRequest(fileURL: fileURL)
+    }
+
+    private func beginOperation() async {
+        guard operationInProgress else {
+            operationInProgress = true
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            pendingOperationContinuations.append(continuation)
         }
     }
 
-    private func ensureStarted() throws -> String {
+    private func endOperation() {
+        guard !pendingOperationContinuations.isEmpty else {
+            operationInProgress = false
+            return
+        }
+
+        let continuation = pendingOperationContinuations.removeFirst()
+        continuation.resume()
+    }
+
+    private func ensureStarted() async throws -> String {
         if started {
             return "ready"
         }
@@ -394,7 +403,14 @@ private final class WhisperTranscriptionWorker: @unchecked Sendable {
         process.environment = environment
 
         stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            self?.ingestStdout(data: handle.availableData)
+            let data = handle.availableData
+            guard !data.isEmpty else {
+                return
+            }
+
+            Task {
+                await self?.ingestStdout(data: data)
+            }
         }
         stderrPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
@@ -405,14 +421,16 @@ private final class WhisperTranscriptionWorker: @unchecked Sendable {
             }
         }
         process.terminationHandler = { [weak self] process in
-            self?.handleTermination(status: process.terminationStatus)
+            Task {
+                await self?.handleTermination(status: process.terminationStatus)
+            }
         }
 
         try process.run()
         self.process = process
         self.stdinHandle = stdinPipe.fileHandleForWriting
 
-        let readyLine = try waitForLine()
+        let readyLine = try await waitForLine()
         let message = try decodeMessage(from: readyLine)
         guard message.type == "ready" else {
             throw FileSpeechTranscriberError.transcriptionFailed("Speech worker did not report ready.")
@@ -424,7 +442,7 @@ private final class WhisperTranscriptionWorker: @unchecked Sendable {
         return "ready"
     }
 
-    private func sendTranscriptionRequest(fileURL: URL) throws -> String {
+    private func sendTranscriptionRequest(fileURL: URL) async throws -> String {
         guard let stdinHandle else {
             throw FileSpeechTranscriberError.transcriptionFailed("Speech worker stdin is unavailable.")
         }
@@ -436,7 +454,7 @@ private final class WhisperTranscriptionWorker: @unchecked Sendable {
         requestPayload.append(0x0a)
         try stdinHandle.write(contentsOf: requestPayload)
 
-        let responseLine = try waitForLine()
+        let responseLine = try await waitForLine()
         let message = try decodeMessage(from: responseLine)
         guard message.id == requestID else {
             throw FileSpeechTranscriberError.transcriptionFailed("Speech worker returned an out-of-order response.")
@@ -450,12 +468,7 @@ private final class WhisperTranscriptionWorker: @unchecked Sendable {
     }
 
     private func ingestStdout(data: Data) {
-        guard !data.isEmpty else {
-            return
-        }
-
         let chunk = String(decoding: data, as: UTF8.self)
-        stdoutLock.lock()
         stdoutBuffer += chunk
 
         var parts = stdoutBuffer.split(separator: "\n", omittingEmptySubsequences: false)
@@ -466,40 +479,63 @@ private final class WhisperTranscriptionWorker: @unchecked Sendable {
         }
 
         for part in parts where !part.isEmpty {
-            stdoutLines.append(String(part))
-            stdoutSemaphore.signal()
+            let line = String(part)
+            if let pendingLineContinuation {
+                self.pendingLineContinuation = nil
+                pendingLineContinuation.resume(returning: line)
+            } else {
+                stdoutLines.append(line)
+            }
         }
-        stdoutLock.unlock()
     }
 
-    private func waitForLine() throws -> String {
-        while true {
+    private func waitForLine() async throws -> String {
+        if let line = popLine() {
+            return line
+        }
+
+        if let terminationStatus {
+            throw FileSpeechTranscriberError.transcriptionFailed("Speech worker exited with code \(terminationStatus).")
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
             if let line = popLine() {
-                return line
+                continuation.resume(returning: line)
+                return
             }
 
             if let terminationStatus {
-                throw FileSpeechTranscriberError.transcriptionFailed("Speech worker exited with code \(terminationStatus).")
+                continuation.resume(
+                    throwing: FileSpeechTranscriberError.transcriptionFailed(
+                        "Speech worker exited with code \(terminationStatus)."
+                    )
+                )
+                return
             }
 
-            stdoutSemaphore.wait()
+            pendingLineContinuation = continuation
         }
     }
 
     private func popLine() -> String? {
-        stdoutLock.lock()
-        defer { stdoutLock.unlock() }
-
         guard !stdoutLines.isEmpty else {
             return nil
         }
-
         return stdoutLines.removeFirst()
     }
 
     private func handleTermination(status: Int32) {
         terminationStatus = status
-        stdoutSemaphore.signal()
+        guard let pendingLineContinuation else {
+            return
+        }
+
+        self.pendingLineContinuation = nil
+        pendingLineContinuation.resume(
+            throwing: FileSpeechTranscriberError.transcriptionFailed(
+                "Speech worker exited with code \(status)."
+            )
+        )
     }
 
     private func decodeMessage(from line: String) throws -> WhisperWorkerMessage {

@@ -56,7 +56,7 @@ final class AudioRecorderViewModel: ObservableObject {
         log.info("AudioRecorderViewModel initialized. appLog=\(log.logFilePath)")
         appendDiagnostic("Voice settings file: \(VoicePipelineSettingsStore.defaultFileURL().path)")
         appendDiagnostic(
-            "Speech synthesis: backend=\(loadedSettings.speechSynthesisBackend.rawValue), model=\(loadedSettings.voxcpmModelName), voice=\(loadedSettings.voxcpmVoiceName), device=\(loadedSettings.voxcpmDevice), baseURL=\(loadedSettings.voxcpmServerBaseURL), speakRecognizedText=\(loadedSettings.speakRecognizedText)"
+            "Speech synthesis: backend=\(loadedSettings.speechSynthesisBackend.rawValue), speakRecognizedText=\(loadedSettings.speakRecognizedText)"
         )
         refreshSystemVoices()
         didFinishInitializing = true
@@ -124,7 +124,6 @@ final class AudioRecorderViewModel: ObservableObject {
                 await VoicePipelineSettingsStore.shared.save(settings)
             }
             await transcriber.prewarm()
-            await voicePipeline.prewarm()
         }
         restartNotificationMonitor()
     }
@@ -396,14 +395,20 @@ final class AudioRecorderViewModel: ObservableObject {
             if let sendRecognizedText {
                 statusText = "Saved and transcribed audio message. Asking OpenClaw..."
                 appendDiagnostic("Sending recognized text to OpenClaw. characters=\(trimmedRecognizedText.count)")
+                let openClawStartedAt = PerformanceLog.checkpoint()
+                log.info("[latency] OpenClaw send started; recognizedCharacters=\(trimmedRecognizedText.count)")
                 if let reply = await sendRecognizedText(trimmedRecognizedText)?.trimmingCharacters(in: .whitespacesAndNewlines),
                    !reply.isEmpty {
                     speechText = reply
-                    appendDiagnostic("OpenClaw reply received. characters=\(reply.count)")
+                    let openClawElapsed = PerformanceLog.elapsedDescription(since: openClawStartedAt)
+                    appendDiagnostic("OpenClaw reply received. characters=\(reply.count), elapsed=\(openClawElapsed)")
+                    log.info("[latency] OpenClaw reply delivered to recorder pipeline in \(openClawElapsed); replyCharacters=\(reply.count)")
                     statusText = "OpenClaw replied. Speaking..."
                 } else {
                     speechText = "OpenClaw did not return a spoken reply."
-                    appendDiagnostic("OpenClaw did not return a speakable reply.")
+                    let openClawElapsed = PerformanceLog.elapsedDescription(since: openClawStartedAt)
+                    appendDiagnostic("OpenClaw did not return a speakable reply. elapsed=\(openClawElapsed)")
+                    log.warning("[latency] OpenClaw returned no speakable reply after \(openClawElapsed)")
                     statusText = "OpenClaw did not return a spoken reply."
                 }
             } else {
@@ -411,11 +416,19 @@ final class AudioRecorderViewModel: ObservableObject {
                 statusText = "Saved and transcribed audio message. Speaking..."
             }
 
+            let speechStartedAt = PerformanceLog.checkpoint()
+            appendDiagnostic("Speech synthesis starting. characters=\(speechText.count)")
+            log.info("[latency] Speech synthesis requested; characters=\(speechText.count)")
             let didSpeak = await voicePipeline.speakRecognizedText(speechText)
+            let speechElapsed = PerformanceLog.elapsedDescription(since: speechStartedAt)
             statusText = didSpeak ? "Saved, transcribed, answered, and spoken." : "Saved and transcribed audio message."
             isTranscribing = false
             if didSpeak {
-                appendDiagnostic("Speech synthesis finished.")
+                appendDiagnostic("Speech synthesis finished. elapsed=\(speechElapsed)")
+                log.info("[latency] Speech synthesis completed in \(speechElapsed)")
+            } else {
+                appendDiagnostic("Speech synthesis skipped or failed. elapsed=\(speechElapsed)")
+                log.info("[latency] Speech synthesis skipped/failed in \(speechElapsed)")
             }
 
             log.info("stopRecording completed in \(PerformanceLog.elapsedDescription(since: startedAt)); totalBytes=\(result.byteSize)")
@@ -452,7 +465,6 @@ final class AudioRecorderViewModel: ObservableObject {
         appendDiagnostic("Selected macOS bot voice: \(selectedVoice.name) (\(selectedVoice.languageCode)).")
         Task {
             await VoicePipelineSettingsStore.shared.save(voiceSettings)
-            await voicePipeline.prewarm()
         }
     }
 

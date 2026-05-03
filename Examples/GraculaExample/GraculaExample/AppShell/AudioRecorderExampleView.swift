@@ -4,6 +4,7 @@ import SwiftUI
 struct AudioRecorderExampleView: View {
     @StateObject private var viewModel: AudioRecorderViewModel
     @StateObject private var openClawController = OpenClawLocalController()
+    @State private var didBootstrapOpenClaw = false
 
     init(viewModel: AudioRecorderViewModel) {
         _viewModel = StateObject(wrappedValue: viewModel)
@@ -43,6 +44,12 @@ struct AudioRecorderExampleView: View {
             }
             await openClawController.ensureLocalModelServer()
             await viewModel.loadRecordings()
+            guard !didBootstrapOpenClaw else {
+                return
+            }
+            didBootstrapOpenClaw = true
+            openClawController.stop()
+            openClawController.start()
         }
     }
 }
@@ -209,7 +216,7 @@ struct BrainSettingsSection: View {
     let snapshot: OpenClawSettingsSnapshot
     @Binding var environmentEntries: [OpenClawEditableSetting]
     @Binding var jsonEntries: [OpenClawEditableSetting]
-    @State private var selectedPreset: BrainPreset = .googleGeminiPro
+    @State private var selectedPreset: BrainPreset = .localQwen
     @State private var customModelRef = ""
     @State private var googleApiKey = ""
     @State private var openRouterApiKey = ""
@@ -278,6 +285,8 @@ struct BrainSettingsSection: View {
                 }
 
             Text("API keys are stored in the OpenClaw provider config and exported to provider environment variables when OpenClaw runs.")
+
+            Text("Local backends: Ollama at `http://127.0.0.1:11434` or MLX under Application Support.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -296,7 +305,7 @@ struct BrainSettingsSection: View {
 
         let currentModel = currentPrimaryModelRef()
         if currentModel.isEmpty {
-            selectedPreset = .googleGeminiPro
+            selectedPreset = .localQwen
             customModelRef = selectedPreset.modelRef
         } else {
             selectedPreset = BrainPreset.allCases.first(where: { $0.modelRef == currentModel }) ?? .custom
@@ -330,6 +339,7 @@ struct BrainSettingsSection: View {
             isSecret: false
         )
         clearModelFallbacks()
+        applyRuntimeDefaults(for: preset)
     }
 
     private func applyCustomModelRef(_ value: String) {
@@ -346,6 +356,32 @@ struct BrainSettingsSection: View {
             isSecret: false
         )
         clearModelFallbacks()
+        applyRuntimeDefaults(for: resolvedPreset)
+    }
+
+    private func applyRuntimeDefaults(for preset: BrainPreset) {
+        switch preset {
+        case .localQwen:
+            ensureOllamaProviderDefaults()
+        case .localQwenMLX:
+            break
+        case .openaiGPT54,
+             .openaiCodexGPT54,
+             .anthropicOpus46,
+             .anthropicSonnet46,
+             .kiloAutoFree,
+             .kilocodeAuto,
+             .googleGeminiPro,
+             .googleGeminiFlash,
+             .mlxQwen30B:
+            ensureProviderDefaults()
+        case .custom:
+            if customModelRef.lowercased().hasPrefix("ollama/") {
+                ensureOllamaProviderDefaults()
+            } else {
+                ensureProviderDefaults()
+            }
+        }
     }
 
     private func currentPrimaryModelRef() -> String {
@@ -411,6 +447,33 @@ struct BrainSettingsSection: View {
         )
     }
 
+    private func upsertEnvironmentSetting(
+        key: String,
+        value: String,
+        isSecret: Bool
+    ) {
+        if let index = environmentEntries.firstIndex(where: { $0.key == key }) {
+            environmentEntries[index] = OpenClawEditableSetting(
+                key: key,
+                source: .environment,
+                kind: .string,
+                isSecret: isSecret,
+                value: value
+            )
+            return
+        }
+
+        environmentEntries.append(
+            OpenClawEditableSetting(
+                key: key,
+                source: .environment,
+                kind: .string,
+                isSecret: isSecret,
+                value: value
+            )
+        )
+    }
+
     private func ensureProviderDefaults() {
         for providerName in ["google", "kilocode", "openrouter", "mlx"] {
             guard let provider = OpenClawLLMConfiguration.provider(named: providerName) else {
@@ -418,6 +481,28 @@ struct BrainSettingsSection: View {
             }
             ensureProviderDefaults(provider)
         }
+        ensureJSONSetting(
+            key: "agents.defaults.model.primary",
+            value: BrainPreset.localQwen.modelRef,
+            isSecret: false
+        )
+        ensureJSONSetting(
+            key: "agents.defaults.model.fallbacks",
+            value: "[]",
+            isSecret: false,
+            kind: .array
+        )
+        ensureJSONSetting(
+            key: "agents.defaults.thinkingDefault",
+            value: "off",
+            isSecret: false
+        )
+        ensureJSONSetting(
+            key: "agents.defaults.reasoningDefault",
+            value: "off",
+            isSecret: false
+        )
+        ensureOllamaProviderDefaults()
     }
 
     private func clearModelFallbacks() {
@@ -446,6 +531,44 @@ struct BrainSettingsSection: View {
             isSecret: false,
             kind: .array
         )
+    }
+
+    private func ensureOllamaProviderDefaults() {
+        let providerPrefix = "models.providers.ollama"
+        ensureJSONSetting(
+            key: "\(providerPrefix).baseUrl",
+            value: "http://127.0.0.1:11434",
+            isSecret: false
+        )
+        ensureJSONSetting(
+            key: "\(providerPrefix).api",
+            value: "ollama",
+            isSecret: false
+        )
+        ensureJSONSetting(
+            key: "\(providerPrefix).authHeader",
+            value: "false",
+            isSecret: false,
+            kind: .bool
+        )
+        ensureJSONSetting(
+            key: "\(providerPrefix).models",
+            value: Self.ollamaProviderModelsJSON,
+            isSecret: false,
+            kind: .array
+        )
+    }
+
+    private func ensureEnvironmentSetting(
+        key: String,
+        value settingValue: String,
+        isSecret: Bool
+    ) {
+        let current = environmentValue(for: key)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let current, !current.isEmpty {
+            return
+        }
+        upsertEnvironmentSetting(key: key, value: settingValue, isSecret: isSecret)
     }
 
     private func ensureJSONSetting(
@@ -485,9 +608,36 @@ struct BrainSettingsSection: View {
             isSecret: true
         )
     }
+
+    private static var ollamaProviderModelsJSON: String {
+        """
+        [
+          {
+            "id": "qwen3:14b",
+            "name": "Qwen3 14B (local Ollama)",
+            "api": "ollama",
+            "reasoning": false,
+            "input": ["text"],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 65536,
+            "maxTokens": 8192,
+            "params": {
+              "think": false,
+              "keep_alive": "30m",
+              "num_ctx": 65536
+            },
+            "compat": {
+              "supportsTools": false
+            }
+          }
+        ]
+        """
+    }
 }
 
 enum BrainPreset: String, CaseIterable, Identifiable {
+    case localQwen = "ollama/qwen3:14b"
+    case localQwenMLX = "mlx/qwen3-14b-4bit"
     case openaiGPT54 = "openai/gpt-5.4"
     case openaiCodexGPT54 = "openai-codex/gpt-5.4"
     case anthropicOpus46 = "anthropic/claude-opus-4-6"
@@ -503,6 +653,10 @@ enum BrainPreset: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
+        case .localQwen:
+            return "Local Qwen3 14B"
+        case .localQwenMLX:
+            return "Local Qwen3 14B MLX 4-bit"
         case .openaiGPT54:
             return "OpenAI GPT-5.4"
         case .openaiCodexGPT54:
@@ -530,10 +684,6 @@ enum BrainPreset: String, CaseIterable, Identifiable {
         switch self {
         case .custom:
             return ""
-        case .kiloAutoFree:
-            return "openrouter/free"
-        case .kilocodeAuto:
-            return "kilocode/kilo/auto"
         default:
             return rawValue
         }
@@ -670,11 +820,6 @@ private struct VoicePipelineSettingsEditorView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-
-                TextField("VoxCPM server base URL", text: $draft.voxcpmServerBaseURL)
-                TextField("VoxCPM model", text: $draft.voxcpmModelName)
-                TextField("VoxCPM voice", text: $draft.voxcpmVoiceName)
-                TextField("VoxCPM device", text: $draft.voxcpmDevice)
             }
 
             HStack {
@@ -729,10 +874,6 @@ private struct VoicePipelineSettingsEditorView: View {
             return "Disabled"
         case .appleSystem:
             return "Apple System"
-        case .voxcpmLocal:
-            return "VoxCPM Local"
-        case .voxcpmServer:
-            return "VoxCPM Server"
         }
     }
 }
