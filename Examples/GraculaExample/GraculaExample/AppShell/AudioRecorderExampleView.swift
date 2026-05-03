@@ -48,8 +48,6 @@ struct AudioRecorderExampleView: View {
                 return
             }
             didBootstrapOpenClaw = true
-            openClawController.stop()
-            openClawController.start()
         }
     }
 }
@@ -218,10 +216,8 @@ struct BrainSettingsSection: View {
     @Binding var jsonEntries: [OpenClawEditableSetting]
     @State private var selectedPreset: BrainPreset = .localQwen
     @State private var customModelRef = ""
-    @State private var googleApiKey = ""
-    @State private var openRouterApiKey = ""
-    @State private var kiloCodeApiKey = ""
     @State private var isSyncing = false
+    @State private var didSeedProviderDefaults = false
 
     init(
         snapshot: OpenClawSettingsSnapshot,
@@ -260,37 +256,14 @@ struct BrainSettingsSection: View {
                     applyCustomModelRef(newValue)
                 }
 
-            SecureField("Google Gemini API key", text: $googleApiKey)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.caption, design: .monospaced))
-                .onChange(of: googleApiKey) { _, newValue in
-                    guard !isSyncing else { return }
-                    upsertAPIKey(for: "google", value: newValue)
-                }
-
-            SecureField("OpenRouter API key", text: $openRouterApiKey)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.caption, design: .monospaced))
-                .onChange(of: openRouterApiKey) { _, newValue in
-                    guard !isSyncing else { return }
-                    upsertAPIKey(for: "openrouter", value: newValue)
-                }
-
-            SecureField("KiloCode API key", text: $kiloCodeApiKey)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.caption, design: .monospaced))
-                .onChange(of: kiloCodeApiKey) { _, newValue in
-                    guard !isSyncing else { return }
-                    upsertAPIKey(for: "kilocode", value: newValue)
-                }
-
-            Text("API keys are stored in the OpenClaw provider config and exported to provider environment variables when OpenClaw runs.")
-
             Text("Local backends: Ollama at `http://127.0.0.1:11434` or MLX under Application Support.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
-        .onAppear(perform: syncDraftFromSnapshot)
+        .onAppear {
+            syncDraftFromSnapshot()
+            seedProviderDefaultsIfNeeded()
+        }
         .onChange(of: jsonEntries) { _, _ in
             syncDraftFromSnapshot()
         }
@@ -311,10 +284,19 @@ struct BrainSettingsSection: View {
             selectedPreset = BrainPreset.allCases.first(where: { $0.modelRef == currentModel }) ?? .custom
             customModelRef = currentModel
         }
-        googleApiKey = apiKey(for: "google")
-        openRouterApiKey = apiKey(for: "openrouter")
-        kiloCodeApiKey = apiKey(for: "kilocode")
+    }
+
+    private func seedProviderDefaultsIfNeeded() {
+        guard !didSeedProviderDefaults else {
+            return
+        }
+        didSeedProviderDefaults = true
+        guard value(for: "agents.defaults.model.primary") == nil,
+              value(for: "agents.defaults.model") == nil else {
+            return
+        }
         ensureProviderDefaults()
+        syncDraftFromSnapshot()
     }
 
     private var activeBrainDisplayName: String {
@@ -360,36 +342,25 @@ struct BrainSettingsSection: View {
     }
 
     private func applyRuntimeDefaults(for preset: BrainPreset) {
-        switch preset {
-        case .localQwen:
-            ensureOllamaProviderDefaults()
-        case .localQwenMLX:
-            break
-        case .openaiGPT54,
-             .openaiCodexGPT54,
-             .anthropicOpus46,
-             .anthropicSonnet46,
-             .kiloAutoFree,
-             .kilocodeAuto,
-             .googleGeminiPro,
-             .googleGeminiFlash,
-             .mlxQwen30B:
-            ensureProviderDefaults()
-        case .custom:
-            if customModelRef.lowercased().hasPrefix("ollama/") {
+        let modelRef = preset == .custom ? customModelRef : preset.modelRef
+        if let provider = OpenClawLLMConfiguration.provider(forModelRef: modelRef) {
+            if provider.name == "ollama" {
                 ensureOllamaProviderDefaults()
             } else {
-                ensureProviderDefaults()
+                ensureProviderDefaults(provider)
             }
+        } else {
+            ensureProviderDefaults()
         }
+        ensureCommonBrainDefaults()
     }
 
     private func currentPrimaryModelRef() -> String {
         if let value = value(for: "agents.defaults.model.primary") {
-            return value
+            return OpenClawLLMConfiguration.migratedModelRef(value)
         }
         if let value = value(for: "agents.defaults.model") {
-            return value
+            return OpenClawLLMConfiguration.migratedModelRef(value)
         }
         return OpenClawLLMConfiguration.localQwenModelRef
     }
@@ -412,11 +383,6 @@ struct BrainSettingsSection: View {
     private func value(for key: String) -> String? {
         jsonEntries.first(where: { $0.key == key })?.value
             ?? snapshot.jsonEntries.first(where: { $0.key == key })?.value
-    }
-
-    private func environmentValue(for key: String) -> String? {
-        environmentEntries.first(where: { $0.key == key })?.value
-            ?? snapshot.environmentEntries.first(where: { $0.key == key })?.value
     }
 
     private func upsertJSONSetting(
@@ -447,43 +413,17 @@ struct BrainSettingsSection: View {
         )
     }
 
-    private func upsertEnvironmentSetting(
-        key: String,
-        value: String,
-        isSecret: Bool
-    ) {
-        if let index = environmentEntries.firstIndex(where: { $0.key == key }) {
-            environmentEntries[index] = OpenClawEditableSetting(
-                key: key,
-                source: .environment,
-                kind: .string,
-                isSecret: isSecret,
-                value: value
-            )
-            return
-        }
-
-        environmentEntries.append(
-            OpenClawEditableSetting(
-                key: key,
-                source: .environment,
-                kind: .string,
-                isSecret: isSecret,
-                value: value
-            )
-        )
-    }
-
     private func ensureProviderDefaults() {
-        for providerName in ["google", "kilocode", "openrouter", "mlx"] {
-            guard let provider = OpenClawLLMConfiguration.provider(named: providerName) else {
-                continue
-            }
+        for provider in OpenClawLLMConfiguration.providers {
             ensureProviderDefaults(provider)
         }
+        ensureCommonBrainDefaults()
+    }
+
+    private func ensureCommonBrainDefaults() {
         ensureJSONSetting(
             key: "agents.defaults.model.primary",
-            value: BrainPreset.localQwen.modelRef,
+            value: OpenClawLLMConfiguration.localQwenModelRef,
             isSecret: false
         )
         ensureJSONSetting(
@@ -502,7 +442,6 @@ struct BrainSettingsSection: View {
             value: "off",
             isSecret: false
         )
-        ensureOllamaProviderDefaults()
     }
 
     private func clearModelFallbacks() {
@@ -534,41 +473,16 @@ struct BrainSettingsSection: View {
     }
 
     private func ensureOllamaProviderDefaults() {
-        let providerPrefix = "models.providers.ollama"
+        guard let provider = OpenClawLLMConfiguration.provider(named: "ollama") else {
+            return
+        }
+        ensureProviderDefaults(provider)
         ensureJSONSetting(
-            key: "\(providerPrefix).baseUrl",
-            value: "http://127.0.0.1:11434",
-            isSecret: false
-        )
-        ensureJSONSetting(
-            key: "\(providerPrefix).api",
-            value: "ollama",
-            isSecret: false
-        )
-        ensureJSONSetting(
-            key: "\(providerPrefix).authHeader",
+            key: "\(provider.providerPrefix).authHeader",
             value: "false",
             isSecret: false,
             kind: .bool
         )
-        ensureJSONSetting(
-            key: "\(providerPrefix).models",
-            value: Self.ollamaProviderModelsJSON,
-            isSecret: false,
-            kind: .array
-        )
-    }
-
-    private func ensureEnvironmentSetting(
-        key: String,
-        value settingValue: String,
-        isSecret: Bool
-    ) {
-        let current = environmentValue(for: key)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let current, !current.isEmpty {
-            return
-        }
-        upsertEnvironmentSetting(key: key, value: settingValue, isSecret: isSecret)
     }
 
     private func ensureJSONSetting(
@@ -584,69 +498,12 @@ struct BrainSettingsSection: View {
         upsertJSONSetting(key: key, value: settingValue, isSecret: isSecret, kind: kind)
     }
 
-    private func apiKey(for providerName: String) -> String {
-        guard let provider = OpenClawLLMConfiguration.provider(named: providerName) else {
-            return ""
-        }
-        if let jsonAPIKey = value(for: provider.apiKeyPath)?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !jsonAPIKey.isEmpty {
-            return jsonAPIKey
-        }
-        return provider.environmentKeys
-            .lazy
-            .compactMap { environmentValue(for: $0)?.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .first { !$0.isEmpty } ?? ""
-    }
-
-    private func upsertAPIKey(for providerName: String, value: String) {
-        guard let provider = OpenClawLLMConfiguration.provider(named: providerName) else {
-            return
-        }
-        upsertJSONSetting(
-            key: provider.apiKeyPath,
-            value: value,
-            isSecret: true
-        )
-    }
-
-    private static var ollamaProviderModelsJSON: String {
-        """
-        [
-          {
-            "id": "qwen3:14b",
-            "name": "Qwen3 14B (local Ollama)",
-            "api": "ollama",
-            "reasoning": false,
-            "input": ["text"],
-            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-            "contextWindow": 65536,
-            "maxTokens": 8192,
-            "params": {
-              "think": false,
-              "keep_alive": "30m",
-              "num_ctx": 65536
-            },
-            "compat": {
-              "supportsTools": false
-            }
-          }
-        ]
-        """
-    }
 }
 
 enum BrainPreset: String, CaseIterable, Identifiable {
     case localQwen = "ollama/qwen3:14b"
     case localQwenMLX = "mlx/qwen3-14b-4bit"
-    case openaiGPT54 = "openai/gpt-5.4"
-    case openaiCodexGPT54 = "openai-codex/gpt-5.4"
-    case anthropicOpus46 = "anthropic/claude-opus-4-6"
-    case anthropicSonnet46 = "anthropic/claude-sonnet-4-6"
-    case kiloAutoFree = "openrouter/free"
-    case kilocodeAuto = "kilocode/kilo/auto"
-    case googleGeminiPro = "google/gemini-3.1-pro-preview"
-    case googleGeminiFlash = "google/gemini-3-flash-preview"
-    case mlxQwen30B = "mlx/Qwen/Qwen3-30B-A3B-MLX-4bit"
+    case mlxNemotronNano30B = "mlx/nemotron-nano"
     case custom
 
     var id: String { rawValue }
@@ -657,24 +514,8 @@ enum BrainPreset: String, CaseIterable, Identifiable {
             return "Local Qwen3 14B"
         case .localQwenMLX:
             return "Local Qwen3 14B MLX 4-bit"
-        case .openaiGPT54:
-            return "OpenAI GPT-5.4"
-        case .openaiCodexGPT54:
-            return "OpenAI Codex GPT-5.4"
-        case .anthropicOpus46:
-            return "Anthropic Claude Opus 4.6"
-        case .anthropicSonnet46:
-            return "Anthropic Claude Sonnet 4.6"
-        case .kiloAutoFree:
-            return "Kilo Auto Free"
-        case .kilocodeAuto:
-            return "KiloCode Kilo Auto"
-        case .googleGeminiPro:
-            return "Google Gemini 3.1 Pro"
-        case .googleGeminiFlash:
-            return "Google Gemini 3 Flash"
-        case .mlxQwen30B:
-            return "Local Qwen 3 30B"
+        case .mlxNemotronNano30B:
+            return "Nemotron Nano 30B MLX 4-bit"
         case .custom:
             return "Custom"
         }
@@ -682,10 +523,14 @@ enum BrainPreset: String, CaseIterable, Identifiable {
 
     var modelRef: String {
         switch self {
+        case .localQwen:
+            return OpenClawLLMConfiguration.localQwenModelRef
+        case .localQwenMLX:
+            return OpenClawLLMConfiguration.localQwenMLXModelRef
+        case .mlxNemotronNano30B:
+            return OpenClawLLMConfiguration.localNemotronNanoModelRef
         case .custom:
             return ""
-        default:
-            return rawValue
         }
     }
 }

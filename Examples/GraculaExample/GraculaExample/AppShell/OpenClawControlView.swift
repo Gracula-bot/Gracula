@@ -10,6 +10,15 @@ struct OpenClawControlView: View {
                     .font(.headline)
                 Text(controller.statusText)
                     .foregroundStyle(controller.isRunning ? .green : .secondary)
+                if controller.isPreparingLocalModel {
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text(controller.localModelStatusText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
 
             Spacer()

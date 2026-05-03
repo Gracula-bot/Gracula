@@ -91,7 +91,7 @@ struct OpenClawChatView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            if controller.isSendingChat {
+            if controller.isSendingChat || controller.isPreparingLocalModel {
                 ProgressView()
             }
         }

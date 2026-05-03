@@ -25,14 +25,9 @@ struct OpenClawLLMProviderConfiguration {
     let baseURL: String
     let api: String
     let modelsJSON: String
-    let directSmokeReasoningMode: String?
 
     var providerPrefix: String {
         "models.providers.\(name)"
-    }
-
-    var apiKeyPath: String {
-        "\(providerPrefix).apiKey"
     }
 
     var baseURLPath: String {
@@ -48,8 +43,140 @@ struct OpenClawLLMProviderConfiguration {
     }
 }
 
+struct OpenClawLLMModelConfiguration {
+    let id: String
+    let name: String
+    let api: String?
+    let reasoning: Bool
+    let input: [String]
+    let contextWindow: Int
+    let maxTokens: Int
+    let contextTokens: Int?
+    let params: [String: Any]
+    let compat: [String: Any]
+
+    init(
+        id: String,
+        name: String,
+        api: String? = nil,
+        reasoning: Bool,
+        input: [String] = ["text"],
+        contextWindow: Int,
+        maxTokens: Int,
+        contextTokens: Int? = nil,
+        params: [String: Any] = [:],
+        compat: [String: Any] = [:]
+    ) {
+        self.id = id
+        self.name = name
+        self.api = api
+        self.reasoning = reasoning
+        self.input = input
+        self.contextWindow = contextWindow
+        self.maxTokens = maxTokens
+        self.contextTokens = contextTokens
+        self.params = params
+        self.compat = compat
+    }
+
+    var jsonObject: [String: Any] {
+        var object: [String: Any] = [
+            "id": id,
+            "name": name,
+            "reasoning": reasoning,
+            "input": input,
+            "cost": ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0],
+            "contextWindow": contextWindow,
+            "maxTokens": maxTokens
+        ]
+        if let api {
+            object["api"] = api
+        }
+        if let contextTokens {
+            object["contextTokens"] = contextTokens
+        }
+        if !params.isEmpty {
+            object["params"] = params
+        }
+        if !compat.isEmpty {
+            object["compat"] = compat
+        }
+        return object
+    }
+
+    static func jsonArray(_ models: [OpenClawLLMModelConfiguration]) -> String {
+        let objects = models.map(\.jsonObject)
+        guard JSONSerialization.isValidJSONObject(objects),
+              let data = try? JSONSerialization.data(withJSONObject: objects, options: [.prettyPrinted, .sortedKeys]) else {
+            return "[]"
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+}
+
+struct OpenClawLocalMLXModelConfiguration {
+    let id: String
+    let displayName: String
+    let localDirectoryName: String?
+    let huggingFaceRepository: String?
+    let rapidAlias: String?
+    let rapidToolCallParser: String?
+    let contextWindow: Int
+    let maxTokens: Int
+
+    var modelRef: String {
+        "mlx/\(id)"
+    }
+
+    var usesRapidMLX: Bool {
+        rapidAlias?.isEmpty == false
+    }
+
+    var providerModel: OpenClawLLMModelConfiguration {
+        OpenClawLLMModelConfiguration(
+            id: id,
+            name: displayName,
+            api: "openai-completions",
+            reasoning: false,
+            contextWindow: contextWindow,
+            maxTokens: maxTokens,
+            contextTokens: min(contextWindow, 16_384),
+            compat: [
+                "supportsTools": true,
+                "supportsStrictMode": false
+            ]
+        )
+    }
+}
+
 enum OpenClawLLMConfiguration {
     static let localQwenModelRef = "ollama/qwen3:14b"
+    static let localQwenMLXModelRef = "mlx/qwen3-14b-4bit"
+    static let localNemotronNanoModelRef = "mlx/nemotron-nano"
+    static let deprecatedQwen30BMLXModelRef = "mlx/Qwen/Qwen3-30B-A3B-MLX-4bit"
+
+    static let localMLXModels: [OpenClawLocalMLXModelConfiguration] = [
+        OpenClawLocalMLXModelConfiguration(
+            id: "qwen3-14b-4bit",
+            displayName: "Qwen3 14B MLX 4-bit",
+            localDirectoryName: "Qwen3-14B-4bit",
+            huggingFaceRepository: "mlx-community/Qwen3-14B-4bit",
+            rapidAlias: nil,
+            rapidToolCallParser: nil,
+            contextWindow: 32_768,
+            maxTokens: 4_096
+        ),
+        OpenClawLocalMLXModelConfiguration(
+            id: "nemotron-nano",
+            displayName: "Nemotron Nano 30B MLX 4-bit",
+            localDirectoryName: nil,
+            huggingFaceRepository: "lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-4bit",
+            rapidAlias: "nemotron-nano",
+            rapidToolCallParser: "nemotron",
+            contextWindow: 131_072,
+            maxTokens: 4_096
+        )
+    ]
 
     static let providers: [OpenClawLLMProviderConfiguration] = [
         OpenClawLLMProviderConfiguration(
@@ -58,152 +185,30 @@ enum OpenClawLLMConfiguration {
             environmentKeys: [],
             baseURL: "http://127.0.0.1:11434",
             api: "ollama",
-            modelsJSON: """
-            [
-              {
-                "id": "qwen3:14b",
-                "name": "Qwen3 14B (local Ollama)",
-                "api": "ollama",
-                "reasoning": false,
-                "input": ["text"],
-                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-                "contextWindow": 65536,
-                "maxTokens": 8192,
-                "params": {
-                  "think": false,
-                  "keep_alive": "30m",
-                  "num_ctx": 65536
-                },
-                "compat": {
-                  "supportsTools": false
-                }
-              }
-            ]
-            """,
-            directSmokeReasoningMode: nil
-        ),
-        OpenClawLLMProviderConfiguration(
-            name: "google",
-            modelPrefixes: ["google/"],
-            environmentKeys: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
-            baseURL: "https://generativelanguage.googleapis.com/v1beta",
-            api: "google-generative-ai",
-            modelsJSON: """
-            [
-              {
-                "id": "gemini-3.1-pro-preview",
-                "name": "Gemini 3.1 Pro Preview",
-                "api": "google-generative-ai",
-                "reasoning": true,
-                "input": ["text", "image"],
-                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-                "contextWindow": 1048576,
-                "maxTokens": 65536
-              },
-              {
-                "id": "gemini-3-flash-preview",
-                "name": "Gemini 3 Flash Preview",
-                "api": "google-generative-ai",
-                "reasoning": false,
-                "input": ["text", "image"],
-                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-                "contextWindow": 1048576,
-                "maxTokens": 65536
-              }
-            ]
-            """,
-            directSmokeReasoningMode: nil
-        ),
-        OpenClawLLMProviderConfiguration(
-            name: "kilocode",
-            modelPrefixes: ["kilocode/"],
-            environmentKeys: ["KILOCODE_API_KEY"],
-            baseURL: "https://api.kilo.ai/api/gateway/",
-            api: "openai-completions",
-            modelsJSON: """
-            [
-              {
-                "id": "kilo/auto",
-                "name": "Kilo Auto",
-                "reasoning": true,
-                "input": ["text", "image"],
-                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-                "contextWindow": 1000000,
-                "maxTokens": 128000
-              }
-            ]
-            """,
-            directSmokeReasoningMode: nil
-        ),
-        OpenClawLLMProviderConfiguration(
-            name: "openrouter",
-            modelPrefixes: ["openrouter/"],
-            environmentKeys: ["OPENROUTER_API_KEY"],
-            baseURL: "https://openrouter.ai/api/v1",
-            api: "openai-completions",
-            modelsJSON: """
-            [
-              {
-                "id": "free",
-                "name": "OpenRouter Free",
-                "api": "openai-completions",
-                "reasoning": false,
-                "input": ["text"],
-                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-                "contextWindow": 128000,
-                "maxTokens": 8192,
-                "compat": {
-                  "supportsTools": false
-                }
-              }
-            ]
-            """,
-            directSmokeReasoningMode: "medium"
+            modelsJSON: OpenClawLLMModelConfiguration.jsonArray([
+                OpenClawLLMModelConfiguration(
+                    id: "qwen3:14b",
+                    name: "Qwen3 14B (local Ollama)",
+                    api: "ollama",
+                    reasoning: false,
+                    contextWindow: 65_536,
+                    maxTokens: 8_192,
+                    params: [
+                        "think": false,
+                        "keep_alive": "30m",
+                        "num_ctx": 65_536
+                    ],
+                    compat: ["supportsTools": false]
+                )
+            ])
         ),
         OpenClawLLMProviderConfiguration(
             name: "mlx",
             modelPrefixes: ["mlx/"],
-            environmentKeys: ["MLX_API_KEY"],
+            environmentKeys: [],
             baseURL: "http://127.0.0.1:8080/v1",
             api: "openai-completions",
-            modelsJSON: """
-            [
-              {
-                "id": "\(localQwenModelRef.dropFirst(4))",
-                "name": "\(localQwenModelRef.dropFirst(4))",
-                "api": "openai-completions",
-                "reasoning": false,
-                "input": ["text"],
-                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-                "contextWindow": 32768,
-                "maxTokens": 4096,
-                "compat": {
-                  "supportsTools": true,
-                  "supportsStrictMode": false
-                },
-                "contextTokens": 16384
-              }
-            ]
-            """,
-            directSmokeReasoningMode: nil
-        ),
-        OpenClawLLMProviderConfiguration(
-            name: "anthropic",
-            modelPrefixes: ["anthropic/"],
-            environmentKeys: ["ANTHROPIC_API_KEY"],
-            baseURL: "",
-            api: "anthropic",
-            modelsJSON: "[]",
-            directSmokeReasoningMode: nil
-        ),
-        OpenClawLLMProviderConfiguration(
-            name: "openai",
-            modelPrefixes: ["openai/", "openai-codex/"],
-            environmentKeys: ["OPENAI_API_KEY"],
-            baseURL: "",
-            api: "openai-responses",
-            modelsJSON: "[]",
-            directSmokeReasoningMode: nil
+            modelsJSON: OpenClawLLMModelConfiguration.jsonArray(localMLXModels.map(\.providerModel))
         )
     ]
 
@@ -212,36 +217,35 @@ enum OpenClawLLMConfiguration {
     }
 
     static func provider(forModelRef modelRef: String) -> OpenClawLLMProviderConfiguration? {
-        let normalized = modelRef.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalized = migratedModelRef(modelRef).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return providers.first { provider in
             provider.modelPrefixes.contains { normalized.hasPrefix($0) }
         }
     }
 
+    static func migratedModelRef(_ modelRef: String) -> String {
+        let trimmed = modelRef.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.lowercased() == deprecatedQwen30BMLXModelRef.lowercased() {
+            return localNemotronNanoModelRef
+        }
+        return trimmed
+    }
+
     static func mergeOpenClawJSONEnvironment(from configURL: URL, into environment: inout [String: String]) {
         guard let data = try? Data(contentsOf: configURL),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            applyKiloCLIAuthFallback(to: &environment)
             return
         }
 
         mergeEnvVars(from: object, into: &environment)
-        mergeProviderAPIKeys(from: object, into: &environment)
-        applyKiloCLIAuthFallback(to: &environment)
     }
 
-    static func apiKey(from environment: [String: String], modelRef: String) -> String {
-        guard let provider = provider(forModelRef: modelRef) else {
-            return ""
+    static func localMLXModel(for modelID: String) -> OpenClawLocalMLXModelConfiguration? {
+        let normalized = modelID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return localMLXModels.first { model in
+            model.id.lowercased() == normalized
+                || model.modelRef.lowercased() == normalized
         }
-        return provider.environmentKeys
-            .lazy
-            .compactMap { environment[$0]?.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .first { !$0.isEmpty } ?? ""
-    }
-
-    static func directSmokeReasoningMode(for modelRef: String) -> String? {
-        provider(forModelRef: modelRef)?.directSmokeReasoningMode
     }
 
     static func mergeEnvironmentSources(
@@ -257,10 +261,13 @@ enum OpenClawLLMConfiguration {
 
     static func entriesWithProviderDefaults(_ entries: [OpenClawEditableSetting]) -> [OpenClawEditableSetting] {
         var normalized = entries
-        for provider in providers where provider.name == "ollama" || provider.name == "google" || provider.name == "kilocode" || provider.name == "openrouter" || provider.name == "mlx" {
+        for provider in providers {
             ensureEntry(key: provider.baseURLPath, value: provider.baseURL, in: &normalized)
             ensureEntry(key: provider.apiPath, value: provider.api, in: &normalized)
             ensureEntry(key: provider.modelsPath, value: provider.modelsJSON, kind: .array, in: &normalized)
+            if provider.name == "ollama" {
+                ensureEntry(key: "\(provider.providerPrefix).authHeader", value: "false", kind: .bool, in: &normalized)
+            }
         }
         return normalized
     }
@@ -310,40 +317,6 @@ enum OpenClawLLMConfiguration {
             }
             environment[key] = value
         }
-    }
-
-    private static func mergeProviderAPIKeys(from rootObject: [String: Any], into environment: inout [String: String]) {
-        guard let models = rootObject["models"] as? [String: Any],
-              let providerObjects = models["providers"] as? [String: Any] else {
-            return
-        }
-
-        for provider in providers {
-            guard let providerObject = providerObjects[provider.name] as? [String: Any],
-                  let rawAPIKey = providerObject["apiKey"] as? String else {
-                continue
-            }
-            let apiKey = rawAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !apiKey.isEmpty else {
-                continue
-            }
-            for environmentKey in provider.environmentKeys {
-                if (environment[environmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty {
-                    environment[environmentKey] = apiKey
-                }
-            }
-        }
-    }
-
-    private static func applyKiloCLIAuthFallback(to environment: inout [String: String]) {
-        guard let token = resolveKiloCLIAccessToken() else {
-            return
-        }
-        let current = environment["KILOCODE_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard current.isEmpty else {
-            return
-        }
-        environment["KILOCODE_API_KEY"] = token
     }
 
     private static func ensureEntry(
@@ -659,6 +632,9 @@ private struct OpenClawQdrantClient {
         guard let baseURL = URL(string: rawBaseURL) else {
             return nil
         }
+        if isClosedLocalTCPPort(baseURL) {
+            return nil
+        }
         let apiKey = [
             environment["GRACULA_QDRANT_API_KEY"],
             environment["OPENCLAW_QDRANT_API_KEY"],
@@ -667,6 +643,40 @@ private struct OpenClawQdrantClient {
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .first { !$0.isEmpty }
         return OpenClawQdrantClient(baseURL: baseURL, apiKey: apiKey)
+    }
+
+    private static func isClosedLocalTCPPort(_ url: URL) -> Bool {
+        guard let host = url.host,
+              ["127.0.0.1", "localhost", "::1"].contains(host),
+              let port = url.port else {
+            return false
+        }
+
+        let socketFileDescriptor = socket(AF_INET, SOCK_STREAM, 0)
+        guard socketFileDescriptor >= 0 else {
+            return false
+        }
+        defer {
+            close(socketFileDescriptor)
+        }
+
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = in_port_t(port).bigEndian
+        guard inet_pton(AF_INET, host == "localhost" ? "127.0.0.1" : host, &address.sin_addr) == 1 else {
+            return false
+        }
+
+        return withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { socketAddress in
+                connect(
+                    socketFileDescriptor,
+                    socketAddress,
+                    socklen_t(MemoryLayout<sockaddr_in>.size)
+                ) != 0
+            }
+        }
     }
 
     private static func boolFlag(_ rawValue: String?) -> Bool {
@@ -1181,6 +1191,8 @@ final class OpenClawLocalController: ObservableObject {
     @Published private(set) var chatMessages: [OpenClawChatMessage] = []
     @Published private(set) var chatStatusText = "Ready to chat."
     @Published private(set) var isSendingChat = false
+    @Published private(set) var isPreparingLocalModel = false
+    @Published private(set) var localModelStatusText = ""
     @Published private(set) var settingsSnapshot: OpenClawSettingsSnapshot
     @Published private(set) var settingsStatusText = "Settings loaded."
 
@@ -1262,7 +1274,7 @@ final class OpenClawLocalController: ObservableObject {
             settingsSnapshot = Self.makeSettingsSnapshot(environment: environment)
             let primaryModelRef = currentPrimaryModelRef()
             if shouldUseDirectCompletion(for: primaryModelRef) {
-                try validateDirectModelRuntime(for: primaryModelRef)
+                try await ensureDirectModelRuntimeReady(for: primaryModelRef)
                 gatewayProcess = nil
                 streamBridgeProcess = nil
                 isRunning = true
@@ -1366,8 +1378,10 @@ final class OpenClawLocalController: ObservableObject {
         startupTask = nil
         terminate(process: gatewayProcess, name: "gateway")
         terminate(process: streamBridgeProcess, name: "stream-bridge")
+        terminate(process: localModelProcess, name: "mlx-model")
         gatewayProcess = nil
         streamBridgeProcess = nil
+        localModelProcess = nil
         isRunning = false
         statusText = "Stopped"
         gatewayStatus = "stopped"
@@ -2085,7 +2099,7 @@ final class OpenClawLocalController: ObservableObject {
     ) throws -> Process {
         try launchObservedProcess(
             name: name,
-            executableURL: nodeURL,
+            executableURL: executableURL,
             currentDirectoryURL: repositoryDirectory,
             arguments: arguments,
             environment: environment,
@@ -2115,6 +2129,9 @@ final class OpenClawLocalController: ObservableObject {
             guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else {
                 return
             }
+            guard !Self.shouldSuppressObservedProcessLog(text, processName: name) else {
+                return
+            }
             Task { @MainActor in
                 self?.appendLog(text, prefix: name)
             }
@@ -2142,6 +2159,9 @@ final class OpenClawLocalController: ObservableObject {
                     if self?.gatewayProcess?.isRunning == true {
                         self?.statusText = "Gateway running, stream bridge stopped"
                     }
+                } else if process === self?.localModelProcess {
+                    self?.localModelProcess = nil
+                    self?.endLocalModelPreparationIfNeeded(readyMessage: "Local model stopped")
                 }
             }
         }
@@ -2266,6 +2286,7 @@ final class OpenClawLocalController: ObservableObject {
         let providerModelID = String(provider[1])
         let effectiveMaxTokens = directModelMaxTokens(for: trimmedRef, requestedMaxTokens: maxTokens)
         if providerName == "ollama" {
+            try await ensureDirectModelRuntimeReady(for: trimmedRef)
             return try await runDirectOllamaChat(
                 modelID: providerModelID,
                 prompt: prompt,
@@ -2282,196 +2303,15 @@ final class OpenClawLocalController: ObservableObject {
                 startedAt: startedAt
             )
         }
-        let activeEnvironment: [String: String]
-        if let environment {
-            activeEnvironment = environment
-        } else {
-            activeEnvironment = try openClawEnvironment()
-        }
-        let apiKey = OpenClawLLMConfiguration.apiKey(from: activeEnvironment, modelRef: trimmedRef)
-        guard !apiKey.isEmpty else {
-            throw OpenClawLocalControllerError.agentFailed(
-                "No API key is available for the selected model."
-            )
-        }
-        await ensureLocalModelServer(modelRef: trimmedRef, environment: activeEnvironment)
-
-        let modelId = trimmedRef
-        let modelName = providerModelID
-        let providerConfiguration = OpenClawLLMConfiguration.provider(forModelRef: trimmedRef)
-        let reasoningMode = directModelReasoningMode(for: trimmedRef)
-        appendLog(
-            "[latency] Direct model process prepared; provider=\(providerName), model=\(modelId), promptCharacters=\(prompt.count), maxTokens=\(effectiveMaxTokens), reasoning=off"
+        throw OpenClawLocalControllerError.agentFailed(
+            "Unsupported local model provider: \(providerName). Use `ollama/...` or `mlx/...`."
         )
-        let promptFileURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gracula-direct-prompt-\(UUID().uuidString).txt")
-        try prompt.write(to: promptFileURL, atomically: true, encoding: .utf8)
-        defer {
-            try? FileManager.default.removeItem(at: promptFileURL)
-        }
-        let script = """
-        const startedAt = Date.now();
-        const { completeSimple, getModel } = await import("@mariozechner/pi-ai");
-        const { readFileSync } = await import("node:fs");
-        const importedAt = Date.now();
-
-        const provider = process.env.GRACULA_MODEL_PROVIDER ?? "";
-        const modelId = process.env.GRACULA_MODEL_ID ?? "";
-        const modelName = process.env.GRACULA_MODEL_NAME ?? modelId;
-        const apiKey = process.env.GRACULA_MODEL_API_KEY ?? "";
-        const api = process.env.GRACULA_MODEL_API ?? "";
-        const baseUrl = process.env.GRACULA_MODEL_BASE_URL ?? "";
-        const reasoning = process.env.GRACULA_MODEL_REASONING ?? "";
-        const promptFile = process.env.GRACULA_MODEL_PROMPT_FILE ?? "";
-        const prompt = promptFile ? readFileSync(promptFile, "utf8") : (process.env.GRACULA_MODEL_PROMPT ?? "");
-        const maxTokens = Number(process.env.GRACULA_MODEL_MAX_TOKENS ?? "256");
-        const temperature = Number(process.env.GRACULA_MODEL_TEMPERATURE ?? "0.35");
-        function resolveModel() {
-          try {
-            const registered = getModel(provider, modelId) ?? getModel(provider, modelName);
-            if (registered) {
-              return registered;
-            }
-          } catch {
-            // Fall through to explicit OpenAI-compatible provider config.
-          }
-          if (!api || !baseUrl) {
-            throw new Error(`No registered model or provider config for ${modelId}.`);
-          }
-          return {
-            id: modelName,
-            name: modelName,
-            api,
-            provider,
-            baseUrl,
-            reasoning: false,
-            input: ["text"],
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-            contextWindow: 32768,
-            maxTokens: 4096
-          };
-        }
-        const model = resolveModel();
-        const options = {
-          apiKey,
-          maxTokens,
-          temperature
-        };
-        if (reasoning) {
-          options.reasoning = reasoning;
-        }
-        const requestStartedAt = Date.now();
-        const response = await completeSimple(
-          model,
-          {
-            messages: [
-              {
-                role: "user",
-                content: prompt,
-                timestamp: Date.now()
-              }
-            ]
-          },
-          options
-        );
-        const responseReceivedAt = Date.now();
-        const contentBlocks = Array.isArray(response?.content) ? response.content : [];
-        const text = contentBlocks
-          .filter((block) => block?.type === "text" && typeof block.text === "string")
-          .map((block) => block.text.trim())
-          .filter(Boolean)
-          .join(" ")
-          .trim();
-        const thinkingText = contentBlocks
-          .filter((block) => block?.type === "thinking" && typeof block.thinking === "string")
-          .map((block) => block.thinking.trim())
-          .filter(Boolean)
-          .join("\\n")
-          .trim();
-        const fallbackText =
-          (typeof response?.text === "string" ? response.text.trim() : "") ||
-          (typeof response?.output_text === "string" ? response.output_text.trim() : "");
-        const finalText = text || fallbackText;
-        if (!finalText) {
-          const contentTypes = contentBlocks.map((block) => block?.type ?? "unknown").join(",");
-          throw new Error(
-            `Selected model returned no visible answer. stopReason=${response?.stopReason ?? "unknown"}, contentTypes=${contentTypes || "none"}, thinkingCharacters=${thinkingText.length}`
-          );
-        }
-        const finishedAt = Date.now();
-        console.log(JSON.stringify({
-          text: finalText,
-          timing: {
-            importMs: importedAt - startedAt,
-            apiMs: responseReceivedAt - requestStartedAt,
-            parseMs: finishedAt - responseReceivedAt,
-            totalMs: finishedAt - startedAt
-          }
-        }));
-        """
-        var smokeEnvironment = activeEnvironment
-        smokeEnvironment["GRACULA_MODEL_PROVIDER"] = providerName
-        smokeEnvironment["GRACULA_MODEL_ID"] = modelId
-        smokeEnvironment["GRACULA_MODEL_NAME"] = modelName
-        smokeEnvironment["GRACULA_MODEL_API_KEY"] = apiKey
-        smokeEnvironment["GRACULA_MODEL_API"] = providerConfiguration?.api ?? ""
-        smokeEnvironment["GRACULA_MODEL_BASE_URL"] = providerConfiguration?.baseURL ?? ""
-        smokeEnvironment["GRACULA_MODEL_PROMPT"] = nil
-        smokeEnvironment["GRACULA_MODEL_PROMPT_FILE"] = promptFileURL.path
-        smokeEnvironment["GRACULA_MODEL_MAX_TOKENS"] = String(effectiveMaxTokens)
-        smokeEnvironment["GRACULA_MODEL_TEMPERATURE"] = maxTokens <= 64 ? "0" : "0.35"
-        smokeEnvironment["GRACULA_MODEL_REASONING"] = reasoningMode
-
-        appendLog("[latency] Direct model process launching.")
-        let result = try await runProcess(
-            arguments: [
-                "--input-type=module",
-                "-e",
-                script
-            ],
-            environment: smokeEnvironment,
-            timeoutSeconds: directModelTimeoutSeconds
-        )
-        appendLog(
-            "[latency] Direct model process exited in \(PerformanceLog.elapsedDescription(since: startedAt)); exitCode=\(result.exitCode), stdoutCharacters=\(result.stdout.count), stderrCharacters=\(result.stderr.count)"
-        )
-
-        guard result.exitCode == 0 else {
-            throw OpenClawLocalControllerError.agentFailed(
-                result.stderr.isEmpty ? result.stdout : result.stderr
-            )
-        }
-
-        let stdout = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !stdout.isEmpty else {
-            throw OpenClawLocalControllerError.agentFailed("Selected model returned no output.")
-        }
-
-        if let decoded = try? JSONSerialization.jsonObject(with: Data(stdout.utf8)) as? [String: Any],
-           let text = decoded["text"] as? String {
-            if let timing = decoded["timing"] as? [String: Any] {
-                let importMs = timing["importMs"] ?? "?"
-                let apiMs = timing["apiMs"] ?? "?"
-                let parseMs = timing["parseMs"] ?? "?"
-                let totalMs = timing["totalMs"] ?? "?"
-                appendLog("[latency] Direct model JS timing; importMs=\(importMs), apiMs=\(apiMs), parseMs=\(parseMs), totalMs=\(totalMs)")
-            }
-            let reply = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !reply.isEmpty else {
-                throw OpenClawLocalControllerError.agentFailed("Selected model returned an empty reply.")
-            }
-            appendLog("[latency] Direct model JSON decoded in \(PerformanceLog.elapsedDescription(since: startedAt)); replyCharacters=\(reply.count)")
-            return DirectModelChatResult(text: reply, metrics: nil)
-        }
-
-        appendLog("[latency] Direct model raw stdout returned in \(PerformanceLog.elapsedDescription(since: startedAt)); characters=\(stdout.count)")
-        return DirectModelChatResult(text: stdout, metrics: nil)
     }
 
     private func currentPrimaryModelRef(in jsonEntries: [OpenClawEditableSetting]) -> String {
         if let value = jsonEntries.first(where: { $0.key == "agents.defaults.model.primary" })?.value
             ?? jsonEntries.first(where: { $0.key == "agents.defaults.model" })?.value {
-            return value
+            return OpenClawLLMConfiguration.migratedModelRef(value)
         }
         return OpenClawLLMConfiguration.localQwenModelRef
     }
@@ -2480,17 +2320,11 @@ final class OpenClawLocalController: ObservableObject {
         let normalized = modelRef.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return normalized.hasPrefix("ollama/")
             || normalized.hasPrefix("mlx/")
-            || normalized == "google/gemini-3-flash-preview"
-            || normalized == "openrouter/free"
             || isLocalQwenModel(modelRef)
     }
 
     private func shouldUseDirectCompletion(for modelRef: String) -> Bool {
         shouldUseDirectModelSmokeTest(for: modelRef)
-    }
-
-    private func directModelReasoningMode(for modelRef: String) -> String? {
-        OpenClawLLMConfiguration.directSmokeReasoningMode(for: modelRef)
     }
 
     private func currentPrimaryModelRef() -> String {
@@ -2721,7 +2555,7 @@ final class OpenClawLocalController: ObservableObject {
     }
 
     func ensureLocalModelServer(modelRef: String? = nil, environment: [String: String]? = nil) async {
-        let activeModelRef = (modelRef ?? currentPrimaryModelRef()).trimmingCharacters(in: .whitespacesAndNewlines)
+        let activeModelRef = OpenClawLLMConfiguration.migratedModelRef(modelRef ?? currentPrimaryModelRef())
         guard shouldAutoStartLocalModel(for: activeModelRef) else {
             return
         }
@@ -2736,25 +2570,66 @@ final class OpenClawLocalController: ObservableObject {
 
         if await localModelServerHasTargetModel(baseURL: baseURL, modelRef: activeModelRef) {
             appendLog("Local MLX model server is already available for \(activeModelRef).")
+            endLocalModelPreparationIfNeeded(readyMessage: "Local model ready")
             return
         }
 
         guard localModelProcess == nil else {
+            beginLocalModelPreparation("Preparing local model \(activeModelRef)...")
             appendLog("Waiting for local MLX model server to become ready for \(activeModelRef).")
-            await waitForLocalModelServer(baseURL: baseURL, modelRef: activeModelRef)
+            _ = await waitForLocalModelServer(baseURL: baseURL, modelRef: activeModelRef)
             return
         }
 
-        guard let executableURL = resolveLocalMlxServerExecutableURL(environment: resolvedEnvironment) else {
-            appendLog("Local MLX model server skipped: could not find mlx_lm.server or python3 in /Users/gg/mlx-qwen/.venv/bin.")
-            return
-        }
-        guard let modelPath = resolveLocalMlxModelPath(environment: resolvedEnvironment) else {
-            appendLog("Local MLX model server skipped: could not find a cached model directory for \(activeModelRef).")
+        if isLocalTCPPortAcceptingConnections(for: baseURL) {
+            beginLocalModelPreparation("Preparing local model \(activeModelRef)...")
+            appendLog("Local MLX port is already occupied; waiting for \(activeModelRef) instead of launching another server.")
+            if await waitForLocalModelServer(baseURL: baseURL, modelRef: activeModelRef, timeoutSeconds: 30) {
+                return
+            }
+            appendLog("Local MLX model server skipped: port \(baseURL.port ?? 8080) is occupied by a different or unhealthy service.")
             return
         }
 
-        let arguments = localMlxServerArguments(executableURL: executableURL, modelPath: modelPath)
+        let modelID = activeModelRef.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: true)
+            .dropFirst()
+            .first
+            .map(String.init) ?? activeModelRef
+        guard let model = OpenClawLLMConfiguration.localMLXModel(for: modelID) else {
+            appendLog("Local MLX model server skipped: unsupported model \(modelID).")
+            return
+        }
+        beginLocalModelPreparation(
+            model.usesRapidMLX
+                ? "Downloading or loading \(model.displayName)..."
+                : "Preparing \(model.displayName)..."
+        )
+        do {
+            try bootstrapMLXRuntimeIfNeeded(modelID: modelID)
+        } catch {
+            endLocalModelPreparationIfNeeded(readyMessage: "Local model unavailable")
+            appendLog("Local MLX model bootstrap failed: \(error.localizedDescription)")
+            return
+        }
+
+        guard let executableURL = resolveLocalMlxServerExecutableURL(model: model, environment: resolvedEnvironment) else {
+            endLocalModelPreparationIfNeeded(readyMessage: "Local model unavailable")
+            appendLog("Local MLX model server skipped: could not find rapid-mlx, mlx_lm.server, or python.")
+            return
+        }
+        let modelPath: URL?
+        if model.usesRapidMLX {
+            modelPath = nil
+        } else {
+            guard let resolvedModelPath = resolveLocalMlxModelPath(modelRef: activeModelRef, environment: resolvedEnvironment) else {
+                endLocalModelPreparationIfNeeded(readyMessage: "Local model unavailable")
+                appendLog("Local MLX model server skipped: could not find a cached model directory for \(activeModelRef).")
+                return
+            }
+            modelPath = resolvedModelPath
+        }
+
+        let arguments = localMlxServerArguments(executableURL: executableURL, model: model, modelPath: modelPath)
         do {
             localModelProcess = try launchExecutableProcess(
                 name: "mlx-model",
@@ -2763,14 +2638,21 @@ final class OpenClawLocalController: ObservableObject {
                 environment: resolvedEnvironment,
                 updateRunningStateOnExit: false
             )
-            appendLog("Started local MLX model server for \(activeModelRef) using \(modelPath.path).")
+            let modelLocation = modelPath?.path ?? model.rapidAlias ?? model.id
+            appendLog("Started local MLX model server for \(activeModelRef) using \(modelLocation).")
         } catch {
             localModelProcess = nil
-            appendLog("Local MLX model server start failed: \(error.localizedDescription)")
+            endLocalModelPreparationIfNeeded(readyMessage: "Local model unavailable")
+            if isLocalTCPPortAcceptingConnections(for: baseURL) {
+                appendLog("Local MLX model server start found an occupied port; waiting for \(activeModelRef).")
+                _ = await waitForLocalModelServer(baseURL: baseURL, modelRef: activeModelRef, timeoutSeconds: 30)
+            } else {
+                appendLog("Local MLX model server start failed: \(error.localizedDescription)")
+            }
             return
         }
 
-        await waitForLocalModelServer(baseURL: baseURL, modelRef: activeModelRef)
+        _ = await waitForLocalModelServer(baseURL: baseURL, modelRef: activeModelRef)
     }
 
     private func storeNotificationCache(inputPrompt: String, spokenText: String) async {
@@ -2989,6 +2871,15 @@ final class OpenClawLocalController: ObservableObject {
         maxTokens: Int,
         startedAt: UInt64
     ) async throws -> DirectModelChatResult {
+        let model = try mlxModelConfiguration(for: modelID)
+        if model.usesRapidMLX {
+            return try await runDirectRapidMLXChat(
+                model: model,
+                prompt: prompt,
+                maxTokens: maxTokens,
+                startedAt: startedAt
+            )
+        }
         let pythonURL = try mlxPythonExecutableURL()
         let modelDirectory = try mlxModelDirectory(for: modelID)
         let promptFileURL = FileManager.default.temporaryDirectory
@@ -3099,6 +2990,70 @@ final class OpenClawLocalController: ObservableObject {
         return DirectModelChatResult(text: reply, metrics: metrics)
     }
 
+    private func runDirectRapidMLXChat(
+        model: OpenClawLocalMLXModelConfiguration,
+        prompt: String,
+        maxTokens: Int,
+        startedAt: UInt64
+    ) async throws -> DirectModelChatResult {
+        let environment = (try? openClawEnvironment()) ?? ProcessInfo.processInfo.environment
+        let modelRef = model.modelRef
+        await ensureLocalModelServer(modelRef: modelRef, environment: environment)
+
+        guard let provider = OpenClawLLMConfiguration.provider(forModelRef: modelRef),
+              let baseURL = URL(string: provider.baseURL) else {
+            throw OpenClawLocalControllerError.agentFailed("Invalid Rapid-MLX base URL.")
+        }
+
+        let url = baseURL.appendingPathComponent("chat/completions")
+        let body: [String: Any] = [
+            "model": model.id,
+            "messages": [
+                [
+                    "role": "user",
+                    "content": prompt
+                ]
+            ],
+            "max_tokens": maxTokens,
+            "temperature": maxTokens <= 64 ? 0 : 0.35,
+            "top_p": maxTokens <= 64 ? 0 : 0.85,
+            "stream": false
+        ]
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = directMLXTimeoutSeconds
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        appendLog(
+            "[latency] Rapid-MLX request prepared; model=\(model.id), promptCharacters=\(prompt.count), maxTokens=\(maxTokens)"
+        )
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw OpenClawLocalControllerError.agentFailed("Rapid-MLX returned a non-HTTP response.")
+        }
+        let responseText = String(decoding: data, as: UTF8.self)
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw OpenClawLocalControllerError.agentFailed(
+                responseText.isEmpty ? "Rapid-MLX HTTP \(httpResponse.statusCode)." : "Rapid-MLX HTTP \(httpResponse.statusCode): \(responseText)"
+            )
+        }
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = object["choices"] as? [[String: Any]],
+              let message = choices.first?["message"] as? [String: Any],
+              let content = message["content"] as? String else {
+            throw OpenClawLocalControllerError.agentFailed("Rapid-MLX returned an invalid chat completion response.")
+        }
+
+        let reply = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !reply.isEmpty else {
+            throw OpenClawLocalControllerError.agentFailed("Rapid-MLX returned an empty reply.")
+        }
+        appendLog("[latency] Rapid-MLX answer decoded after \(PerformanceLog.elapsedDescription(since: startedAt)); replyCharacters=\(reply.count)")
+        return DirectModelChatResult(text: reply, metrics: nil)
+    }
+
     private func limitedHistory(maxMessages: Int) -> String {
         chatMessages
             .suffix(maxMessages)
@@ -3206,7 +3161,35 @@ final class OpenClawLocalController: ObservableObject {
         OpenClawLLMConfiguration.provider(forModelRef: modelRef)?.name == "mlx"
     }
 
-    private func localMlxServerArguments(executableURL: URL, modelPath: URL) -> [String] {
+    private func localMlxServerArguments(
+        executableURL: URL,
+        model: OpenClawLocalMLXModelConfiguration,
+        modelPath: URL?
+    ) -> [String] {
+        if executableURL.lastPathComponent == "rapid-mlx", let rapidAlias = model.rapidAlias {
+            var arguments = [
+                "serve",
+                rapidAlias,
+                "--served-model-name",
+                model.id,
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8080",
+                "--log-level",
+                "WARNING",
+                "--enable-auto-tool-choice",
+                "--no-thinking"
+            ]
+            if let parser = model.rapidToolCallParser {
+                arguments += ["--tool-call-parser", parser]
+            }
+            return arguments
+        }
+
+        guard let modelPath else {
+            return []
+        }
         let baseArguments = [
             "--model",
             modelPath.path,
@@ -3224,8 +3207,12 @@ final class OpenClawLocalController: ObservableObject {
         return baseArguments
     }
 
-    private func resolveLocalMlxServerExecutableURL(environment: [String: String]) -> URL? {
+    private func resolveLocalMlxServerExecutableURL(
+        model: OpenClawLocalMLXModelConfiguration,
+        environment: [String: String]
+    ) -> URL? {
         let candidates = [
+            environment["GRACULA_RAPID_MLX_BIN"],
             environment["GRACULA_MLX_SERVER_BIN"],
             environment["OPENCLAW_MLX_SERVER_BIN"],
             environment["MLX_LM_SERVER_BIN"]
@@ -3238,8 +3225,11 @@ final class OpenClawLocalController: ObservableObject {
             return found
         }
 
-        let defaultScript = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("mlx-qwen", isDirectory: true)
+        if model.usesRapidMLX, let rapidURL = resolveRapidMLXExecutableURL() {
+            return rapidURL
+        }
+
+        let defaultScript = mlxRuntimeDirectory
             .appendingPathComponent(".venv", isDirectory: true)
             .appendingPathComponent("bin", isDirectory: true)
             .appendingPathComponent("mlx_lm.server")
@@ -3247,11 +3237,10 @@ final class OpenClawLocalController: ObservableObject {
             return defaultScript
         }
 
-        let pythonBinary = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("mlx-qwen", isDirectory: true)
+        let pythonBinary = mlxRuntimeDirectory
             .appendingPathComponent(".venv", isDirectory: true)
             .appendingPathComponent("bin", isDirectory: true)
-            .appendingPathComponent("python3")
+            .appendingPathComponent("python")
         if FileManager.default.fileExists(atPath: pythonBinary.path) {
             return pythonBinary
         }
@@ -3259,7 +3248,7 @@ final class OpenClawLocalController: ObservableObject {
         return nil
     }
 
-    private func resolveLocalMlxModelPath(environment: [String: String]) -> URL? {
+    private func resolveLocalMlxModelPath(modelRef: String, environment: [String: String]) -> URL? {
         let candidates = [
             environment["GRACULA_MLX_MODEL_PATH"],
             environment["OPENCLAW_MLX_MODEL_PATH"],
@@ -3273,25 +3262,26 @@ final class OpenClawLocalController: ObservableObject {
             return found
         }
 
-        let cacheRoot = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".cache", isDirectory: true)
-            .appendingPathComponent("huggingface", isDirectory: true)
-            .appendingPathComponent("hub", isDirectory: true)
-            .appendingPathComponent("models--Qwen--Qwen3-30B-A3B-MLX-4bit", isDirectory: true)
-            .appendingPathComponent("snapshots", isDirectory: true)
-
-        guard let snapshotDirectories = try? FileManager.default.contentsOfDirectory(
-            at: cacheRoot,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return nil
+        let modelID = modelRef.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: true)
+            .dropFirst()
+            .first
+            .map(String.init) ?? modelRef
+        if let model = OpenClawLLMConfiguration.localMLXModel(for: modelID) {
+            guard let localDirectoryName = model.localDirectoryName else {
+                return nil
+            }
+            let modelDirectory = mlxModelsDirectory.appendingPathComponent(localDirectoryName, isDirectory: true)
+            return FileManager.default.fileExists(atPath: modelDirectory.path) ? modelDirectory : nil
         }
 
-        return snapshotDirectories.first(where: { FileManager.default.fileExists(atPath: $0.path) })
+        return nil
     }
 
     private func localModelServerHasTargetModel(baseURL: URL, modelRef: String) async -> Bool {
+        guard isLocalTCPPortAcceptingConnections(for: baseURL) else {
+            return false
+        }
+
         let url = baseURL.appendingPathComponent("models")
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
@@ -3307,6 +3297,40 @@ final class OpenClawLocalController: ObservableObject {
         }
     }
 
+    nonisolated private func isLocalTCPPortAcceptingConnections(for url: URL) -> Bool {
+        guard let host = url.host,
+              ["127.0.0.1", "localhost", "::1"].contains(host),
+              let port = url.port else {
+            return true
+        }
+
+        let socketFileDescriptor = socket(AF_INET, SOCK_STREAM, 0)
+        guard socketFileDescriptor >= 0 else {
+            return false
+        }
+        defer {
+            close(socketFileDescriptor)
+        }
+
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = in_port_t(port).bigEndian
+        guard inet_pton(AF_INET, host == "localhost" ? "127.0.0.1" : host, &address.sin_addr) == 1 else {
+            return false
+        }
+
+        return withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { socketAddress in
+                connect(
+                    socketFileDescriptor,
+                    socketAddress,
+                    socklen_t(MemoryLayout<sockaddr_in>.size)
+                ) == 0
+            }
+        }
+    }
+
     private func directModelMaxTokens(for modelRef: String, requestedMaxTokens: Int) -> Int {
         return requestedMaxTokens
     }
@@ -3319,11 +3343,157 @@ final class OpenClawLocalController: ObservableObject {
         return normalizedCount <= 160 ? directVoiceShortMaxTokens : directVoiceNormalMaxTokens
     }
 
-    private func validateDirectModelRuntime(for modelRef: String) throws {
+    private func ensureDirectModelRuntimeReady(for modelRef: String) async throws {
         let normalized = modelRef.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if normalized.hasPrefix("mlx/") {
-            _ = try mlxPythonExecutableURL()
-            _ = try mlxModelDirectory(for: String(modelRef.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: true).last ?? ""))
+            try bootstrapMLXRuntimeIfNeeded(
+                modelID: String(modelRef.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: true).last ?? "")
+            )
+        } else if normalized.hasPrefix("ollama/") {
+            try await ensureOllamaModelAvailable(
+                modelID: String(modelRef.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: true).last ?? "")
+            )
+        }
+    }
+
+    private func ensureOllamaModelAvailable(modelID: String) async throws {
+        let trimmedID = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedID.isEmpty else {
+            return
+        }
+        if await ollamaHasModel(trimmedID) {
+            return
+        }
+        guard let ollamaURL = resolveOllamaExecutableURL() else {
+            throw OpenClawLocalControllerError.missingRuntime(
+                "Ollama model \(trimmedID) is not available and the `ollama` executable was not found. Install Ollama or set PATH so the app can run `ollama pull \(trimmedID)` on first use."
+            )
+        }
+
+        appendLog("Ollama model \(trimmedID) is missing; pulling it automatically.")
+        let output = try runCommand(
+            executableURL: ollamaURL,
+            arguments: ["pull", trimmedID],
+            currentDirectoryURL: configDirectory,
+            environment: ProcessInfo.processInfo.environment
+        )
+        guard output.exitCode == 0 else {
+            throw OpenClawLocalControllerError.missingRuntime(
+                output.stderr.isEmpty ? output.stdout : output.stderr
+            )
+        }
+        appendLog("Ollama model \(trimmedID) is ready.")
+    }
+
+    private func ollamaHasModel(_ modelID: String) async -> Bool {
+        guard let url = URL(string: "http://127.0.0.1:11434/api/tags") else {
+            return false
+        }
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200,
+                  let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let models = object["models"] as? [[String: Any]] else {
+                return false
+            }
+            return models.contains { model in
+                guard let name = model["name"] as? String else {
+                    return false
+                }
+                return name == modelID || name.hasPrefix("\(modelID):")
+            }
+        } catch {
+            return false
+        }
+    }
+
+    private func bootstrapMLXRuntimeIfNeeded(modelID: String) throws {
+        let model = try mlxModelConfiguration(for: modelID)
+        if model.usesRapidMLX {
+            guard resolveRapidMLXExecutableURL() != nil else {
+                throw OpenClawLocalControllerError.missingRuntime(
+                    "Rapid-MLX was not found. Install it with Homebrew or set GRACULA_RAPID_MLX_BIN before selecting \(model.displayName)."
+                )
+            }
+            appendLog("Rapid-MLX runtime ready for \(model.id).")
+            return
+        }
+        let existingPythonURL = try? mlxPythonExecutableURL()
+        let existingModelDirectory = try? mlxModelDirectory(for: model.id)
+        if let pythonURL = existingPythonURL, existingModelDirectory != nil {
+            appendLog("MLX runtime ready at \(pythonURL.path); model=\(model.id).")
+            return
+        }
+
+        try FileManager.default.createDirectory(at: mlxRuntimeDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: mlxModelsDirectory, withIntermediateDirectories: true)
+
+        if (try? mlxPythonExecutableURL()) == nil {
+            guard let systemPythonURL = resolveSystemPython3ExecutableURL() else {
+                throw OpenClawLocalControllerError.missingRuntime(
+                    "Python 3 was not found, so the MLX runtime cannot be prepared automatically."
+                )
+            }
+            appendLog("MLX runtime is missing; creating Python virtual environment at \(mlxRuntimeDirectory.path).")
+            try requireSuccessfulCommand(
+                runCommand(
+                    executableURL: systemPythonURL,
+                    arguments: ["-m", "venv", mlxRuntimeDirectory.appendingPathComponent(".venv", isDirectory: true).path],
+                    currentDirectoryURL: mlxRuntimeDirectory,
+                    environment: ProcessInfo.processInfo.environment
+                ),
+                action: "create MLX Python virtual environment"
+            )
+        }
+
+        let pythonURL = try mlxPythonExecutableURL()
+        let pipURL = pythonURL.deletingLastPathComponent().appendingPathComponent("pip")
+        appendLog("Installing MLX Python packages if needed.")
+        try requireSuccessfulCommand(
+            runCommand(
+                executableURL: pythonURL,
+                arguments: ["-m", "pip", "install", "--upgrade", "pip", "mlx-lm", "huggingface_hub"],
+                currentDirectoryURL: mlxRuntimeDirectory,
+                environment: ProcessInfo.processInfo.environment
+            ),
+            action: "install MLX Python packages"
+        )
+        if !FileManager.default.fileExists(atPath: pipURL.path) {
+            appendLog("MLX pip executable was not created, but Python package installation completed through `python -m pip`.")
+        }
+
+        if (try? mlxModelDirectory(for: model.id)) == nil {
+            guard let localDirectoryName = model.localDirectoryName,
+                  let huggingFaceRepository = model.huggingFaceRepository else {
+                throw OpenClawLocalControllerError.missingRuntime(
+                    "MLX model \(model.id) does not define a local download target."
+                )
+            }
+            let modelDirectory = mlxModelsDirectory.appendingPathComponent(localDirectoryName, isDirectory: true)
+            let script = """
+            import os
+            from huggingface_hub import snapshot_download
+
+            snapshot_download(
+                repo_id=os.environ["GRACULA_MLX_REPOSITORY"],
+                local_dir=os.environ["GRACULA_MLX_MODEL_DIR"],
+                local_dir_use_symlinks=False,
+            )
+            """
+            var environment = ProcessInfo.processInfo.environment
+            environment["GRACULA_MLX_REPOSITORY"] = huggingFaceRepository
+            environment["GRACULA_MLX_MODEL_DIR"] = modelDirectory.path
+            appendLog("MLX model \(model.id) is missing; downloading \(huggingFaceRepository).")
+            try requireSuccessfulCommand(
+                runCommand(
+                    executableURL: pythonURL,
+                    arguments: ["-c", script],
+                    currentDirectoryURL: mlxModelsDirectory,
+                    environment: environment
+                ),
+                action: "download MLX model \(model.id)"
+            )
         }
     }
 
@@ -3340,25 +3510,45 @@ final class OpenClawLocalController: ObservableObject {
         return url
     }
 
-    private func mlxModelDirectory(for modelID: String) throws -> URL {
-        let normalized = modelID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let directoryName: String
-        switch normalized {
-        case "qwen3-14b-4bit":
-            directoryName = "Qwen3-14B-4bit"
-        default:
+    private func mlxModelConfiguration(for modelID: String) throws -> OpenClawLocalMLXModelConfiguration {
+        guard let model = OpenClawLLMConfiguration.localMLXModel(for: modelID) else {
             throw OpenClawLocalControllerError.missingRuntime(
-                "Unsupported MLX model id: \(modelID)."
+                "Unsupported MLX model id: \(modelID). Add it to OpenClawLLMConfiguration.localMLXModels before selecting it."
             )
         }
+        return model
+    }
 
-        let url = mlxModelsDirectory.appendingPathComponent(directoryName, isDirectory: true)
-        guard FileManager.default.fileExists(atPath: url.path) else {
+    private func mlxModelDirectory(for modelID: String) throws -> URL {
+        let model = try mlxModelConfiguration(for: modelID)
+        guard let localDirectoryName = model.localDirectoryName else {
             throw OpenClawLocalControllerError.missingRuntime(
-                "MLX model files not found at \(url.path). Download the model before selecting the MLX backend."
+                "MLX model \(model.id) is served by Rapid-MLX and does not use a Gracula model cache directory."
+            )
+        }
+        let url = mlxModelsDirectory.appendingPathComponent(localDirectoryName, isDirectory: true)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            let repository = model.huggingFaceRepository ?? model.id
+            throw OpenClawLocalControllerError.missingRuntime(
+                "MLX model files not found at \(url.path). The app will try to download \(repository) automatically on first use."
             )
         }
         return url
+    }
+
+    private func requireSuccessfulCommand(_ output: ProcessOutput, action: String) throws {
+        guard output.exitCode == 0 else {
+            let details = output.stderr.isEmpty ? output.stdout : output.stderr
+            throw OpenClawLocalControllerError.missingRuntime(
+                "Could not \(action). \(details.trimmingCharacters(in: .whitespacesAndNewlines))"
+            )
+        }
+        if !output.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            appendLog(output.stdout, prefix: action)
+        }
+        if !output.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            appendLog(output.stderr, prefix: action)
+        }
     }
 
     private func directChatPrompt(for message: String) -> String {
@@ -3391,16 +3581,44 @@ final class OpenClawLocalController: ObservableObject {
         """
     }
 
-    private func waitForLocalModelServer(baseURL: URL, modelRef: String, timeoutSeconds: Int = 180) async {
+    private func waitForLocalModelServer(baseURL: URL, modelRef: String, timeoutSeconds: Int = 180) async -> Bool {
         let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
         while Date() < deadline {
             if await localModelServerHasTargetModel(baseURL: baseURL, modelRef: modelRef) {
+                endLocalModelPreparationIfNeeded(readyMessage: "Local model ready")
                 appendLog("Local MLX model server is ready for \(modelRef).")
-                return
+                return true
             }
+            beginLocalModelPreparation("Waiting for local model server \(modelRef)...")
             try? await Task.sleep(for: .seconds(1))
         }
+        endLocalModelPreparationIfNeeded(readyMessage: "Local model unavailable")
         appendLog("Local MLX model server did not become ready for \(modelRef) within \(timeoutSeconds)s.")
+        return false
+    }
+
+    private func beginLocalModelPreparation(_ message: String) {
+        isPreparingLocalModel = true
+        localModelStatusText = message
+        statusText = message
+        if isSendingChat {
+            chatStatusText = message
+        }
+    }
+
+    private func endLocalModelPreparationIfNeeded(readyMessage: String) {
+        guard isPreparingLocalModel else {
+            return
+        }
+        isPreparingLocalModel = false
+        localModelStatusText = readyMessage
+        if statusText.contains("model") || statusText.contains("Model") || statusText.contains("Downloading") {
+            statusText = isRunning ? readyMessage : statusText
+        }
+        if isSendingChat,
+           chatStatusText.contains("model") || chatStatusText.contains("Model") || chatStatusText.contains("Downloading") {
+            chatStatusText = readyMessage
+        }
     }
 
     private func isTinyDirectChatTurn(_ message: String) -> Bool {
@@ -3978,6 +4196,19 @@ final class OpenClawLocalController: ObservableObject {
         }
     }
 
+    nonisolated private static func shouldSuppressObservedProcessLog(_ text: String, processName: String) -> Bool {
+        guard processName == "mlx-model" else {
+            return false
+        }
+        return text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .allSatisfy { line in
+                line.contains(#""GET /v1/models HTTP/1.1" 200"#)
+                    || line.contains(#""GET /models HTTP/1.1" 200"#)
+            }
+    }
+
     private func redacted(_ line: String) -> String {
         var output = line
         output = output.replacingOccurrences(
@@ -4127,12 +4358,6 @@ struct OpenClawSettingsReader {
             .filter { key in
                 key.hasPrefix("OPENCLAW_")
                     || key.hasPrefix("GRACULA_")
-                    || key.hasPrefix("OPENAI_")
-                    || key.hasPrefix("ANTHROPIC_")
-                    || key.hasPrefix("GOOGLE_")
-                    || key.hasPrefix("GEMINI_")
-                    || key.hasPrefix("OPENROUTER_")
-                    || key.hasPrefix("KILOCODE_")
                     || key.hasPrefix("TELEGRAM_")
                     || key.hasPrefix("ONLYFANS_")
                     || key == "BROWSER"
@@ -4229,76 +4454,6 @@ struct OpenClawSettingsReader {
         }
         let data = try JSONSerialization.data(withJSONObject: rootObject, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: url, options: [.atomic])
-    }
-
-    private static func entriesWithProviderDefaults(_ entries: [OpenClawEditableSetting]) -> [OpenClawEditableSetting] {
-        var normalized = entries
-
-        ensureEntry(
-            key: "models.providers.ollama.baseUrl",
-            value: "http://127.0.0.1:11434",
-            in: &normalized
-        )
-        ensureEntry(
-            key: "models.providers.ollama.api",
-            value: "ollama",
-            in: &normalized
-        )
-        ensureEntry(
-            key: "models.providers.ollama.authHeader",
-            value: "false",
-            kind: .bool,
-            in: &normalized
-        )
-        ensureEntry(
-            key: "models.providers.ollama.models",
-            value: """
-            [
-              {
-                "id": "qwen3:14b",
-                "name": "Qwen3 14B (local Ollama)",
-                "api": "ollama",
-                "reasoning": false,
-                "input": ["text"],
-                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-                "contextWindow": 65536,
-                "maxTokens": 8192,
-                "params": {
-                  "think": false,
-                  "keep_alive": "30m",
-                  "num_ctx": 65536
-                },
-                "compat": {
-                  "supportsTools": false
-                }
-              }
-            ]
-            """,
-            kind: .array,
-            in: &normalized
-        )
-
-        return normalized
-    }
-
-    private static func ensureEntry(
-        key: String,
-        value: String,
-        kind: OpenClawEditableSetting.ValueKind = .string,
-        in entries: inout [OpenClawEditableSetting]
-    ) {
-        guard !entries.contains(where: { $0.key == key }) else {
-            return
-        }
-        entries.append(
-            OpenClawEditableSetting(
-                key: key,
-                source: .json,
-                kind: kind,
-                isSecret: false,
-                value: value
-            )
-        )
     }
 
     static func writeWorkspaceFiles(_ files: [OpenClawWorkspaceFile]) throws {
@@ -4590,97 +4745,6 @@ struct OpenClawSettingsReader {
     }
 }
 
-fileprivate func resolveKiloCLIAccessToken() -> String? {
-    let fileManager = FileManager.default
-    let authJSONURL = fileManager.homeDirectoryForCurrentUser
-        .appendingPathComponent(".local", isDirectory: true)
-        .appendingPathComponent("share", isDirectory: true)
-        .appendingPathComponent("kilo", isDirectory: true)
-        .appendingPathComponent("auth.json")
-    if let token = readKiloAuthJSONAccessToken(from: authJSONURL) {
-        return token
-    }
-
-    let databaseURL = fileManager.homeDirectoryForCurrentUser
-        .appendingPathComponent(".local", isDirectory: true)
-        .appendingPathComponent("share", isDirectory: true)
-        .appendingPathComponent("kilo", isDirectory: true)
-        .appendingPathComponent("kilo.db")
-
-    guard fileManager.fileExists(atPath: databaseURL.path) else {
-        return nil
-    }
-
-    let activeAccountQuery = """
-    SELECT access_token
-    FROM account
-    WHERE id = (
-      SELECT active_account_id
-      FROM account_state
-      WHERE active_account_id IS NOT NULL
-      LIMIT 1
-    )
-    LIMIT 1;
-    """
-    if let token = readSQLiteValue(databaseURL: databaseURL, query: activeAccountQuery) {
-        return token
-    }
-
-    let fallbackQuery = """
-    SELECT access_token
-    FROM account
-    ORDER BY time_updated DESC
-    LIMIT 1;
-    """
-    return readSQLiteValue(databaseURL: databaseURL, query: fallbackQuery)
-}
-
-fileprivate func readKiloAuthJSONAccessToken(from url: URL) -> String? {
-    guard let data = try? Data(contentsOf: url),
-          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-        return nil
-    }
-
-    if let access = object["kilo"] as? [String: Any],
-       let token = access["access"] as? String {
-        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
-    }
-
-    if let token = object["access"] as? String {
-        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
-    }
-
-    return nil
-}
-
-fileprivate func readSQLiteValue(databaseURL: URL, query: String) -> String? {
-    let process = Process()
-    process.executableURL = URL(filePath: "/usr/bin/sqlite3")
-    process.arguments = [databaseURL.path, query]
-
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = Pipe()
-
-    do {
-        try process.run()
-    } catch {
-        return nil
-    }
-    process.waitUntilExit()
-
-    guard process.terminationStatus == 0 else {
-        return nil
-    }
-
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    let output = String(data: data, encoding: .utf8)?
-        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    return output.isEmpty ? nil : output
-}
-
 private func resolveOpenClawRepositoryDirectory() -> URL {
     let fileManager = FileManager.default
     let env = ProcessInfo.processInfo.environment
@@ -4792,6 +4856,58 @@ private func resolveNodeExecutableURL() -> URL {
         }
     }
     return URL(filePath: candidates.first ?? "/usr/bin/node")
+}
+
+private func resolveSystemPython3ExecutableURL() -> URL? {
+    resolveExecutableURL(
+        environmentKey: "GRACULA_PYTHON3_EXECUTABLE",
+        candidates: [
+            "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3",
+            "/usr/bin/python3"
+        ]
+    )
+}
+
+private func resolveOllamaExecutableURL() -> URL? {
+    resolveExecutableURL(
+        environmentKey: "GRACULA_OLLAMA_EXECUTABLE",
+        candidates: [
+            "/opt/homebrew/bin/ollama",
+            "/usr/local/bin/ollama",
+            "/usr/bin/ollama"
+        ]
+    )
+}
+
+private func resolveRapidMLXExecutableURL() -> URL? {
+    resolveExecutableURL(
+        environmentKey: "GRACULA_RAPID_MLX_BIN",
+        candidates: [
+            "/opt/homebrew/bin/rapid-mlx",
+            "/usr/local/bin/rapid-mlx",
+            "/usr/bin/rapid-mlx"
+        ]
+    )
+}
+
+private func resolveExecutableURL(environmentKey: String, candidates: [String]) -> URL? {
+    let fileManager = FileManager.default
+    let env = ProcessInfo.processInfo.environment
+    if let override = env[environmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !override.isEmpty {
+        let url = URL(filePath: override)
+        if fileManager.isExecutableFile(atPath: url.path) {
+            return url
+        }
+    }
+    for candidate in candidates {
+        let url = URL(filePath: candidate)
+        if fileManager.isExecutableFile(atPath: url.path) {
+            return url
+        }
+    }
+    return nil
 }
 
 private struct PackageManagerCommand {
