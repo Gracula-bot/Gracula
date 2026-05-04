@@ -121,6 +121,7 @@ struct OpenClawLocalMLXModelConfiguration {
     let huggingFaceRepository: String?
     let rapidAlias: String?
     let rapidToolCallParser: String?
+    let rapidToolFeatures: [String]
     let contextWindow: Int
     let maxTokens: Int
 
@@ -163,6 +164,7 @@ enum OpenClawLLMConfiguration {
             huggingFaceRepository: "mlx-community/Qwen3-14B-4bit",
             rapidAlias: nil,
             rapidToolCallParser: nil,
+            rapidToolFeatures: [],
             contextWindow: 32_768,
             maxTokens: 4_096
         ),
@@ -173,6 +175,7 @@ enum OpenClawLLMConfiguration {
             huggingFaceRepository: "lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-4bit",
             rapidAlias: "nemotron-nano",
             rapidToolCallParser: "nemotron",
+            rapidToolFeatures: ["nemotron", "gc-control"],
             contextWindow: 131_072,
             maxTokens: 4_096
         )
@@ -1193,6 +1196,7 @@ final class OpenClawLocalController: ObservableObject {
     @Published private(set) var isSendingChat = false
     @Published private(set) var isPreparingLocalModel = false
     @Published private(set) var localModelStatusText = ""
+    @Published private(set) var localModelPreparationProgress: Double?
     @Published private(set) var settingsSnapshot: OpenClawSettingsSnapshot
     @Published private(set) var settingsStatusText = "Settings loaded."
 
@@ -1566,6 +1570,10 @@ final class OpenClawLocalController: ObservableObject {
         guard !trimmedRef.isEmpty, shouldUseDirectCompletion(for: trimmedRef) else {
             return
         }
+        guard !isSendingChat else {
+            appendLog("Direct model prewarm skipped because a chat turn is already active.")
+            return
+        }
 
         appendLog("Prewarming selected direct model on launch: \(trimmedRef)")
         let startedAt = PerformanceLog.checkpoint()
@@ -1684,6 +1692,8 @@ final class OpenClawLocalController: ObservableObject {
         guard !message.isEmpty else {
             return nil
         }
+        directModelPrewarmTask?.cancel()
+        directModelPrewarmTask = nil
 
         do {
             let primaryModelRef = currentPrimaryModelRef()
@@ -1718,13 +1728,43 @@ final class OpenClawLocalController: ObservableObject {
                     retrievalQuery: .simpleChat(message)
                 )
                 appendPromptDiagnostics(prompt.breakdown)
+                let requestedMaxTokens = min(OpenClawTaskProfile.simpleChat.maxOutputTokens, directMaxTokens(for: message))
                 let result = try await runDirectModelChat(
                     modelRef: primaryModelRef,
                     prompt: prompt.text,
-                    maxTokens: min(OpenClawTaskProfile.simpleChat.maxOutputTokens, directMaxTokens(for: message)),
+                    maxTokens: requestedMaxTokens,
                     assistantMessageID: assistantMessageID
                 )
-                let reply = result.text
+                var reply = result.text
+                var metrics = result.metrics
+                if looksLikeDegenerateDirectModelReply(reply) {
+                    appendLog("Direct model produced a degenerate reply; retrying once with stricter decoding.")
+                    chatStatusText = "Retrying local model..."
+                    let retryPrompt = await layeredPrompt(
+                        userMessage: retryPromptForDegenerateReply(originalUserMessage: message),
+                        profile: .simpleChat,
+                        modelRef: primaryModelRef,
+                        retrievalQuery: .simpleChat(message)
+                    )
+                    appendPromptDiagnostics(retryPrompt.breakdown)
+                    let retryResult = try await runDirectModelChat(
+                        modelRef: primaryModelRef,
+                        prompt: retryPrompt.text,
+                        maxTokens: min(requestedMaxTokens, 160),
+                        sampling: .strictRetry
+                    )
+                    reply = retryResult.text
+                    metrics = retryResult.metrics
+                    if looksLikeDegenerateDirectModelReply(reply) {
+                        removePendingAssistantPlaceholder()
+                        let failure = "Local model produced a repetitive invalid reply."
+                        appendChatMessage(.error(failure))
+                        chatStatusText = "Chat failed."
+                        appendLog("\(failure) lastReply=\"\(logSnippet(reply))\"")
+                        isSendingChat = false
+                        return nil
+                    }
+                }
                 guard !reply.isEmpty else {
                     throw OpenClawLocalControllerError.agentFailed("Selected model returned an empty reply.")
                 }
@@ -1732,8 +1772,8 @@ final class OpenClawLocalController: ObservableObject {
                 appendLog("[latency] Direct model answer returned after \(PerformanceLog.elapsedDescription(since: turnStartedAt)); replyCharacters=\(reply.count)")
                 appendLog("[latency] Assistant reply appended to UI after \(PerformanceLog.elapsedDescription(since: turnStartedAt)); replyCharacters=\(reply.count)")
                 chatStatusText = "Reply received."
-                appendLog("Direct model reply received. characters=\(reply.count)")
-                if let metrics = result.metrics {
+                appendLog("Direct model reply received. characters=\(reply.count), text=\"\(logSnippet(reply))\"")
+                if let metrics {
                     appendLog("Direct model performance: \(metrics.logSummary)")
                 }
                 isSendingChat = false
@@ -1831,6 +1871,63 @@ final class OpenClawLocalController: ObservableObject {
         return staleReplyMarkers
             .map(normalizedCommandText)
             .contains(where: { normalizedReply.contains($0) })
+    }
+
+    private func looksLikeDegenerateDirectModelReply(_ reply: String) -> Bool {
+        let trimmed = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 24 else {
+            return false
+        }
+
+        let scalars = Array(trimmed.unicodeScalars.filter { !CharacterSet.whitespacesAndNewlines.contains($0) })
+        guard !scalars.isEmpty else {
+            return true
+        }
+
+        let meaningfulScalars = scalars.filter {
+            CharacterSet.letters.contains($0) || CharacterSet.decimalDigits.contains($0)
+        }
+        if meaningfulScalars.isEmpty {
+            return true
+        }
+
+        var frequency: [UnicodeScalar: Int] = [:]
+        var longestRun = 1
+        var currentRun = 1
+        var previousScalar = scalars[0]
+
+        for scalar in scalars {
+            frequency[scalar, default: 0] += 1
+        }
+
+        for scalar in scalars.dropFirst() {
+            if scalar == previousScalar {
+                currentRun += 1
+                longestRun = max(longestRun, currentRun)
+            } else {
+                currentRun = 1
+                previousScalar = scalar
+            }
+        }
+
+        let dominantShare = Double(frequency.values.max() ?? 0) / Double(scalars.count)
+        if longestRun >= 12 || dominantShare >= 0.55 {
+            return true
+        }
+
+        let punctuationLikeScalars = scalars.filter {
+            !CharacterSet.letters.contains($0) && !CharacterSet.decimalDigits.contains($0)
+        }
+        let punctuationShare = Double(punctuationLikeScalars.count) / Double(scalars.count)
+        return punctuationShare >= 0.72
+    }
+
+    private func retryPromptForDegenerateReply(originalUserMessage: String) -> String {
+        """
+        \(originalUserMessage)
+
+        Ответь обычным русским текстом. Не используй линии-разделители, длинные цепочки из тире, повторяющиеся символы или декоративную пунктуацию. Если запрос похож на скороговорку, цитату или фрагмент фразы, кратко объясни или отреагируй на него естественно.
+        """
     }
 
     private func validateRuntime() throws {
@@ -2267,7 +2364,8 @@ final class OpenClawLocalController: ObservableObject {
         prompt: String,
         environment: [String: String]? = nil,
         maxTokens: Int = 256,
-        assistantMessageID: UUID? = nil
+        assistantMessageID: UUID? = nil,
+        sampling: DirectModelSamplingOptions? = nil
     ) async throws -> DirectModelChatResult {
         let startedAt = PerformanceLog.checkpoint()
         let trimmedRef = modelRef.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2285,6 +2383,7 @@ final class OpenClawLocalController: ObservableObject {
         let providerName = String(provider[0]).lowercased()
         let providerModelID = String(provider[1])
         let effectiveMaxTokens = directModelMaxTokens(for: trimmedRef, requestedMaxTokens: maxTokens)
+        let effectiveSampling = sampling ?? DirectModelSamplingOptions.standard(for: effectiveMaxTokens)
         if providerName == "ollama" {
             try await ensureDirectModelRuntimeReady(for: trimmedRef)
             return try await runDirectOllamaChat(
@@ -2292,7 +2391,8 @@ final class OpenClawLocalController: ObservableObject {
                 prompt: prompt,
                 maxTokens: effectiveMaxTokens,
                 startedAt: startedAt,
-                assistantMessageID: assistantMessageID
+                assistantMessageID: assistantMessageID,
+                sampling: effectiveSampling
             )
         }
         if providerName == "mlx" {
@@ -2300,7 +2400,8 @@ final class OpenClawLocalController: ObservableObject {
                 modelID: providerModelID,
                 prompt: prompt,
                 maxTokens: effectiveMaxTokens,
-                startedAt: startedAt
+                startedAt: startedAt,
+                sampling: effectiveSampling
             )
         }
         throw OpenClawLocalControllerError.agentFailed(
@@ -2743,7 +2844,8 @@ final class OpenClawLocalController: ObservableObject {
         prompt: String,
         maxTokens: Int,
         startedAt: UInt64,
-        assistantMessageID: UUID?
+        assistantMessageID: UUID?,
+        sampling: DirectModelSamplingOptions
     ) async throws -> DirectModelChatResult {
         let numCtx = maxTokens <= directVoiceTinyMaxTokens ? 2_048 : 4_096
         appendLog(
@@ -2768,9 +2870,9 @@ final class OpenClawLocalController: ObservableObject {
             "options": [
                 "num_ctx": numCtx,
                 "num_predict": maxTokens,
-                "temperature": maxTokens <= 64 ? 0 : 0.35,
-                "top_p": 0.85,
-                "repeat_penalty": 1.08
+                "temperature": sampling.temperature,
+                "top_p": sampling.topP,
+                "repeat_penalty": sampling.repeatPenalty
             ]
         ]
 
@@ -2869,7 +2971,8 @@ final class OpenClawLocalController: ObservableObject {
         modelID: String,
         prompt: String,
         maxTokens: Int,
-        startedAt: UInt64
+        startedAt: UInt64,
+        sampling: DirectModelSamplingOptions
     ) async throws -> DirectModelChatResult {
         let model = try mlxModelConfiguration(for: modelID)
         if model.usesRapidMLX {
@@ -2877,7 +2980,8 @@ final class OpenClawLocalController: ObservableObject {
                 model: model,
                 prompt: prompt,
                 maxTokens: maxTokens,
-                startedAt: startedAt
+                startedAt: startedAt,
+                sampling: sampling
             )
         }
         let pythonURL = try mlxPythonExecutableURL()
@@ -2946,8 +3050,8 @@ final class OpenClawLocalController: ObservableObject {
         environment["GRACULA_MLX_MODEL_PATH"] = modelDirectory.path
         environment["GRACULA_MLX_PROMPT_FILE"] = promptFileURL.path
         environment["GRACULA_MLX_MAX_TOKENS"] = String(maxTokens)
-        environment["GRACULA_MLX_TEMPERATURE"] = maxTokens <= 64 ? "0" : "0.35"
-        environment["GRACULA_MLX_TOP_P"] = maxTokens <= 64 ? "0" : "0.85"
+        environment["GRACULA_MLX_TEMPERATURE"] = String(sampling.temperature)
+        environment["GRACULA_MLX_TOP_P"] = String(sampling.topP)
 
         appendLog(
             "[latency] Direct MLX request prepared; modelPath=\(modelDirectory.lastPathComponent), promptCharacters=\(prompt.count), maxTokens=\(maxTokens)"
@@ -2994,7 +3098,8 @@ final class OpenClawLocalController: ObservableObject {
         model: OpenClawLocalMLXModelConfiguration,
         prompt: String,
         maxTokens: Int,
-        startedAt: UInt64
+        startedAt: UInt64,
+        sampling: DirectModelSamplingOptions
     ) async throws -> DirectModelChatResult {
         let environment = (try? openClawEnvironment()) ?? ProcessInfo.processInfo.environment
         let modelRef = model.modelRef
@@ -3015,8 +3120,9 @@ final class OpenClawLocalController: ObservableObject {
                 ]
             ],
             "max_tokens": maxTokens,
-            "temperature": maxTokens <= 64 ? 0 : 0.35,
-            "top_p": maxTokens <= 64 ? 0 : 0.85,
+            "temperature": sampling.temperature,
+            "top_p": sampling.topP,
+            "frequency_penalty": max(0, sampling.repeatPenalty - 1.0),
             "stream": false
         ]
 
@@ -3050,7 +3156,7 @@ final class OpenClawLocalController: ObservableObject {
         guard !reply.isEmpty else {
             throw OpenClawLocalControllerError.agentFailed("Rapid-MLX returned an empty reply.")
         }
-        appendLog("[latency] Rapid-MLX answer decoded after \(PerformanceLog.elapsedDescription(since: startedAt)); replyCharacters=\(reply.count)")
+        appendLog("[latency] Rapid-MLX answer decoded after \(PerformanceLog.elapsedDescription(since: startedAt)); replyCharacters=\(reply.count), text=\"\(logSnippet(reply))\"")
         return DirectModelChatResult(text: reply, metrics: nil)
     }
 
@@ -3490,7 +3596,12 @@ final class OpenClawLocalController: ObservableObject {
                     executableURL: pythonURL,
                     arguments: ["-c", script],
                     currentDirectoryURL: mlxModelsDirectory,
-                    environment: environment
+                    environment: environment,
+                    onOutput: { [weak self] text in
+                        Task { @MainActor in
+                            self?.appendLog(text, prefix: "download MLX model \(model.id)")
+                        }
+                    }
                 ),
                 action: "download MLX model \(model.id)"
             )
@@ -3600,6 +3711,7 @@ final class OpenClawLocalController: ObservableObject {
     private func beginLocalModelPreparation(_ message: String) {
         isPreparingLocalModel = true
         localModelStatusText = message
+        localModelPreparationProgress = nil
         statusText = message
         if isSendingChat {
             chatStatusText = message
@@ -3611,6 +3723,7 @@ final class OpenClawLocalController: ObservableObject {
             return
         }
         isPreparingLocalModel = false
+        localModelPreparationProgress = nil
         localModelStatusText = readyMessage
         if statusText.contains("model") || statusText.contains("Model") || statusText.contains("Downloading") {
             statusText = isRunning ? readyMessage : statusText
@@ -3618,6 +3731,50 @@ final class OpenClawLocalController: ObservableObject {
         if isSendingChat,
            chatStatusText.contains("model") || chatStatusText.contains("Model") || chatStatusText.contains("Downloading") {
             chatStatusText = readyMessage
+        }
+    }
+
+    private func updateLocalModelPreparationProgress(from text: String, prefix: String?) {
+        guard isPreparingLocalModel else {
+            return
+        }
+
+        for rawLine in text.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else {
+                continue
+            }
+
+            if let percent = Self.firstPercentage(in: line) {
+                localModelPreparationProgress = percent
+                let percentValue = Int((percent * 100).rounded())
+                localModelStatusText = "Downloading model... \(percentValue)%"
+                statusText = localModelStatusText
+                if isSendingChat {
+                    chatStatusText = localModelStatusText
+                }
+                continue
+            }
+
+            if line.localizedCaseInsensitiveContains("Ready:") ||
+                line.localizedCaseInsensitiveContains("runtime ready") ||
+                line.localizedCaseInsensitiveContains("Local MLX model server is ready") {
+                localModelPreparationProgress = 1
+            }
+
+            guard prefix == "mlx-model" || prefix?.contains("download MLX model") == true else {
+                continue
+            }
+
+            if line.localizedCaseInsensitiveContains("downloading") ||
+                line.localizedCaseInsensitiveContains("fetching") ||
+                line.localizedCaseInsensitiveContains("loading") {
+                localModelStatusText = line
+                statusText = line
+                if isSendingChat {
+                    chatStatusText = line
+                }
+            }
         }
     }
 
@@ -3840,7 +3997,8 @@ final class OpenClawLocalController: ObservableObject {
         executableURL: URL,
         arguments: [String],
         currentDirectoryURL: URL,
-        environment: [String: String]
+        environment: [String: String],
+        onOutput: (@Sendable (String) -> Void)? = nil
     ) throws -> ProcessOutput {
         let process = Process()
         process.executableURL = executableURL
@@ -3856,12 +4014,18 @@ final class OpenClawLocalController: ObservableObject {
             let data = handle.availableData
             if !data.isEmpty {
                 buffer.appendStdout(data)
+                if let text = String(data: data, encoding: .utf8) {
+                    onOutput?(text)
+                }
             }
         }
         stderrPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             if !data.isEmpty {
                 buffer.appendStderr(data)
+                if let text = String(data: data, encoding: .utf8) {
+                    onOutput?(text)
+                }
             }
         }
 
@@ -4110,6 +4274,18 @@ final class OpenClawLocalController: ObservableObject {
         chatMessages = updatedMessages
     }
 
+    private func logSnippet(_ text: String, maxCharacters: Int = 1_200) -> String {
+        let normalized = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized.count > maxCharacters else {
+            return normalized
+        }
+        return "\(normalized.prefix(maxCharacters))..."
+    }
+
     private func removePendingAssistantPlaceholder() {
         guard let index = chatMessages.lastIndex(where: { $0.role == .assistant && $0.text == "…" }) else {
             return
@@ -4183,6 +4359,7 @@ final class OpenClawLocalController: ObservableObject {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
         let timestamp = formatter.string(from: Date())
+        updateLocalModelPreparationProgress(from: text, prefix: prefix)
         for rawLine in text.components(separatedBy: .newlines) {
             let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !line.isEmpty else {
@@ -4227,6 +4404,20 @@ final class OpenClawLocalController: ObservableObject {
             options: .regularExpression
         )
         return output
+    }
+
+    private static func firstPercentage(in text: String) -> Double? {
+        guard let regex = try? NSRegularExpression(pattern: #"\b(\d{1,3})%"#) else {
+            return nil
+        }
+        let range = NSRange(text.startIndex..., in: text)
+        guard let match = regex.firstMatch(in: text, range: range),
+              let captureRange = Range(match.range(at: 1), in: text),
+              let value = Double(text[captureRange]),
+              (0...100).contains(value) else {
+            return nil
+        }
+        return value / 100
     }
 }
 
@@ -4282,11 +4473,17 @@ struct OpenClawEditableSetting: Identifiable, Equatable {
 struct OpenClawWorkspaceFile: Identifiable, Equatable {
     let id: String
     let relativePath: String
+    let absolutePath: String
+    let existsOnDisk: Bool
+    let byteCount: Int
     var contents: String
 
-    init(relativePath: String, contents: String) {
+    init(relativePath: String, absolutePath: String, existsOnDisk: Bool, byteCount: Int, contents: String) {
         self.id = relativePath
         self.relativePath = relativePath
+        self.absolutePath = absolutePath
+        self.existsOnDisk = existsOnDisk
+        self.byteCount = byteCount
         self.contents = contents
     }
 }
@@ -4377,7 +4574,7 @@ struct OpenClawSettingsReader {
         }
         let jsonEntries = flattenJSONSettings()
         let workspaceFiles = readWorkspaceFiles()
-        let toolRows = jsonEntries
+        let configuredToolRows = jsonEntries
             .filter { entry in
                 entry.key.hasPrefix("tools.")
                     || entry.key.hasPrefix("plugins.")
@@ -4387,6 +4584,16 @@ struct OpenClawSettingsReader {
             .map { entry in
                 row(entry.key, entry.isSecret ? "[redacted]" : entry.value)
             }
+        let rapidMLXToolRows = OpenClawLLMConfiguration.localMLXModels
+            .filter(\.usesRapidMLX)
+            .flatMap { model in
+                [
+                    row("rapid-mlx.\(model.id).alias", model.rapidAlias ?? model.id),
+                    row("rapid-mlx.\(model.id).tool-parser", model.rapidToolCallParser ?? "none"),
+                    row("rapid-mlx.\(model.id).tools", model.rapidToolFeatures.isEmpty ? "none" : model.rapidToolFeatures.joined(separator: ", "))
+                ]
+            }
+        let toolRows = configuredToolRows + rapidMLXToolRows
 
         return OpenClawSettingsSnapshot(
             runtimeRows: runtimeRows,
@@ -4502,15 +4709,26 @@ struct OpenClawSettingsReader {
             return []
         }
 
-        return urls
-            .filter { Self.isEditableWorkspaceFile($0.lastPathComponent) }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
-            .compactMap { url in
-                guard let contents = try? String(contentsOf: url) else {
-                    return nil
-                }
-                return OpenClawWorkspaceFile(relativePath: url.lastPathComponent, contents: contents)
-            }
+        let discoveredNames = urls
+            .map(\.lastPathComponent)
+            .filter(Self.isEditableWorkspaceFile)
+        let names = Set(discoveredNames)
+            .union(Self.coreEditableWorkspaceFileNames)
+            .sorted()
+
+        return names.map { name in
+            let url = workspaceURL.appendingPathComponent(name)
+            let existsOnDisk = FileManager.default.fileExists(atPath: url.path)
+            let contents = (try? String(contentsOf: url)) ?? ""
+            let byteCount = (try? Data(contentsOf: url).count) ?? 0
+            return OpenClawWorkspaceFile(
+                relativePath: name,
+                absolutePath: url.path,
+                existsOnDisk: existsOnDisk,
+                byteCount: byteCount,
+                contents: contents
+            )
+        }
     }
 
     private func flattenJSONValue(_ value: Any, prefix: String, into entries: inout [OpenClawEditableSetting]) {
@@ -4723,7 +4941,14 @@ struct OpenClawSettingsReader {
               relativePath.hasSuffix(".md") || relativePath.hasSuffix(".txt") else {
             return false
         }
-        let allowedNames: Set<String> = [
+        return coreEditableWorkspaceFileNames.contains(relativePath)
+            || relativePath.hasPrefix("IDENTITY")
+            || relativePath.hasPrefix("SOUL")
+            || relativePath.hasPrefix("AGENT")
+            || relativePath.hasPrefix("TOOL")
+    }
+
+    private static let coreEditableWorkspaceFileNames: Set<String> = [
             "AGENTS.md",
             "BOOTSTRAP.md",
             "HEARTBEAT.md",
@@ -4737,12 +4962,6 @@ struct OpenClawSettingsReader {
             "persona_compact.md",
             "rag_excerpts.md"
         ]
-        return allowedNames.contains(relativePath)
-            || relativePath.hasPrefix("IDENTITY")
-            || relativePath.hasPrefix("SOUL")
-            || relativePath.hasPrefix("AGENT")
-            || relativePath.hasPrefix("TOOL")
-    }
 }
 
 private func resolveOpenClawRepositoryDirectory() -> URL {
@@ -5016,6 +5235,25 @@ private final class ProcessCompletionState: @unchecked Sendable {
 private struct DirectModelChatResult {
     let text: String
     let metrics: DirectModelMetrics?
+}
+
+private struct DirectModelSamplingOptions {
+    let temperature: Double
+    let topP: Double
+    let repeatPenalty: Double
+
+    static func standard(for maxTokens: Int) -> DirectModelSamplingOptions {
+        if maxTokens <= 64 {
+            return DirectModelSamplingOptions(temperature: 0, topP: 0, repeatPenalty: 1.08)
+        }
+        return DirectModelSamplingOptions(temperature: 0.35, topP: 0.85, repeatPenalty: 1.08)
+    }
+
+    static let strictRetry = DirectModelSamplingOptions(
+        temperature: 0.1,
+        topP: 0.35,
+        repeatPenalty: 1.18
+    )
 }
 
 private struct DirectModelMetrics {

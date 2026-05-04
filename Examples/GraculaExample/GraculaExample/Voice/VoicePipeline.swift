@@ -39,7 +39,7 @@ actor VoicePipeline {
 
     private func speak(_ text: String) async -> Bool {
         let startedAt = PerformanceLog.checkpoint()
-        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedText = sanitizedSpeechText(text)
         guard !trimmedText.isEmpty else {
             log.info("[latency] Speech synthesis skipped because text is empty.")
             return false
@@ -74,6 +74,29 @@ actor VoicePipeline {
             log.info("[latency] macOS speech failed after \(PerformanceLog.elapsedDescription(since: startedAt))")
             return false
         }
+    }
+
+    private func sanitizedSpeechText(_ text: String) -> String {
+        var output = String()
+        output.reserveCapacity(text.count)
+        var previousWasWhitespace = true
+
+        for scalar in text.unicodeScalars {
+            if scalar.properties.isAlphabetic || scalar.properties.numericType != nil {
+                output.unicodeScalars.append(scalar)
+                previousWasWhitespace = false
+            } else if scalar.properties.isWhitespace || scalar == "\\" || scalar == "/" {
+                if !previousWasWhitespace {
+                    output.append(" ")
+                    previousWasWhitespace = true
+                }
+            } else if !previousWasWhitespace {
+                output.append(" ")
+                previousWasWhitespace = true
+            }
+        }
+
+        return output.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func stopSpeaking() async {

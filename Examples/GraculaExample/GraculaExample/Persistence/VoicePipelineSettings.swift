@@ -12,7 +12,7 @@ enum SpeechSynthesisBackend: String, Codable, CaseIterable, Sendable {
 
 struct VoicePipelineSettings: Codable, Sendable {
     enum Defaults {
-        static let whisperModelName = "small"
+        static let whisperModelName = "large-v3-turbo"
         static let whisperLanguageCode = "ru"
         static let parakeetModelName = "nvidia/parakeet-tdt-0.6b-v3"
         static let parakeetLanguageCode = "auto"
@@ -109,15 +109,19 @@ struct VoicePipelineSettings: Codable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        speechRecognitionBackend = try container.decodeIfPresent(SpeechRecognitionBackend.self, forKey: .speechRecognitionBackend) ?? .whisper
+        speechRecognitionBackend = Self.normalizedSpeechRecognitionBackend(
+            try container.decodeIfPresent(String.self, forKey: .speechRecognitionBackend)
+        )
         whisperModelName = Self.normalizedWhisperModelName(
             try container.decodeIfPresent(String.self, forKey: .whisperModelName)
             ?? container.decodeIfPresent(String.self, forKey: .recognitionModelName)
             ?? Defaults.whisperModelName
         )
-        whisperLanguageCode = try container.decodeIfPresent(String.self, forKey: .whisperLanguageCode)
+        whisperLanguageCode = Self.normalizedWhisperLanguageCode(
+            try container.decodeIfPresent(String.self, forKey: .whisperLanguageCode)
             ?? container.decodeIfPresent(String.self, forKey: .recognitionLanguageCode)
             ?? Defaults.whisperLanguageCode
+        )
         parakeetModelName = try container.decodeIfPresent(String.self, forKey: .parakeetModelName)
             ?? Defaults.parakeetModelName
         parakeetLanguageCode = try container.decodeIfPresent(String.self, forKey: .parakeetLanguageCode)
@@ -155,7 +159,7 @@ struct VoicePipelineSettings: Codable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(speechRecognitionBackend, forKey: .speechRecognitionBackend)
         try container.encode(whisperModelName, forKey: .whisperModelName)
-        try container.encode(whisperLanguageCode, forKey: .whisperLanguageCode)
+        try container.encode(Self.normalizedWhisperLanguageCode(whisperLanguageCode), forKey: .whisperLanguageCode)
         try container.encode(parakeetModelName, forKey: .parakeetModelName)
         try container.encode(parakeetLanguageCode, forKey: .parakeetLanguageCode)
         try container.encode(speechSynthesisBackend, forKey: .speechSynthesisBackend)
@@ -174,11 +178,58 @@ struct VoicePipelineSettings: Codable, Sendable {
     }
 
     private static func normalizedWhisperModelName(_ modelName: String) -> String {
-        switch modelName {
+        let trimmed = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch trimmed {
+        case "":
+            return Defaults.whisperModelName
         case "tiny":
             return Defaults.whisperModelName
+        case "small":
+            return Defaults.whisperModelName
+        case "mlx-community/whisper-large-v3-turbo":
+            return Defaults.whisperModelName
+        case "openai/whisper-large-v3-turbo":
+            return Defaults.whisperModelName
+        case "turbo":
+            return Defaults.whisperModelName
         default:
-            return modelName
+            if let normalized = normalizedWhisperRepoID(trimmed) {
+                return normalized
+            }
+            return trimmed
+        }
+    }
+
+    private static func normalizedWhisperRepoID(_ modelName: String) -> String? {
+        let knownMappings: [String: String] = [
+            "mlx-community/whisper-large-v3": "large-v3",
+            "openai/whisper-large-v3": "large-v3",
+            "mlx-community/whisper-large-v3-turbo": "large-v3-turbo",
+            "openai/whisper-large-v3-turbo": "large-v3-turbo",
+            "mlx-community/whisper-small": "small",
+            "openai/whisper-small": "small",
+            "mlx-community/whisper-medium": "medium",
+            "openai/whisper-medium": "medium"
+        ]
+        return knownMappings[modelName.lowercased()]
+    }
+
+    private static func normalizedWhisperLanguageCode(_ languageCode: String) -> String {
+        let trimmed = languageCode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return trimmed.isEmpty ? Defaults.whisperLanguageCode : trimmed
+    }
+
+    private static func normalizedSpeechRecognitionBackend(_ rawValue: String?) -> SpeechRecognitionBackend {
+        guard let rawValue,
+              let backend = SpeechRecognitionBackend(rawValue: rawValue) else {
+            return .whisper
+        }
+
+        switch backend {
+        case .whisper:
+            return .whisper
+        case .parakeet:
+            return .whisper
         }
     }
 

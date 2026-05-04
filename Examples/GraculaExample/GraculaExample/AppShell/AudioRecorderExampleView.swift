@@ -84,13 +84,16 @@ private struct OpenClawMainTabView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                HStack(alignment: .firstTextBaseline) {
+                HStack(alignment: .top, spacing: 16) {
+                    recordButton
+
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Gracula")
                             .font(.title2)
                         Text("Chat locally, start the bot, and record a message.")
                             .foregroundStyle(.secondary)
                     }
+
                     Spacer()
                 }
 
@@ -99,31 +102,44 @@ private struct OpenClawMainTabView: View {
                 OpenClawChatView(controller: openClawController)
 
                 OpenClawLogView(controller: openClawController)
-
-                HStack {
-                    Button {
-                        Task {
-                            await viewModel.toggleRecording(
-                                sendRecognizedText: { message in
-                                    await openClawController.sendChatMessage(message)
-                                },
-                                reportError: { openClawController.reportError($0) }
-                            )
-                        }
-                    } label: {
-                        Label(viewModel.buttonTitle, systemImage: viewModel.buttonSystemImage)
-                            .frame(minWidth: 180)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .disabled(viewModel.isTranscribing)
-
-                    Spacer()
-                }
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private var recordButton: some View {
+        Button {
+            Task {
+                await viewModel.toggleRecording(
+                    sendRecognizedText: { message in
+                        await openClawController.sendChatMessage(message)
+                    },
+                    reportError: { openClawController.reportError($0) }
+                )
+            }
+        } label: {
+            VStack(alignment: .center, spacing: 8) {
+                ZStack {
+                    Circle()
+                        .fill(viewModel.isRecording ? Color.red : Color.accentColor)
+                        .frame(width: 56, height: 56)
+
+                    Image(systemName: viewModel.buttonSystemImage)
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+
+                Text(viewModel.isRecording ? "Recording" : "Record")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.primary)
+            }
+            .frame(width: 88)
+            .padding(.vertical, 6)
+        }
+        .buttonStyle(.plain)
+        .disabled(viewModel.isTranscribing)
+        .help(viewModel.buttonTitle)
     }
 }
 
@@ -566,6 +582,26 @@ private struct RecorderSettingsSection: View {
 }
 
 private struct VoicePipelineSettingsEditorView: View {
+    private struct RecognitionModelOption: Identifiable {
+        let id: String
+        let title: String
+        let detail: String
+
+        var label: String {
+            detail.isEmpty ? title : "\(title) (\(detail))"
+        }
+    }
+
+    private static let recognitionModelOptions: [RecognitionModelOption] = [
+        RecognitionModelOption(id: "tiny", title: "tiny", detail: "fastest"),
+        RecognitionModelOption(id: "base", title: "base", detail: "balanced"),
+        RecognitionModelOption(id: "small", title: "small", detail: "better accuracy"),
+        RecognitionModelOption(id: "medium", title: "medium", detail: "high accuracy"),
+        RecognitionModelOption(id: "large-v3", title: "large-v3", detail: "best accuracy"),
+        RecognitionModelOption(id: "large-v3-turbo", title: "large-v3-turbo", detail: "recommended"),
+        RecognitionModelOption(id: "distil-large-v3", title: "distil-large-v3", detail: "smaller large")
+    ]
+
     @ObservedObject var viewModel: AudioRecorderViewModel
     @State private var draft = VoicePipelineSettings()
     @State private var statusText = "Ready to edit voice settings."
@@ -575,22 +611,20 @@ private struct VoicePipelineSettingsEditorView: View {
             sectionHeader("Voice Pipeline", systemImage: "waveform")
 
             VStack(alignment: .leading, spacing: 14) {
-                Picker("Recognition backend", selection: $draft.speechRecognitionBackend) {
-                    ForEach(SpeechRecognitionBackend.allCases, id: \.self) { backend in
-                        Text(label(for: backend)).tag(backend)
+                Group {
+                    Picker("Recognition model", selection: $draft.whisperModelName) {
+                        ForEach(Self.recognitionModelOptions) { option in
+                            Text(option.label).tag(option.id)
+                        }
                     }
-                }
-                .pickerStyle(.menu)
+                    .pickerStyle(.menu)
 
-                Group {
-                    TextField("Whisper model", text: $draft.whisperModelName)
-                    TextField("Whisper language", text: $draft.whisperLanguageCode)
+                    TextField("Recognition language", text: $draft.whisperLanguageCode)
                 }
 
-                Group {
-                    TextField("Parakeet model", text: $draft.parakeetModelName)
-                    TextField("Parakeet language", text: $draft.parakeetLanguageCode)
-                }
+                Text("The selected speech model is downloaded automatically when you save and use voice transcription.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
 
                 Picker("Speech backend", selection: $draft.speechSynthesisBackend) {
                     ForEach(SpeechSynthesisBackend.allCases, id: \.self) { backend in
@@ -701,16 +735,11 @@ private struct VoicePipelineSettingsEditorView: View {
 
     private func reloadDraft() {
         draft = viewModel.currentVoiceSettings()
-        statusText = "Loaded voice settings."
-    }
-
-    private func label(for backend: SpeechRecognitionBackend) -> String {
-        switch backend {
-        case .whisper:
-            return "Whisper"
-        case .parakeet:
-            return "Parakeet"
+        draft.speechRecognitionBackend = .whisper
+        if draft.whisperLanguageCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            draft.whisperLanguageCode = "ru"
         }
+        statusText = "Loaded voice settings."
     }
 
     private func label(for backend: SpeechSynthesisBackend) -> String {

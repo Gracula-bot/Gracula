@@ -102,6 +102,24 @@ struct OpenClawSettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+            if controller.isPreparingLocalModel {
+                VStack(alignment: .leading, spacing: 6) {
+                    if let progress = controller.localModelPreparationProgress {
+                        ProgressView(value: progress, total: 1)
+                            .controlSize(.small)
+                        Text("\(Int((progress * 100).rounded()))%")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Text(controller.localModelStatusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             BrainSettingsSection(
                 snapshot: snapshot,
                 environmentEntries: $environmentEntries,
@@ -140,7 +158,7 @@ struct OpenClawSettingsView: View {
             .disclosureGroupStyle(.automatic)
 
             DisclosureGroup("Soul, Agent, and Workspace Files", isExpanded: $isWorkspaceExpanded) {
-                editableWorkspaceFiles($workspaceFiles)
+                EditableWorkspaceFilesView(files: $workspaceFiles)
             }
             .disclosureGroupStyle(.automatic)
         }
@@ -202,16 +220,44 @@ struct OpenClawSettingsView: View {
         .padding(.top, 6)
     }
 
-    private func editableWorkspaceFiles(_ files: Binding<[OpenClawWorkspaceFile]>) -> some View {
+    private func jsonEditorHeight(for contents: String) -> CGFloat {
+        let lineCount = max(4, min(10, contents.split(separator: "\n", omittingEmptySubsequences: false).count))
+        return CGFloat(lineCount * 18 + 24)
+    }
+
+    private func loadEditableEntries() {
+        environmentEntries = snapshot.environmentEntries
+        jsonEntries = snapshot.jsonEntries
+        workspaceFiles = snapshot.workspaceFiles
+    }
+}
+
+private struct EditableWorkspaceFilesView: View {
+    @Binding var files: [OpenClawWorkspaceFile]
+
+    var body: some View {
         LazyVStack(alignment: .leading, spacing: 12) {
-            ForEach(files) { $file in
+            ForEach($files, id: \.id) { file in
+                let workspaceFile = file.wrappedValue
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(file.relativePath)
+                    Text(workspaceFile.relativePath)
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
-                    TextEditor(text: $file.contents)
+                    Text(workspaceFileSummary(workspaceFile))
+                        .font(.caption2)
+                        .foregroundStyle(
+                            workspaceFile.existsOnDisk
+                                ? AnyShapeStyle(.tertiary)
+                                : AnyShapeStyle(Color.orange)
+                        )
+                        .textSelection(.enabled)
+                    Text(workspaceFile.absolutePath)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .textSelection(.enabled)
+                    TextEditor(text: file.contents)
                         .font(.system(.caption, design: .monospaced))
-                        .frame(minHeight: editorHeight(for: file.contents))
+                        .frame(minHeight: editorHeight(for: workspaceFile.contents))
                         .overlay {
                             RoundedRectangle(cornerRadius: 6)
                                 .stroke(.quaternary)
@@ -222,19 +268,13 @@ struct OpenClawSettingsView: View {
         .padding(.top, 6)
     }
 
+    private func workspaceFileSummary(_ file: OpenClawWorkspaceFile) -> String {
+        let status = file.existsOnDisk ? "Loaded" : "Missing placeholder"
+        return "\(status) • \(file.byteCount) bytes"
+    }
+
     private func editorHeight(for contents: String) -> CGFloat {
         let lineCount = max(6, min(28, contents.split(separator: "\n", omittingEmptySubsequences: false).count))
         return CGFloat(lineCount * 18 + 24)
-    }
-
-    private func jsonEditorHeight(for contents: String) -> CGFloat {
-        let lineCount = max(4, min(10, contents.split(separator: "\n", omittingEmptySubsequences: false).count))
-        return CGFloat(lineCount * 18 + 24)
-    }
-
-    private func loadEditableEntries() {
-        environmentEntries = snapshot.environmentEntries
-        jsonEntries = snapshot.jsonEntries
-        workspaceFiles = snapshot.workspaceFiles
     }
 }
