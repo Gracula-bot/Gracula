@@ -80,6 +80,7 @@ private func localNotificationPrompt(
 private struct OpenClawMainTabView: View {
     @ObservedObject var viewModel: AudioRecorderViewModel
     @ObservedObject var openClawController: OpenClawLocalController
+    @State private var isHandlingSpaceHold = false
 
     var body: some View {
         ScrollView {
@@ -106,6 +107,16 @@ private struct OpenClawMainTabView: View {
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .background(
+            ZStack {
+                SpaceHoldRecordingMonitor(
+                    isEnabled: !viewModel.isTranscribing,
+                    onPress: startSpaceHoldRecording,
+                    onRelease: stopSpaceHoldRecording
+                )
+                InitialWindowFocusResetter()
+            }
+        )
     }
 
     private var recordButton: some View {
@@ -140,6 +151,159 @@ private struct OpenClawMainTabView: View {
         .buttonStyle(.plain)
         .disabled(viewModel.isTranscribing)
         .help(viewModel.buttonTitle)
+    }
+
+    private func startSpaceHoldRecording() {
+        guard !isHandlingSpaceHold else {
+            return
+        }
+        isHandlingSpaceHold = true
+        Task {
+            await viewModel.beginHoldToRecord(
+                reportError: { openClawController.reportError($0) }
+            )
+        }
+    }
+
+    private func stopSpaceHoldRecording() {
+        guard isHandlingSpaceHold else {
+            return
+        }
+        isHandlingSpaceHold = false
+        Task {
+            await viewModel.endHoldToRecord(
+                sendRecognizedText: { message in
+                    await openClawController.sendChatMessage(message)
+                },
+                reportError: { openClawController.reportError($0) }
+            )
+        }
+    }
+}
+
+private struct InitialWindowFocusResetter: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async {
+            NSApp.keyWindow?.makeFirstResponder(nil)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            NSApp.keyWindow?.makeFirstResponder(nil)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+private struct SpaceHoldRecordingMonitor: NSViewRepresentable {
+    let isEnabled: Bool
+    let onPress: () -> Void
+    let onRelease: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onPress: onPress, onRelease: onRelease)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        context.coordinator.installIfNeeded()
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.isEnabled = isEnabled
+        context.coordinator.onPress = onPress
+        context.coordinator.onRelease = onRelease
+        context.coordinator.installIfNeeded()
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.teardown()
+    }
+
+    final class Coordinator {
+        var isEnabled = true
+        var onPress: () -> Void
+        var onRelease: () -> Void
+        private var keyDownMonitor: Any?
+        private var keyUpMonitor: Any?
+        private var isSpaceHeld = false
+
+        init(onPress: @escaping () -> Void, onRelease: @escaping () -> Void) {
+            self.onPress = onPress
+            self.onRelease = onRelease
+        }
+
+        deinit {
+            teardown()
+        }
+
+        func installIfNeeded() {
+            if keyDownMonitor == nil {
+                keyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                    self?.handleKeyDown(event) ?? event
+                }
+            }
+            if keyUpMonitor == nil {
+                keyUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyUp) { [weak self] event in
+                    self?.handleKeyUp(event) ?? event
+                }
+            }
+        }
+
+        func teardown() {
+            if let keyDownMonitor {
+                NSEvent.removeMonitor(keyDownMonitor)
+                self.keyDownMonitor = nil
+            }
+            if let keyUpMonitor {
+                NSEvent.removeMonitor(keyUpMonitor)
+                self.keyUpMonitor = nil
+            }
+        }
+
+        private func handleKeyDown(_ event: NSEvent) -> NSEvent? {
+            guard shouldHandle(event) else {
+                return event
+            }
+            guard !event.isARepeat else {
+                return nil
+            }
+            guard !isSpaceHeld else {
+                return nil
+            }
+            isSpaceHeld = true
+            onPress()
+            return nil
+        }
+
+        private func handleKeyUp(_ event: NSEvent) -> NSEvent? {
+            guard event.keyCode == 49 else {
+                return event
+            }
+            guard isSpaceHeld else {
+                return event
+            }
+            isSpaceHeld = false
+            onRelease()
+            return nil
+        }
+
+        private func shouldHandle(_ event: NSEvent) -> Bool {
+            guard isEnabled, event.keyCode == 49 else {
+                return false
+            }
+            guard NSApp.isActive,
+                  let window = NSApp.keyWindow else {
+                return false
+            }
+            let responder = window.firstResponder
+            if responder is NSTextView || responder is NSTextField {
+                return false
+            }
+            return true
+        }
     }
 }
 

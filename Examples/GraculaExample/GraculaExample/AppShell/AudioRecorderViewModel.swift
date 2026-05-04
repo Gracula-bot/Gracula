@@ -97,6 +97,24 @@ final class AudioRecorderViewModel: ObservableObject {
         }
     }
 
+    func beginHoldToRecord(reportError: ((String) -> Void)? = nil) async {
+        guard !isTranscribing, !isRecording else {
+            return
+        }
+        await voicePipeline.stopSpeaking()
+        await startRecording(reportError: reportError)
+    }
+
+    func endHoldToRecord(
+        sendRecognizedText: ((String) async -> String?)? = nil,
+        reportError: ((String) -> Void)? = nil
+    ) async {
+        guard isRecording else {
+            return
+        }
+        await stopRecording(sendRecognizedText: sendRecognizedText, reportError: reportError)
+    }
+
     func currentVoiceSettings() -> VoicePipelineSettings {
         voiceSettings
     }
