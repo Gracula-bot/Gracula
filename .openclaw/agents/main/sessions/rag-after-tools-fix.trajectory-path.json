@@ -1,6 +1,0 @@
-{
-  "traceSchema": "openclaw-trajectory-pointer",
-  "schemaVersion": 1,
-  "sessionId": "rag-after-tools-fix",
-  "runtimeFile": "/Users/gg/.openclaw/agents/main/sessions/rag-after-tools-fix.trajectory.jsonl"
-}

@@ -14,7 +14,7 @@ The app keeps speech recognition and speech synthesis behind a config file so yo
 
 The OpenClaw model picker now supports two local model paths:
 
-- Ollama via `ollama/qwen3:14b` at `http://127.0.0.1:11434`
+- Ollama via `ollama/qwen3:30b` at `http://127.0.0.1:11434`
 - MLX via `mlx/qwen3-14b-4bit`, using a dedicated runtime at `~/Library/Application Support/GraculaExample/MLXRuntime` and model files at `~/Library/Application Support/GraculaExample/MLXModels/Qwen3-14B-4bit`
 
 The config file lives at:

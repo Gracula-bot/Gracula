@@ -1,6 +1,0 @@
-{
-  "traceSchema": "openclaw-trajectory-pointer",
-  "schemaVersion": 1,
-  "sessionId": "model-test-kilocode",
-  "runtimeFile": "/Users/gg/.openclaw/agents/main/sessions/model-test-kilocode.trajectory.jsonl"
-}

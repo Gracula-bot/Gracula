@@ -292,11 +292,18 @@ final class AudioRecorderViewModel: ObservableObject {
             let selectedName = selectedInputDeviceName()
             appendDiagnostic("Starting recording. selectedDevice=\(selectedName), id=\(selectedInputDeviceID ?? "nil")")
             let url = try await recorder.start(deviceID: selectedInputDeviceID)
+            if let resolvedInputDeviceID = recorder.resolvedInputDeviceID() {
+                selectedInputDeviceID = resolvedInputDeviceID
+            }
+            if let fallbackMessage = recorder.fallbackStartMessage() {
+                appendDiagnostic(fallbackMessage)
+            }
+            let resolvedName = selectedInputDeviceName()
             latestFileSourceText = url.path(percentEncoded: false)
             isRecording = true
-            statusText = "Recording from \(selectedName)..."
+            statusText = "Recording from \(resolvedName)..."
             appendDiagnostic("Recording file opened: \(url.path(percentEncoded: false))")
-            log.debug("startRecording completed in \(PerformanceLog.elapsedDescription(since: startedAt)); device=\(selectedName); file=\(url.lastPathComponent)")
+            log.debug("startRecording completed in \(PerformanceLog.elapsedDescription(since: startedAt)); device=\(resolvedName); file=\(url.lastPathComponent)")
         } catch {
             isRecording = false
             statusText = "Could not start recording: \(error.localizedDescription)"

@@ -1,3 +1,4 @@
+import Application
 import SwiftUI
 
 public struct AgentView: View {
@@ -54,6 +55,22 @@ public struct AgentView: View {
                     )
                 }
 
+                if let pendingReply = viewModel.pendingTelegramReply {
+                    TelegramReplyPanel(
+                        reply: pendingReply,
+                        onSend: {
+                            Task {
+                                await viewModel.sendPendingTelegramReply()
+                            }
+                        },
+                        onCancel: {
+                            Task {
+                                await viewModel.cancelPendingTelegramReply()
+                            }
+                        }
+                    )
+                }
+
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Result")
                         .font(.headline)
@@ -81,6 +98,58 @@ public struct AgentView: View {
             Text(viewModel.statusText)
                 .foregroundStyle(.secondary)
         }
+    }
+}
+
+private struct TelegramReplyPanel: View {
+    let reply: PendingTelegramReply
+    let onSend: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Telegram Reply Draft", systemImage: "paperplane")
+                    .font(.headline)
+                Spacer()
+                Text(reply.status.rawValue)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
+                GridRow {
+                    Text("Chat")
+                        .foregroundStyle(.secondary)
+                    Text(reply.chatName)
+                        .textSelection(.enabled)
+                }
+                GridRow {
+                    Text("Reply")
+                        .foregroundStyle(.secondary)
+                    Text(reply.messageText)
+                        .textSelection(.enabled)
+                }
+            }
+            .font(.callout)
+
+            HStack {
+                Button {
+                    onSend()
+                } label: {
+                    Label("Отправить", systemImage: "paperplane.fill")
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button {
+                    onCancel()
+                } label: {
+                    Label("Отменить", systemImage: "xmark.circle")
+                }
+            }
+        }
+        .padding(12)
+        .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 

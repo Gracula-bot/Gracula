@@ -280,6 +280,8 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = DR9YEJ8YRD;
@@ -287,7 +289,9 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = GraculaExample;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Gracula can control Telegram to send voice-command messages.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Gracula can use the microphone for voice commands when listening controls are enabled.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Gracula can use speech recognition to turn voice commands into local bot instructions.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -315,7 +319,9 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = GraculaExample;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Gracula can control Telegram to send voice-command messages.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Gracula can use the microphone for voice commands when listening controls are enabled.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Gracula can use speech recognition to turn voice commands into local bot instructions.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",

@@ -55,6 +55,8 @@ struct OpenClawSettingsView: View {
     @State private var environmentEntries: [OpenClawEditableSetting] = []
     @State private var jsonEntries: [OpenClawEditableSetting] = []
     @State private var workspaceFiles: [OpenClawWorkspaceFile] = []
+    @State private var telegramLoginCode = ""
+    @State private var telegramPassword = ""
 
     private var snapshot: OpenClawSettingsSnapshot {
         controller.settingsSnapshot
@@ -126,6 +128,8 @@ struct OpenClawSettingsView: View {
                 jsonEntries: $jsonEntries
             )
 
+            telegramUserAPIControls
+
             DisclosureGroup("Runtime", isExpanded: $isRuntimeExpanded) {
                 settingsRows(snapshot.runtimeRows)
             }
@@ -166,6 +170,82 @@ struct OpenClawSettingsView: View {
         .onChange(of: snapshot) { _, _ in
             loadEditableEntries()
         }
+    }
+
+    private var telegramUserAPIControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Telegram User API")
+                        .font(.headline)
+                    Text(controller.telegramUserStatusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    Task {
+                        await controller.startTelegramUserAPI()
+                    }
+                } label: {
+                    Label("Start TDLib", systemImage: "person.crop.circle.badge.checkmark")
+                }
+                .buttonStyle(.bordered)
+                .disabled(controller.isStartingTelegramUserAPI)
+                Button {
+                    Task {
+                        await controller.refreshTelegramUserDialogs()
+                    }
+                } label: {
+                    Label("Refresh dialogs", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+            }
+
+            HStack(spacing: 8) {
+                TextField("Login code", text: $telegramLoginCode)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.caption, design: .monospaced))
+                Button("Submit code") {
+                    let code = telegramLoginCode
+                    telegramLoginCode = ""
+                    Task {
+                        await controller.submitTelegramUserCode(code)
+                    }
+                }
+                .disabled(telegramLoginCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+
+            HStack(spacing: 8) {
+                SecureField("2FA password", text: $telegramPassword)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.caption, design: .monospaced))
+                Button("Submit 2FA") {
+                    let password = telegramPassword
+                    telegramPassword = ""
+                    Task {
+                        await controller.submitTelegramUserPassword(password)
+                    }
+                }
+                .disabled(telegramPassword.isEmpty)
+            }
+
+            if !controller.telegramUserDialogs.isEmpty {
+                Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 4) {
+                    ForEach(controller.telegramUserDialogs, id: \.id) { dialog in
+                        GridRow {
+                            Text(dialog.id)
+                                .foregroundStyle(.secondary)
+                            Text(dialog.title)
+                            Text(dialog.type)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .font(.system(.caption, design: .monospaced))
+            }
+        }
+        .padding(.vertical, 6)
     }
 
     private func settingsRows(_ rows: [OpenClawSettingsRow]) -> some View {

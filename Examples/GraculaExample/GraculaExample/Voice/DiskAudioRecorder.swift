@@ -19,7 +19,14 @@ struct RecordingStopResult {
 
 @MainActor
 final class DiskAudioRecorder {
+    private static let startRetryDelaysNanos: [UInt64] = [
+        150_000_000,
+        350_000_000
+    ]
+
     private var recorder: AudioQueueDiskRecorder?
+    private var lastStartedDeviceID: String?
+    private var lastStartFallbackMessage: String?
 
     func availableInputDevices() -> [AudioInputDevice] {
         CoreAudioInputDevices.devices()
@@ -29,6 +36,14 @@ final class DiskAudioRecorder {
         CoreAudioInputDevices.defaultInputDevice()
     }
 
+    func resolvedInputDeviceID() -> String? {
+        lastStartedDeviceID
+    }
+
+    func fallbackStartMessage() -> String? {
+        lastStartFallbackMessage
+    }
+
     func start(deviceID: String?) async throws -> URL {
         let startedAt = PerformanceLog.checkpoint()
         try await requestMicrophonePermission()
@@ -36,17 +51,67 @@ final class DiskAudioRecorder {
             throw AudioRecordingError.alreadyRecording
         }
 
-        let deviceID = deviceID ?? CoreAudioInputDevices.defaultInputDevice()?.id
-        guard let deviceID else {
+        let availableDevices = availableInputDevices()
+        let defaultDeviceID = defaultInputDevice()?.id
+        let preferredDeviceID = deviceID ?? defaultDeviceID
+        let candidateDeviceIDs = prioritizedInputDeviceIDs(
+            preferredDeviceID: preferredDeviceID,
+            defaultDeviceID: defaultDeviceID,
+            availableDevices: availableDevices
+        )
+        guard !candidateDeviceIDs.isEmpty else {
             throw AudioRecordingError.inputDeviceUnavailable
         }
 
         let url = try makeRecordingURL()
-        let recorder = AudioQueueDiskRecorder(deviceUID: deviceID, fileURL: url)
-        try recorder.start()
-        self.recorder = recorder
-        log.debug("DiskAudioRecorder.start completed in \(PerformanceLog.elapsedDescription(since: startedAt)); deviceID=\(deviceID); file=\(url.lastPathComponent)")
-        return url
+        let deviceNames = Dictionary(uniqueKeysWithValues: availableDevices.map { ($0.id, $0.name) })
+        lastStartedDeviceID = nil
+        lastStartFallbackMessage = nil
+
+        var firstError: Error?
+        for candidateDeviceID in candidateDeviceIDs {
+            var candidateError: Error?
+
+            for (attemptIndex, retryDelay) in Self.startRetryDelaysNanos.enumeratedWithTrailingAttempt() {
+                let recorder = AudioQueueDiskRecorder(deviceUID: candidateDeviceID, fileURL: url)
+                do {
+                    try recorder.start()
+                    self.recorder = recorder
+                    lastStartedDeviceID = candidateDeviceID
+                    if let preferredDeviceID,
+                       candidateDeviceID != preferredDeviceID {
+                        let previousName = deviceNames[preferredDeviceID] ?? "Selected Input"
+                        let fallbackName = deviceNames[candidateDeviceID] ?? "Default Input"
+                        lastStartFallbackMessage = "Selected microphone \(previousName) failed to start. Switched to \(fallbackName)."
+                    }
+                    log.debug("DiskAudioRecorder.start completed in \(PerformanceLog.elapsedDescription(since: startedAt)); deviceID=\(candidateDeviceID); file=\(url.lastPathComponent)")
+                    return url
+                } catch {
+                    recorder.abortStart()
+                    candidateError = error
+
+                    guard shouldRetryStart(after: error, attemptIndex: attemptIndex) else {
+                        break
+                    }
+
+                    let retryAttemptNumber = attemptIndex + 2
+                    log.warning(
+                        "Retrying AudioQueue start after transient failure; deviceID=\(candidateDeviceID); nextAttempt=\(retryAttemptNumber); error=\(error.localizedDescription)"
+                    )
+                    try? await Task.sleep(nanoseconds: retryDelay)
+                }
+            }
+
+            if firstError == nil {
+                firstError = candidateError
+            }
+            if let candidateError, !shouldTryNextInputDevice(after: candidateError) {
+                throw candidateError
+            }
+        }
+
+        try? FileManager.default.removeItem(at: url)
+        throw firstError ?? AudioRecordingError.inputDeviceUnavailable
     }
 
     func stop() throws -> RecordingStopResult {
@@ -59,6 +124,44 @@ final class DiskAudioRecorder {
         let result = try recorder.stop()
         log.debug("DiskAudioRecorder.stop completed in \(PerformanceLog.elapsedDescription(since: startedAt)); packets=\(result.packetCount); bytes=\(result.byteSize)")
         return result
+    }
+
+    private func prioritizedInputDeviceIDs(
+        preferredDeviceID: String?,
+        defaultDeviceID: String?,
+        availableDevices: [AudioInputDevice]
+    ) -> [String] {
+        var orderedIDs: [String] = []
+        let appendIfNeeded: (String?) -> Void = { candidateID in
+            guard let candidateID, !candidateID.isEmpty, !orderedIDs.contains(candidateID) else {
+                return
+            }
+            orderedIDs.append(candidateID)
+        }
+
+        appendIfNeeded(preferredDeviceID)
+        appendIfNeeded(defaultDeviceID)
+        for device in availableDevices {
+            appendIfNeeded(device.id)
+        }
+        return orderedIDs
+    }
+
+    private func shouldRetryStart(after error: Error, attemptIndex: Int) -> Bool {
+        guard attemptIndex < Self.startRetryDelaysNanos.count else {
+            return false
+        }
+        guard let recordingError = error as? AudioRecordingError else {
+            return false
+        }
+        return recordingError.isTransientStartFailure
+    }
+
+    private func shouldTryNextInputDevice(after error: Error) -> Bool {
+        guard let recordingError = error as? AudioRecordingError else {
+            return false
+        }
+        return recordingError.isAudioQueueError
     }
 
     func savedRecordings() throws -> [URL] {
@@ -144,10 +247,31 @@ enum AudioRecordingError: LocalizedError {
         case .inputDeviceUnavailable:
             return "Selected microphone is unavailable."
         case .audioQueueError(let operation, let status):
-            return "\(operation) failed with OSStatus \(status). Choose a different microphone input source."
+            return "\(operation) failed: \(Self.describe(status: status))"
         case .notRecording:
             return "No recording is active."
         }
+    }
+
+    private static func describe(status: OSStatus) -> String {
+        if status == 2003329396 {
+            return "The selected microphone could not start (`what`). It may be busy, disconnected, muted by the system, or in an invalid state. Try another input source."
+        }
+        return "OSStatus \(status). Choose a different microphone input source."
+    }
+
+    var isAudioQueueError: Bool {
+        if case .audioQueueError = self {
+            return true
+        }
+        return false
+    }
+
+    var isTransientStartFailure: Bool {
+        if case .audioQueueError(let operation, let status) = self {
+            return operation == "AudioQueueStart" && status == 2003329396
+        }
+        return false
     }
 }
 
@@ -426,10 +550,29 @@ private final class AudioQueueDiskRecorder: @unchecked Sendable {
         log.debug("AudioQueueDiskRecorder.start completed in \(PerformanceLog.elapsedDescription(since: startedAt)); file=\(self.fileURL.lastPathComponent)")
     }
 
+    func abortStart() {
+        lock.lock()
+        isRunning = false
+        pendingError = nil
+        lock.unlock()
+
+        if let queue {
+            AudioQueueStop(queue, true)
+            AudioQueueDispose(queue, true)
+            self.queue = nil
+        }
+
+        if let fileID {
+            AudioFileClose(fileID)
+            self.fileID = nil
+        }
+    }
+
     func stop() throws -> RecordingStopResult {
         let startedAt = PerformanceLog.checkpoint()
         lock.lock()
         isRunning = false
+        pendingError = nil
         lock.unlock()
 
         var stopStatus: OSStatus = noErr
@@ -437,10 +580,16 @@ private final class AudioQueueDiskRecorder: @unchecked Sendable {
         var closeStatus: OSStatus = noErr
 
         if let queue {
-            // Use non-blocking stop/dispose. Some devices report "reconfig pending"
-            // and can hang or crash inside synchronous HAL teardown.
+            // Prefer fast non-blocking teardown, but fall back to synchronous cleanup
+            // if CoreAudio reports that the queue is still mid-reconfiguration.
             stopStatus = AudioQueueStop(queue, false)
+            if stopStatus != noErr {
+                stopStatus = AudioQueueStop(queue, true)
+            }
             disposeStatus = AudioQueueDispose(queue, false)
+            if disposeStatus != noErr {
+                disposeStatus = AudioQueueDispose(queue, true)
+            }
             self.queue = nil
         }
 
@@ -525,6 +674,12 @@ private final class AudioQueueDiskRecorder: @unchecked Sendable {
         if status != noErr {
             throw AudioRecordingError.audioQueueError(operation: operation, status: status)
         }
+    }
+}
+
+private extension Array where Element == UInt64 {
+    func enumeratedWithTrailingAttempt() -> [(Int, UInt64)] {
+        map { $0 }.enumerated().map { ($0.offset, $0.element) } + [(count, 0)]
     }
 }
 

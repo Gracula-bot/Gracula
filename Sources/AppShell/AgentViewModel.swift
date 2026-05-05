@@ -10,10 +10,12 @@ public final class AgentViewModel: ObservableObject {
     @Published public private(set) var statusText: String
     @Published public private(set) var resultText: String
     @Published public private(set) var pendingChallenge: ConfirmationChallenge?
+    @Published public private(set) var pendingTelegramReply: PendingTelegramReply?
     @Published public private(set) var auditEntries: [String]
     @Published public private(set) var botSettings: BotSettingsSnapshot?
 
     private let orchestrator: AgentOrchestrator?
+    private let voiceCommandRouter: OpenClawVoiceCommandRouter?
     private let toolExecutor: (any ToolExecuting)?
     private let auditLog: InMemoryAuditLog?
     private let speechSynthesizer: (any SpeechSynthesizing)?
@@ -21,6 +23,7 @@ public final class AgentViewModel: ObservableObject {
 
     public init(
         orchestrator: AgentOrchestrator? = nil,
+        voiceCommandRouter: OpenClawVoiceCommandRouter? = nil,
         toolExecutor: (any ToolExecuting)? = nil,
         auditLog: InMemoryAuditLog? = nil,
         speechSynthesizer: (any SpeechSynthesizing)? = nil,
@@ -28,6 +31,7 @@ public final class AgentViewModel: ObservableObject {
         statusText: String = "Ready"
     ) {
         self.orchestrator = orchestrator
+        self.voiceCommandRouter = voiceCommandRouter
         self.toolExecutor = toolExecutor
         self.auditLog = auditLog
         self.speechSynthesizer = speechSynthesizer
@@ -36,6 +40,7 @@ public final class AgentViewModel: ObservableObject {
         self.statusText = statusText
         self.resultText = "No command has run yet."
         self.pendingChallenge = nil
+        self.pendingTelegramReply = nil
         self.auditEntries = []
         self.botSettings = botSettings
     }
@@ -62,6 +67,15 @@ public final class AgentViewModel: ObservableObject {
         confirmationText = ""
 
         do {
+            if let voiceCommandRouter {
+                let routed = await voiceCommandRouter.route(text: command)
+                if applyTelegramResult(routed) {
+                    await speakCurrentResultIfNeeded()
+                    await refreshAuditEntries()
+                    return
+                }
+            }
+
             let outcome = try await orchestrator.handleFinalUserText(command)
             apply(outcome)
             await speakCurrentResultIfNeeded()
@@ -138,6 +152,26 @@ public final class AgentViewModel: ObservableObject {
         await refreshAuditEntries()
     }
 
+    public func sendPendingTelegramReply() async {
+        guard let voiceCommandRouter else {
+            return
+        }
+        let result = await voiceCommandRouter.route(text: "отправь")
+        _ = applyTelegramResult(result)
+        await speakCurrentResultIfNeeded()
+        await refreshAuditEntries()
+    }
+
+    public func cancelPendingTelegramReply() async {
+        guard let voiceCommandRouter else {
+            return
+        }
+        let result = await voiceCommandRouter.route(text: "отмени")
+        _ = applyTelegramResult(result)
+        await speakCurrentResultIfNeeded()
+        await refreshAuditEntries()
+    }
+
     private func apply(_ outcome: AgentOrchestratorOutcome) {
         switch outcome {
         case .executed(_, let results):
@@ -153,6 +187,21 @@ public final class AgentViewModel: ObservableObject {
         case .denied(_, let reason):
             statusText = "Denied"
             resultText = reason
+        }
+    }
+
+    private func applyTelegramResult(_ result: TelegramCommandResult) -> Bool {
+        switch result {
+        case .handled(let message, let pendingReply):
+            statusText = pendingReply == nil ? "Telegram" : "Telegram draft"
+            resultText = message
+            pendingTelegramReply = pendingReply
+            pendingPlan = nil
+            pendingChallenge = nil
+            confirmationText = ""
+            return true
+        case .notTelegramCommand:
+            return false
         }
     }
 

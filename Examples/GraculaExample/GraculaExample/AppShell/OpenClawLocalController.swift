@@ -1,4 +1,5 @@
 import AppKit
+import Application
 import Automation
 import Darwin
 import Foundation
@@ -150,11 +151,17 @@ struct OpenClawLocalMLXModelConfiguration {
     }
 }
 
+private struct ManagedLocalModelProcessRecord: Codable {
+    let pid: Int32
+    let executablePath: String
+}
+
 enum OpenClawLLMConfiguration {
-    static let localQwenModelRef = "ollama/qwen3:14b"
+    static let localQwenModelRef = "ollama/qwen3:30b"
     static let localQwenMLXModelRef = "mlx/qwen3-14b-4bit"
     static let localNemotronNanoModelRef = "mlx/nemotron-nano"
     static let deprecatedQwen30BMLXModelRef = "mlx/Qwen/Qwen3-30B-A3B-MLX-4bit"
+    static let defaultLocalModelRef = localQwenMLXModelRef
 
     static let localMLXModels: [OpenClawLocalMLXModelConfiguration] = [
         OpenClawLocalMLXModelConfiguration(
@@ -190,8 +197,8 @@ enum OpenClawLLMConfiguration {
             api: "ollama",
             modelsJSON: OpenClawLLMModelConfiguration.jsonArray([
                 OpenClawLLMModelConfiguration(
-                    id: "qwen3:14b",
-                    name: "Qwen3 14B (local Ollama)",
+                    id: "qwen3:30b",
+                    name: "Qwen3 30B (local Ollama)",
                     api: "ollama",
                     reasoning: false,
                     contextWindow: 65_536,
@@ -228,8 +235,10 @@ enum OpenClawLLMConfiguration {
 
     static func migratedModelRef(_ modelRef: String) -> String {
         let trimmed = modelRef.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.lowercased() == deprecatedQwen30BMLXModelRef.lowercased() {
-            return localNemotronNanoModelRef
+        let normalized = trimmed.lowercased()
+        if normalized == deprecatedQwen30BMLXModelRef.lowercased()
+            || normalized == localNemotronNanoModelRef.lowercased() {
+            return localQwenMLXModelRef
         }
         return trimmed
     }
@@ -373,6 +382,40 @@ private struct OpenClawTaskProfile: Equatable {
     let styleCardTokens: Int
     let disableThinking: Bool
 
+    func applyingRuntimeOverrides(
+        runtimeContextWindow: Int? = nil,
+        maxOutputTokens: Int? = nil,
+        reserveTokens: Int? = nil,
+        disableThinking: Bool? = nil
+    ) -> OpenClawTaskProfile {
+        OpenClawTaskProfile(
+            name: name,
+            runtimeContextWindow: runtimeContextWindow ?? self.runtimeContextWindow,
+            maxOutputTokens: maxOutputTokens ?? self.maxOutputTokens,
+            reserveTokens: reserveTokens ?? self.reserveTokens,
+            includeCorePersona: includeCorePersona,
+            includeStyleCard: includeStyleCard,
+            includeHistory: includeHistory,
+            maxHistoryMessages: maxHistoryMessages,
+            includeMemorySummary: includeMemorySummary,
+            maxMemoryTokens: maxMemoryTokens,
+            includeWorkspaceFiles: includeWorkspaceFiles,
+            includeTools: includeTools,
+            includeSkills: includeSkills,
+            includeFullMemory: includeFullMemory,
+            includeFullPersonaFiles: includeFullPersonaFiles,
+            includeRag: includeRag,
+            maxRagExcerpts: maxRagExcerpts,
+            maxRagTokens: maxRagTokens,
+            maxRetrievedSnippets: maxRetrievedSnippets,
+            maxRetrievedTokens: maxRetrievedTokens,
+            minRetrievedScore: minRetrievedScore,
+            corePersonaTokens: corePersonaTokens,
+            styleCardTokens: styleCardTokens,
+            disableThinking: disableThinking ?? self.disableThinking
+        )
+    }
+
     static let notificationSpeech = OpenClawTaskProfile(
         name: "notification_speech",
         runtimeContextWindow: 4096,
@@ -429,7 +472,7 @@ private struct OpenClawTaskProfile: Equatable {
 
     static let deepPersona = OpenClawTaskProfile(
         name: "deep_persona",
-        runtimeContextWindow: 32768,
+        runtimeContextWindow: 16384,
         maxOutputTokens: 2048,
         reserveTokens: 4096,
         includeCorePersona: true,
@@ -554,6 +597,18 @@ private struct OpenClawRetrievalQuery: Equatable {
         )
     }
 
+    static func deepPersona(_ text: String) -> OpenClawRetrievalQuery {
+        OpenClawRetrievalQuery(
+            mode: .deepPersona,
+            text: text,
+            language: "ru",
+            app: nil,
+            title: nil,
+            channel: nil,
+            body: nil
+        )
+    }
+
     static func labeledValue(_ label: String, in text: String) -> String? {
         let prefix = "\(label):"
         for line in text.components(separatedBy: .newlines) {
@@ -620,6 +675,8 @@ private struct OpenClawQdrantClient {
 
     static let memoryCollection = "gracula_memory"
     static let notificationCacheCollection = "gracula_notification_cache"
+    static let telegramBusinessCollection = "gracula_telegram_business_messages"
+    private static let placeholderVector = [0.0]
 
     static func make(environment: [String: String]) -> OpenClawQdrantClient? {
         if boolFlag(environment["GRACULA_QDRANT_DISABLED"]) || boolFlag(environment["OPENCLAW_QDRANT_DISABLED"]) {
@@ -695,6 +752,10 @@ private struct OpenClawQdrantClient {
     }
 
     func ensurePayloadIndexes() async {
+        try? await ensureCollection(Self.memoryCollection)
+        try? await ensureCollection(Self.notificationCacheCollection)
+        try? await ensureCollection(Self.telegramBusinessCollection)
+
         let memoryFields: [(String, String)] = [
             ("kind", "keyword"),
             ("profile", "keyword"),
@@ -712,6 +773,15 @@ private struct OpenClawQdrantClient {
             ("language", "keyword"),
             ("created_at", "datetime")
         ]
+        let telegramFields: [(String, String)] = [
+            ("kind", "keyword"),
+            ("business_connection_id", "keyword"),
+            ("chat_id", "integer"),
+            ("chat_name", "keyword"),
+            ("sender_username", "keyword"),
+            ("direction", "keyword"),
+            ("created_at", "datetime")
+        ]
 
         for field in memoryFields {
             try? await createPayloadIndex(collection: Self.memoryCollection, fieldName: field.0, fieldSchema: field.1)
@@ -719,6 +789,24 @@ private struct OpenClawQdrantClient {
         for field in cacheFields {
             try? await createPayloadIndex(collection: Self.notificationCacheCollection, fieldName: field.0, fieldSchema: field.1)
         }
+        for field in telegramFields {
+            try? await createPayloadIndex(collection: Self.telegramBusinessCollection, fieldName: field.0, fieldSchema: field.1)
+        }
+    }
+
+    private func ensureCollection(_ collection: String) async throws {
+        let body: [String: Any] = [
+            "vectors": [
+                "size": Self.placeholderVector.count,
+                "distance": "Cosine"
+            ]
+        ]
+        try await request(
+            path: "/collections/\(collection)",
+            method: "PUT",
+            body: body,
+            acceptedStatusCodes: Set(200..<300).union([409])
+        )
     }
 
     func retrieve(query: OpenClawRetrievalQuery, profile: OpenClawTaskProfile) async throws -> [OpenClawRetrievedSnippet] {
@@ -799,7 +887,8 @@ private struct OpenClawQdrantClient {
         payload["body"] = query.body ?? query.text
         let point: [String: Any] = [
             "id": UUID().uuidString,
-            "payload": payload
+            "payload": payload,
+            "vector": Self.placeholderVector
         ]
         let body: [String: Any] = [
             "points": [point]
@@ -870,6 +959,139 @@ private struct OpenClawQdrantClient {
             app: best.point.string("app"),
             title: best.point.string("title")
         )
+    }
+
+    func storeBusinessMessage(_ message: TelegramBusinessIncomingMessage, direction: String = "incoming") async {
+        await ensurePayloadIndexes()
+        let payload: [String: Any] = [
+            "kind": "telegram_business_message",
+            "business_connection_id": message.businessConnectionId,
+            "message_id": message.messageId,
+            "chat_id": message.chat.id,
+            "chat_type": message.chat.type,
+            "chat_name": message.chat.displayName,
+            "chat_username": message.chat.username ?? "",
+            "sender_name": message.senderName ?? "",
+            "sender_username": message.senderUsername ?? "",
+            "direction": direction,
+            "text": message.text,
+            "source": "telegram_business",
+            "language": "ru",
+            "created_at": ISO8601DateFormatter().string(from: message.date),
+            "token_estimate": estimatedTokenCount(message.text)
+        ]
+        let point: [String: Any] = [
+            "id": businessMessagePointID(message, direction: direction),
+            "payload": payload,
+            "vector": Self.placeholderVector
+        ]
+        _ = try? await request(
+            path: "/collections/\(Self.telegramBusinessCollection)/points",
+            method: "PUT",
+            body: ["points": [point]]
+        )
+    }
+
+    func businessMessageExists(_ message: TelegramBusinessIncomingMessage, direction: String = "incoming") async -> Bool {
+        await ensurePayloadIndexes()
+        let body: [String: Any] = [
+            "ids": [businessMessagePointID(message, direction: direction)],
+            "with_payload": false,
+            "with_vector": false
+        ]
+        guard let data = try? await request(
+            path: "/collections/\(Self.telegramBusinessCollection)/points",
+            method: "POST",
+            body: body
+        ),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let result = root["result"] as? [[String: Any]] else {
+            return false
+        }
+        return result.isEmpty == false
+    }
+
+    private func businessMessagePointID(_ message: TelegramBusinessIncomingMessage, direction: String) -> String {
+        "tg-business-\(message.businessConnectionId)-\(message.chat.id)-\(message.messageId)-\(direction)"
+    }
+
+    func storeBusinessReply(
+        businessConnectionId: String,
+        chat: TelegramBusinessChat,
+        text: String
+    ) async {
+        let message = TelegramBusinessIncomingMessage(
+            updateId: 0,
+            businessConnectionId: businessConnectionId,
+            messageId: Int(Date().timeIntervalSince1970),
+            chat: chat,
+            senderName: "Gracula",
+            senderUsername: nil,
+            text: text,
+            date: Date()
+        )
+        await storeBusinessMessage(message, direction: "outgoing")
+    }
+
+    func searchBusinessMessages(
+        query: String,
+        businessConnectionId: String,
+        chatId: Int64,
+        limit: Int = 8
+    ) async -> [OpenClawRetrievedSnippet] {
+        let filter: [String: Any] = [
+            "must": [
+                ["key": "kind", "match": ["value": "telegram_business_message"]],
+                ["key": "business_connection_id", "match": ["value": businessConnectionId]],
+                ["key": "chat_id", "match": ["value": chatId]]
+            ]
+        ]
+        let body: [String: Any] = [
+            "filter": filter,
+            "limit": 64,
+            "with_payload": true,
+            "with_vector": false
+        ]
+        guard let data = try? await request(
+            path: "/collections/\(Self.telegramBusinessCollection)/points/scroll",
+            method: "POST",
+            body: body
+        ),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let result = root["result"] as? [String: Any],
+              let points = result["points"] as? [[String: Any]] else {
+            return []
+        }
+        let queryTokens = lexicalTokens(query)
+        return points.compactMap(QdrantPoint.init)
+            .compactMap { point -> OpenClawRetrievedSnippet? in
+                let text = point.string("text")
+                guard !text.isEmpty else {
+                    return nil
+                }
+                let score = jaccardScore(lhs: queryTokens, rhs: lexicalTokens(text))
+                return OpenClawRetrievedSnippet(
+                    id: point.id,
+                    kind: "telegram_business_message",
+                    profile: "telegram_business",
+                    source: "telegram_business:\(point.string("chat_name"))",
+                    language: point.string("language", fallback: "ru"),
+                    channel: nil,
+                    app: "Telegram",
+                    priority: 0,
+                    tokenEstimate: max(1, point.int("token_estimate", fallback: estimatedTokenCount(text))),
+                    text: text,
+                    score: score
+                )
+            }
+            .sorted { lhs, rhs in
+                if lhs.score == rhs.score {
+                    return lhs.id > rhs.id
+                }
+                return lhs.score > rhs.score
+            }
+            .prefix(limit)
+            .map { $0 }
     }
 
     private func allowedKinds(for profile: OpenClawTaskProfile) -> [String] {
@@ -1063,7 +1285,7 @@ private struct OpenClawQdrantClient {
             return trimmed.isEmpty ? nil : trimmed
         }
 
-        private func int(_ key: String, fallback: Int = 0) -> Int {
+        func int(_ key: String, fallback: Int = 0) -> Int {
             if let value = payload[key] as? Int {
                 return value
             }
@@ -1141,6 +1363,15 @@ private func lexicalTokens(_ text: String) -> Set<String> {
     return Set(parts.filter { $0.count >= 2 })
 }
 
+private func jaccardScore(lhs: Set<String>, rhs: Set<String>) -> Double {
+    guard !lhs.isEmpty, !rhs.isEmpty else {
+        return 0
+    }
+    let intersection = lhs.intersection(rhs).count
+    let union = lhs.union(rhs).count
+    return Double(intersection) / Double(max(1, union))
+}
+
 private func normalizedRetrievalText(_ text: String) -> String {
     text
         .precomposedStringWithCanonicalMapping
@@ -1184,8 +1415,32 @@ private let defaultCompactPersona = """
 \(defaultStyleCard)
 """
 
+private struct OpenClawLocalPromptSettings: Equatable {
+    enum PersonaMode: String, CaseIterable {
+        case personaCompact = "persona_compact"
+        case deepPersona = "deep_persona"
+    }
+
+    enum ReasoningMode: String, CaseIterable {
+        case off
+        case on
+    }
+
+    var personaMode: PersonaMode = .deepPersona
+    var reasoningMode: ReasoningMode = .on
+    var notificationRuntimeContextWindow = 4096
+    var notificationMaxOutputTokens = 128
+    var notificationReserveTokens = 512
+    var simpleRuntimeContextWindow = 8192
+    var simpleMaxOutputTokens = 512
+    var simpleReserveTokens = 1024
+    var deepRuntimeContextWindow = 16384
+    var deepMaxOutputTokens = 2048
+    var deepReserveTokens = 4096
+}
+
 @MainActor
-final class OpenClawLocalController: ObservableObject {
+final class OpenClawLocalController: NSObject, ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var statusText = "Stopped"
     @Published private(set) var gatewayStatus = "not checked"
@@ -1197,6 +1452,10 @@ final class OpenClawLocalController: ObservableObject {
     @Published private(set) var isPreparingLocalModel = false
     @Published private(set) var localModelStatusText = ""
     @Published private(set) var localModelPreparationProgress: Double?
+    @Published private(set) var pendingTelegramReply: PendingTelegramReply?
+    @Published private(set) var telegramUserStatusText = "Telegram user API disabled."
+    @Published private(set) var telegramUserDialogs: [TelegramUserDialog] = []
+    @Published private(set) var isStartingTelegramUserAPI = false
     @Published private(set) var settingsSnapshot: OpenClawSettingsSnapshot
     @Published private(set) var settingsStatusText = "Settings loaded."
 
@@ -1218,19 +1477,42 @@ final class OpenClawLocalController: ObservableObject {
     private let mlxRuntimeDirectory = resolveMLXRuntimeDirectory()
     private let mlxModelsDirectory = resolveMLXModelsDirectory()
     private let onlyFansPoster = WorkspaceOpeningClient()
+    private let telegramCommandRouter: OpenClawVoiceCommandRouter
     private var chatSessionID = "gracula-local-chat"
     private var gatewayProcess: Process?
     private var streamBridgeProcess: Process?
     private var localModelProcess: Process?
+    private var qdrantProcess: Process?
     private var healthTask: Task<Void, Never>?
     private var directModelPrewarmTask: Task<Void, Never>?
     private var consecutiveHealthFailures = 0
     private var startupTask: Task<Void, Never>?
     private var directPersonaContextCache: String?
     private var directCompactPersonaContextCache: String?
+    private var telegramBusinessTask: Task<Void, Never>?
+    private var localModelPromptCacheRestartTask: Task<Void, Never>?
+    private var localModelPromptCacheRestartDate: Date?
+    private var localModelEnsureTask: Task<Void, Never>?
+    private var localModelEnsureTaskID: UUID?
+    private var localModelEnsureModelRef: String?
+    private var telegramUserClient: TelegramUserTDLibClient?
 
-    init() {
+    override init() {
+        let telegramHandler = TelegramCommandHandler(
+            service: TelegramMacAppAutomationService(),
+            eventSink: { event in
+                NSLog("%@", event.rawValue)
+            }
+        )
+        self.telegramCommandRouter = OpenClawVoiceCommandRouter(telegramHandler: telegramHandler)
         self.settingsSnapshot = Self.makeSettingsSnapshot()
+        super.init()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applicationWillTerminate(_:)),
+            name: NSApplication.willTerminateNotification,
+            object: nil
+        )
         if shouldResetCurrentSessionOnLaunch() {
             resetChat()
         }
@@ -1246,11 +1528,11 @@ final class OpenClawLocalController: ObservableObject {
     }
 
     deinit {
-        directModelPrewarmTask?.cancel()
-        gatewayProcess?.terminate()
-        streamBridgeProcess?.terminate()
-        localModelProcess?.terminate()
-        healthTask?.cancel()
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    @objc private func applicationWillTerminate(_ notification: Notification) {
+        shutdownManagedProcessesForApplicationTermination()
     }
 
     func start() {
@@ -1276,6 +1558,8 @@ final class OpenClawLocalController: ObservableObject {
             try prepareDirectories()
             let environment = try openClawEnvironment()
             settingsSnapshot = Self.makeSettingsSnapshot(environment: environment)
+            await ensureQdrantServer(environment: environment)
+            startTelegramBusinessPolling(environment: environment)
             let primaryModelRef = currentPrimaryModelRef()
             if shouldUseDirectCompletion(for: primaryModelRef) {
                 try await ensureDirectModelRuntimeReady(for: primaryModelRef)
@@ -1378,18 +1662,67 @@ final class OpenClawLocalController: ObservableObject {
         directModelPrewarmTask = nil
         healthTask?.cancel()
         healthTask = nil
+        telegramBusinessTask?.cancel()
+        telegramBusinessTask = nil
         startupTask?.cancel()
         startupTask = nil
+        localModelPromptCacheRestartTask?.cancel()
+        localModelPromptCacheRestartTask = nil
+        isStartingTelegramUserAPI = false
         terminate(process: gatewayProcess, name: "gateway")
         terminate(process: streamBridgeProcess, name: "stream-bridge")
-        terminate(process: localModelProcess, name: "mlx-model")
+        terminateAndWait(process: localModelProcess, name: "mlx-model", timeoutSeconds: 3.0)
+        terminate(process: qdrantProcess, name: "qdrant")
         gatewayProcess = nil
         streamBridgeProcess = nil
         localModelProcess = nil
+        qdrantProcess = nil
         isRunning = false
         statusText = "Stopped"
         gatewayStatus = "stopped"
         streamBridgeStatus = "stopped"
+    }
+
+    func startTelegramUserAPI() async {
+        let environment = (try? openClawEnvironment()) ?? ProcessInfo.processInfo.environment
+        await startTelegramUserAPI(environment: environment)
+    }
+
+    func submitTelegramUserCode(_ code: String) async {
+        guard let telegramUserClient else {
+            telegramUserStatusText = "Telegram user API is not started."
+            return
+        }
+        let state = await telegramUserClient.submitCode(code)
+        telegramUserStatusText = state.displayText
+        if case .ready = state {
+            await refreshTelegramUserDialogs()
+        }
+    }
+
+    func submitTelegramUserPassword(_ password: String) async {
+        guard let telegramUserClient else {
+            telegramUserStatusText = "Telegram user API is not started."
+            return
+        }
+        let state = await telegramUserClient.submitPassword(password)
+        telegramUserStatusText = state.displayText
+        if case .ready = state {
+            await refreshTelegramUserDialogs()
+        }
+    }
+
+    func refreshTelegramUserDialogs() async {
+        guard let telegramUserClient else {
+            telegramUserStatusText = "Telegram user API is not started."
+            return
+        }
+        do {
+            telegramUserDialogs = try await telegramUserClient.dialogs(limit: 50)
+            telegramUserStatusText = "Telegram user API is authorized. Dialogs: \(telegramUserDialogs.count)."
+        } catch {
+            telegramUserStatusText = error.localizedDescription
+        }
     }
 
     func openDashboard() {
@@ -1415,7 +1748,416 @@ final class OpenClawLocalController: ObservableObject {
             consecutiveHealthFailures = min(consecutiveHealthFailures + 1, 8)
         }
     }
+    private func startTelegramBusinessPolling(environment: [String: String]) {
+        telegramBusinessTask?.cancel()
+        telegramBusinessTask = nil
 
+        let settings = telegramBusinessSettings(environment: environment)
+        guard settings.enabled else {
+            appendLog("Telegram Business mode disabled.")
+            return
+        }
+        guard !settings.botToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            appendLog("Telegram Business mode enabled, but bot token is missing.")
+            return
+        }
+        guard OpenClawQdrantClient.make(environment: environment) != nil else {
+            appendLog("Telegram Business mode requires Qdrant; polling not started.")
+            return
+        }
+
+        let service = TelegramBusinessBotService(botToken: settings.botToken)
+        telegramBusinessTask = Task { [weak self] in
+            await self?.runTelegramBusinessPolling(
+                service: service,
+                settings: settings,
+                environment: environment
+            )
+        }
+        appendLog("Telegram Business polling started.")
+    }
+
+    private func startTelegramUserAPI(environment: [String: String]) async {
+        let settings = telegramUserSettings(environment: environment)
+        guard settings.enabled else {
+            await closeTelegramUserClient()
+            telegramUserDialogs = []
+            telegramUserStatusText = TelegramUserAuthorizationState.disabled.displayText
+            appendLog(telegramUserStatusText)
+            return
+        }
+
+        guard !isStartingTelegramUserAPI else {
+            appendLog("Telegram user API is already starting.")
+            return
+        }
+
+        if let telegramUserClient {
+            let state = await telegramUserClient.currentAuthorizationState()
+            switch state {
+            case .ready, .waitingForCode, .waitingForPassword, .waitingForPhoneNumber:
+                telegramUserStatusText = state.displayText
+                appendLog("Telegram user API already has an active session.")
+                if case .ready = state {
+                    await refreshTelegramUserDialogs()
+                }
+                return
+            default:
+                await closeTelegramUserClient()
+            }
+        }
+
+        isStartingTelegramUserAPI = true
+        telegramUserStatusText = "Starting Telegram user API..."
+        defer { isStartingTelegramUserAPI = false }
+
+        let client = TelegramUserTDLibClient(settings: settings)
+        telegramUserClient = client
+        let state = await client.start()
+        telegramUserStatusText = state.displayText
+        appendLog(telegramUserStatusText)
+        if case .ready = state {
+            await refreshTelegramUserDialogs()
+        } else if case .failed = state {
+            await closeTelegramUserClient()
+        }
+    }
+
+    private func closeTelegramUserClient() async {
+        guard let telegramUserClient else {
+            return
+        }
+        await telegramUserClient.close()
+        if self.telegramUserClient === telegramUserClient {
+            self.telegramUserClient = nil
+        }
+    }
+
+    private func telegramUserSettings(environment: [String: String]) -> TelegramUserSettings {
+        var settings = TelegramUserSettings.make(environment: environment, configDirectory: configDirectory)
+        let entries = settingsSnapshot.jsonEntries
+        settings.enabled = boolConfig(
+            "integrations.telegram.user.enabled",
+            entries: entries,
+            environment: environment,
+            environmentKeys: ["GRACULA_TELEGRAM_USER_ENABLED"],
+            defaultValue: settings.enabled
+        ) || environment["TELEGRAM_MODE"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "mtproto"
+        settings.apiId = intConfig(
+            "integrations.telegram.user.apiId",
+            entries: entries,
+            environment: environment,
+            environmentKeys: ["GRACULA_TELEGRAM_API_ID", "TELEGRAM_API_ID"],
+            defaultValue: settings.apiId,
+            range: 1...Int.max
+        )
+        settings.apiHash = stringConfig(
+            "integrations.telegram.user.apiHash",
+            entries: entries,
+            environment: environment,
+            environmentKeys: ["GRACULA_TELEGRAM_API_HASH", "TELEGRAM_API_HASH"]
+        )
+        settings.phoneNumber = stringConfig(
+            "integrations.telegram.user.phone",
+            entries: entries,
+            environment: environment,
+            environmentKeys: ["GRACULA_TELEGRAM_PHONE", "TELEGRAM_PHONE"]
+        )
+        settings.tdjsonLibraryPath = stringConfig(
+            "integrations.telegram.user.tdjsonLibraryPath",
+            entries: entries,
+            environment: environment,
+            environmentKeys: ["GRACULA_TDLIB_JSON_LIBRARY"]
+        )
+        settings.databaseDirectory = stringConfig(
+            "integrations.telegram.user.databaseDirectory",
+            entries: entries,
+            environment: environment,
+            environmentKeys: ["GRACULA_TELEGRAM_USER_DATABASE_DIR"]
+        )
+        settings.filesDirectory = stringConfig(
+            "integrations.telegram.user.filesDirectory",
+            entries: entries,
+            environment: environment,
+            environmentKeys: ["GRACULA_TELEGRAM_USER_FILES_DIR"]
+        )
+        settings.encryptionKey = stringConfig(
+            "integrations.telegram.user.encryptionKey",
+            entries: entries,
+            environment: environment,
+            environmentKeys: ["GRACULA_TELEGRAM_USER_ENCRYPTION_KEY"]
+        )
+        let allowlist = stringConfig(
+            "integrations.telegram.user.chatAllowlist",
+            entries: entries,
+            environment: environment,
+            environmentKeys: ["GRACULA_TELEGRAM_USER_CHAT_ALLOWLIST"]
+        )
+        settings.chatAllowlist = allowlist
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return settings
+    }
+
+    private func runTelegramBusinessPolling(
+        service: TelegramBusinessBotService,
+        settings: TelegramBusinessSettings,
+        environment: [String: String]
+    ) async {
+        var offset: Int?
+        let pollDelay = max(0.5, settings.pollIntervalSeconds)
+        while !Task.isCancelled {
+            do {
+                let messages = try await service.getUpdates(offset: offset)
+                if let maxUpdateId = messages.map(\.updateId).max() {
+                    offset = maxUpdateId + 1
+                }
+
+                for message in messages {
+                    guard !Task.isCancelled else { return }
+                    guard settings.businessConnectionId.isEmpty
+                        || settings.businessConnectionId == message.businessConnectionId else {
+                        continue
+                    }
+                    await handleTelegramBusinessMessage(
+                        message,
+                        service: service,
+                        settings: settings,
+                        environment: environment
+                    )
+                }
+            } catch {
+                appendLog("Telegram Business polling error: \(error.localizedDescription)")
+                try? await Task.sleep(for: .seconds(max(2.0, pollDelay)))
+            }
+            try? await Task.sleep(for: .seconds(pollDelay))
+        }
+    }
+
+    private func handleTelegramBusinessMessage(
+        _ message: TelegramBusinessIncomingMessage,
+        service: TelegramBusinessBotService,
+        settings: TelegramBusinessSettings,
+        environment: [String: String]
+    ) async {
+        let trimmedText = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedText.isEmpty else {
+            return
+        }
+
+        let qdrant = OpenClawQdrantClient.make(environment: environment)
+        let alreadyStored = await qdrant?.businessMessageExists(message) ?? false
+        await qdrant?.storeBusinessMessage(message)
+        appendLog("Telegram Business message stored: \(message.chat.displayName) #\(message.messageId)")
+
+        if alreadyStored {
+            appendLog("Telegram Business message already handled; skipping duplicate auto-reply.")
+        }
+
+        if settings.autoReplyEnabled, !alreadyStored {
+            do {
+                let reply = try await telegramBusinessReply(
+                    to: message,
+                    qdrant: qdrant,
+                    environment: environment
+                )
+                try await service.sendMessage(
+                    businessConnectionId: message.businessConnectionId,
+                    chatId: message.chat.id,
+                    text: reply
+                )
+                await qdrant?.storeBusinessReply(
+                    businessConnectionId: message.businessConnectionId,
+                    chat: message.chat,
+                    text: reply
+                )
+                appendLog("Telegram Business reply sent to \(message.chat.displayName).")
+            } catch {
+                appendLog("Telegram Business auto-reply failed: \(error.localizedDescription)")
+            }
+        }
+
+        if settings.markReadEnabled {
+            do {
+                try await service.readBusinessMessage(
+                    businessConnectionId: message.businessConnectionId,
+                    chatId: message.chat.id,
+                    messageId: message.messageId
+                )
+            } catch {
+                appendLog("Telegram Business mark-read failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func telegramBusinessReply(
+        to message: TelegramBusinessIncomingMessage,
+        qdrant: OpenClawQdrantClient?,
+        environment: [String: String]
+    ) async throws -> String {
+        let history = await qdrant?.searchBusinessMessages(
+            query: message.text,
+            businessConnectionId: message.businessConnectionId,
+            chatId: message.chat.id,
+            limit: 8
+        ) ?? []
+        let historyText = history
+            .map { "- \($0.text)" }
+            .joined(separator: "\n")
+        let sender = message.senderName ?? message.chat.displayName
+        let prompt = """
+        You are Gracula replying through Telegram Business from the user's personal/business account.
+
+        Rules:
+        - Reply in the same language as the incoming message unless the user clearly asks otherwise.
+        - Be concise, natural, and useful.
+        - Do not mention OpenClaw, Qdrant, prompts, automation, tools, or internal storage.
+        - Do not invent facts. Ask one short clarifying question if needed.
+        - Output only the exact Telegram message text.
+
+        Chat: \(message.chat.displayName)
+        Sender: \(sender)
+
+        Relevant previous messages from Qdrant:
+        \(historyText.isEmpty ? "No previous relevant messages." : historyText)
+
+        Incoming message:
+        \(message.text)
+        """
+        let profile = chatPromptProfile()
+        let modelRef = currentPrimaryModelRef()
+        let result = try await runDirectModelChat(
+            modelRef: modelRef,
+            prompt: prompt,
+            environment: environment,
+            maxTokens: min(profile.maxOutputTokens, 768)
+        )
+        let trimmed = result.text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw OpenClawLocalControllerError.agentFailed("Telegram Business model returned an empty reply.")
+        }
+        return String(trimmed.prefix(4096))
+    }
+
+    private func telegramBusinessSettings(environment: [String: String]) -> TelegramBusinessSettings {
+        let entries = settingsSnapshot.jsonEntries
+        let enabled = boolConfig(
+            "integrations.telegram.business.enabled",
+            entries: entries,
+            environment: environment,
+            environmentKeys: ["GRACULA_TELEGRAM_BUSINESS_ENABLED", "TELEGRAM_BUSINESS_ENABLED"],
+            defaultValue: false
+        )
+        let botToken = stringConfig(
+            "integrations.telegram.business.botToken",
+            entries: entries,
+            environment: environment,
+            environmentKeys: ["GRACULA_TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN"]
+        )
+        let businessConnectionId = stringConfig(
+            "integrations.telegram.business.businessConnectionId",
+            entries: entries,
+            environment: environment,
+            environmentKeys: ["GRACULA_TELEGRAM_BUSINESS_CONNECTION_ID", "TELEGRAM_BUSINESS_CONNECTION_ID"]
+        )
+        let pollInterval = doubleConfig(
+            "integrations.telegram.business.pollIntervalSeconds",
+            entries: entries,
+            environment: environment,
+            environmentKeys: ["GRACULA_TELEGRAM_BUSINESS_POLL_INTERVAL_SECONDS"],
+            defaultValue: 2,
+            range: 0.5...60
+        )
+        let autoReply = boolConfig(
+            "integrations.telegram.business.autoReplyEnabled",
+            entries: entries,
+            environment: environment,
+            environmentKeys: ["GRACULA_TELEGRAM_BUSINESS_AUTO_REPLY"],
+            defaultValue: true
+        )
+        let markRead = boolConfig(
+            "integrations.telegram.business.markReadEnabled",
+            entries: entries,
+            environment: environment,
+            environmentKeys: ["GRACULA_TELEGRAM_BUSINESS_MARK_READ"],
+            defaultValue: true
+        )
+        return TelegramBusinessSettings(
+            enabled: enabled,
+            botToken: botToken,
+            businessConnectionId: businessConnectionId,
+            pollIntervalSeconds: pollInterval,
+            autoReplyEnabled: autoReply,
+            markReadEnabled: markRead
+        )
+    }
+
+    private func stringConfig(
+        _ jsonKey: String,
+        entries: [OpenClawEditableSetting],
+        environment: [String: String],
+        environmentKeys: [String]
+    ) -> String {
+        if let value = entries.first(where: { $0.key == jsonKey })?.value.trimmingCharacters(in: .whitespacesAndNewlines),
+           !value.isEmpty {
+            return value
+        }
+        return environmentKeys
+            .lazy
+            .compactMap { environment[$0]?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty } ?? ""
+    }
+
+    private func boolConfig(
+        _ jsonKey: String,
+        entries: [OpenClawEditableSetting],
+        environment: [String: String],
+        environmentKeys: [String],
+        defaultValue: Bool
+    ) -> Bool {
+        if let value = entries.first(where: { $0.key == jsonKey })?.value {
+            return isEnabled(value)
+        }
+        if let value = environmentKeys.compactMap({ environment[$0] }).first {
+            return isEnabled(value)
+        }
+        return defaultValue
+    }
+
+    private func doubleConfig(
+        _ jsonKey: String,
+        entries: [OpenClawEditableSetting],
+        environment: [String: String],
+        environmentKeys: [String],
+        defaultValue: Double,
+        range: ClosedRange<Double>
+    ) -> Double {
+        let rawValue = entries.first(where: { $0.key == jsonKey })?.value
+            ?? environmentKeys.compactMap { environment[$0] }.first
+        guard let rawValue,
+              let value = Double(rawValue.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return defaultValue
+        }
+        return min(max(value, range.lowerBound), range.upperBound)
+    }
+
+    private func intConfig(
+        _ jsonKey: String,
+        entries: [OpenClawEditableSetting],
+        environment: [String: String],
+        environmentKeys: [String],
+        defaultValue: Int,
+        range: ClosedRange<Int>
+    ) -> Int {
+        let rawValue = entries.first(where: { $0.key == jsonKey })?.value
+            ?? environmentKeys.compactMap { environment[$0] }.first
+        guard let rawValue,
+              let value = Int(rawValue.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return defaultValue
+        }
+        return min(max(value, range.lowerBound), range.upperBound)
+    }
     func reportError(_ message: String) {
         appendChatMessage(.error(message))
     }
@@ -1630,6 +2372,7 @@ final class OpenClawLocalController: ObservableObject {
             chatStatusText = "Preparing notification speech..."
             try prepareDirectories()
             let primaryModelRef = currentPrimaryModelRef()
+            let profile = notificationSpeechProfile()
             let retrievalQuery = OpenClawRetrievalQuery.notificationSpeech(from: message)
             var promptMessage = message
             if let cacheResult = await notificationCacheResult(query: retrievalQuery) {
@@ -1658,7 +2401,7 @@ final class OpenClawLocalController: ObservableObject {
             }
             let prompt = await layeredPrompt(
                 userMessage: promptMessage,
-                profile: .notificationSpeech,
+                profile: profile,
                 modelRef: primaryModelRef,
                 retrievalQuery: retrievalQuery
             )
@@ -1666,7 +2409,7 @@ final class OpenClawLocalController: ObservableObject {
             let result = try await runDirectModelChat(
                 modelRef: primaryModelRef,
                 prompt: prompt.text,
-                maxTokens: OpenClawTaskProfile.notificationSpeech.maxOutputTokens
+                maxTokens: profile.maxOutputTokens
             )
             let reply = result.text
             guard !reply.isEmpty else {
@@ -1707,6 +2450,12 @@ final class OpenClawLocalController: ObservableObject {
             appendChatMessage(.user(message))
             appendLog("[latency] Chat turn started; inputCharacters=\(message.count)")
 
+            let telegramResult = await telegramCommandRouter.route(text: message)
+            if applyTelegramCommandResult(telegramResult) {
+                isSendingChat = false
+                return chatMessages.last?.text
+            }
+
             if isExplicitOnlyFansPublishRequest(message) {
                 let reply = try await publishOnlyFansPostFromChatCommand(message)
                 appendChatMessage(.assistant(reply))
@@ -1720,12 +2469,14 @@ final class OpenClawLocalController: ObservableObject {
                 appendLog("[latency] Direct model request starting; model=\(primaryModelRef)")
                 let assistantMessageID = appendChatMessage(.assistant("…"))
                 chatStatusText = "Waiting for local model..."
+                let profile = chatPromptProfile()
+                appendLog("Selected model uses \(profile.name) path; running direct completion.")
                 try prepareDirectories()
                 let prompt = await layeredPrompt(
                     userMessage: message,
-                    profile: .simpleChat,
+                    profile: profile,
                     modelRef: primaryModelRef,
-                    retrievalQuery: .simpleChat(message)
+                    retrievalQuery: retrievalQuery(for: profile, message: message)
                 )
                 appendPromptDiagnostics(prompt.breakdown)
                 let requestedMaxTokens = min(OpenClawTaskProfile.simpleChat.maxOutputTokens, directMaxTokens(for: message))
@@ -1824,6 +2575,36 @@ final class OpenClawLocalController: ObservableObject {
             appendLog("Chat failed: \(error.localizedDescription)")
             isSendingChat = false
             return nil
+        }
+    }
+
+    @discardableResult
+    func sendPendingTelegramReply() async -> String? {
+        let result = await telegramCommandRouter.route(text: "отправь")
+        guard applyTelegramCommandResult(result) else {
+            return nil
+        }
+        return chatMessages.last?.text
+    }
+
+    @discardableResult
+    func cancelPendingTelegramReply() async -> String? {
+        let result = await telegramCommandRouter.route(text: "отмени")
+        guard applyTelegramCommandResult(result) else {
+            return nil
+        }
+        return chatMessages.last?.text
+    }
+
+    private func applyTelegramCommandResult(_ result: TelegramCommandResult) -> Bool {
+        switch result {
+        case .handled(let message, let pendingReply):
+            pendingTelegramReply = pendingReply
+            chatStatusText = pendingReply == nil ? "Telegram command handled." : "Telegram reply draft is waiting for confirmation."
+            appendChatMessage(.assistant(message))
+            return true
+        case .notTelegramCommand:
+            return false
         }
     }
 
@@ -2247,13 +3028,17 @@ final class OpenClawLocalController: ObservableObject {
                 return
             }
             Task { @MainActor in
-                self?.appendLog(text, prefix: name)
+                self?.handleProcessOutput(text, prefix: name)
             }
         }
 
         process.terminationHandler = { [weak self, weak process] finishedProcess in
             Task { @MainActor in
                 self?.appendLog("\(name) exited with code \(finishedProcess.terminationStatus).")
+                if process === self?.localModelProcess {
+                    self?.clearManagedLocalModelProcessRecord()
+                    self?.localModelProcess = nil
+                }
                 if updateRunningStateOnExit && process === self?.gatewayProcess {
                     let healthURL = URL(string: "http://\(self?.gatewayHost ?? "127.0.0.1"):\(self?.gatewayPort ?? "18789")/healthz")!
                     let status = await self?.checkHealth(url: healthURL) ?? "offline"
@@ -2281,6 +3066,9 @@ final class OpenClawLocalController: ObservableObject {
         }
 
         try process.run()
+        if name == "mlx-model" {
+            persistManagedLocalModelProcessRecord(for: process)
+        }
         appendLog("Launched \(name) pid=\(process.processIdentifier).")
         return process
     }
@@ -2291,6 +3079,178 @@ final class OpenClawLocalController: ObservableObject {
         }
         appendLog("Stopping \(name) pid=\(process.processIdentifier).")
         process.terminate()
+    }
+
+    private func terminateAndWait(process: Process?, name: String, timeoutSeconds: TimeInterval = 2.0) {
+        guard let process, process.isRunning else {
+            if name == "mlx-model" {
+                clearManagedLocalModelProcessRecord()
+            }
+            return
+        }
+        appendLog("Stopping \(name) pid=\(process.processIdentifier).")
+        process.terminate()
+        waitForProcessExit(process, timeoutSeconds: timeoutSeconds)
+        guard process.isRunning else {
+            if name == "mlx-model" {
+                clearManagedLocalModelProcessRecord()
+            }
+            return
+        }
+        appendLog("Force killing \(name) pid=\(process.processIdentifier).")
+        kill(process.processIdentifier, SIGKILL)
+        waitForProcessExit(process, timeoutSeconds: 1.0)
+        if name == "mlx-model" {
+            clearManagedLocalModelProcessRecord()
+        }
+    }
+
+    private func waitForProcessExit(_ process: Process, timeoutSeconds: TimeInterval) {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while process.isRunning && Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        }
+    }
+
+    private var managedLocalModelProcessRecordURL: URL {
+        configDirectory
+            .appendingPathComponent("runtime", isDirectory: true)
+            .appendingPathComponent("mlx-model.json", isDirectory: false)
+    }
+
+    private func persistManagedLocalModelProcessRecord(for process: Process) {
+        let executablePath = processExecutablePath(pid: process.processIdentifier) ?? process.executableURL?.path
+        guard let executablePath else {
+            return
+        }
+        let record = ManagedLocalModelProcessRecord(
+            pid: process.processIdentifier,
+            executablePath: executablePath
+        )
+        let directory = managedLocalModelProcessRecordURL.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        guard let data = try? JSONEncoder().encode(record) else {
+            return
+        }
+        try? data.write(to: managedLocalModelProcessRecordURL, options: .atomic)
+    }
+
+    private func loadManagedLocalModelProcessRecord() -> ManagedLocalModelProcessRecord? {
+        guard let data = try? Data(contentsOf: managedLocalModelProcessRecordURL) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(ManagedLocalModelProcessRecord.self, from: data)
+    }
+
+    private func clearManagedLocalModelProcessRecord() {
+        try? FileManager.default.removeItem(at: managedLocalModelProcessRecordURL)
+    }
+
+    private func cleanupStaleManagedLocalModelProcessIfNeeded() {
+        guard localModelProcess == nil,
+              let record = loadManagedLocalModelProcessRecord() else {
+            return
+        }
+
+        let pid = record.pid
+        guard pid > 0 else {
+            clearManagedLocalModelProcessRecord()
+            return
+        }
+
+        guard processExists(pid: pid) else {
+            clearManagedLocalModelProcessRecord()
+            return
+        }
+
+        guard processExecutablePath(pid: pid) == record.executablePath else {
+            appendLog("Ignoring stale local MLX pid file for unrelated pid=\(pid).")
+            clearManagedLocalModelProcessRecord()
+            return
+        }
+
+        appendLog("Stopping stale local MLX model pid=\(pid) from previous Gracula launch.")
+        kill(pid, SIGTERM)
+        waitForPIDExit(pid, timeoutSeconds: 3.0)
+        if processExists(pid: pid) {
+            appendLog("Force killing stale local MLX model pid=\(pid).")
+            kill(pid, SIGKILL)
+            waitForPIDExit(pid, timeoutSeconds: 1.0)
+        }
+        clearManagedLocalModelProcessRecord()
+    }
+
+    private func waitForPIDExit(_ pid: Int32, timeoutSeconds: TimeInterval) {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while processExists(pid: pid) && Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        }
+    }
+
+    private func processExists(pid: Int32) -> Bool {
+        guard pid > 0 else {
+            return false
+        }
+        if kill(pid, 0) == 0 {
+            return true
+        }
+        return errno == EPERM
+    }
+
+    private func processExecutablePath(pid: Int32) -> String? {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/ps")
+        task.arguments = ["-p", String(pid), "-o", "command="]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = Pipe()
+        do {
+            try task.run()
+            task.waitUntilExit()
+        } catch {
+            return nil
+        }
+        guard task.terminationStatus == 0 else {
+            return nil
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let command = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !command.isEmpty else {
+            return nil
+        }
+        return command.components(separatedBy: .whitespaces).first
+    }
+
+    private func shutdownManagedProcessesForApplicationTermination() {
+        healthTask?.cancel()
+        healthTask = nil
+        telegramBusinessTask?.cancel()
+        telegramBusinessTask = nil
+        startupTask?.cancel()
+        startupTask = nil
+        localModelPromptCacheRestartTask?.cancel()
+        localModelPromptCacheRestartTask = nil
+        localModelEnsureTask?.cancel()
+        localModelEnsureTask = nil
+        localModelEnsureTaskID = nil
+        localModelEnsureModelRef = nil
+        terminateAndWait(process: localModelProcess, name: "mlx-model", timeoutSeconds: 3.0)
+        localModelProcess = nil
+        terminateAndWait(process: streamBridgeProcess, name: "stream-bridge", timeoutSeconds: 1.0)
+        streamBridgeProcess = nil
+        terminateAndWait(process: gatewayProcess, name: "gateway", timeoutSeconds: 1.0)
+        gatewayProcess = nil
+        terminateAndWait(process: qdrantProcess, name: "qdrant", timeoutSeconds: 1.0)
+        qdrantProcess = nil
+    }
+
+    private func handleProcessOutput(_ text: String, prefix name: String) {
+        appendLog(text, prefix: name)
+        guard name == "mlx-model" else {
+            return
+        }
+        handleLocalMlxModelOutput(text)
     }
 
     private func scheduleHealthChecks() {
@@ -2431,7 +3391,7 @@ final class OpenClawLocalController: ObservableObject {
             ?? jsonEntries.first(where: { $0.key == "agents.defaults.model" })?.value {
             return OpenClawLLMConfiguration.migratedModelRef(value)
         }
-        return OpenClawLLMConfiguration.localQwenModelRef
+        return OpenClawLLMConfiguration.defaultLocalModelRef
     }
 
     private func shouldUseDirectModelSmokeTest(for modelRef: String) -> Bool {
@@ -2447,6 +3407,130 @@ final class OpenClawLocalController: ObservableObject {
 
     private func currentPrimaryModelRef() -> String {
         currentPrimaryModelRef(in: settingsSnapshot.jsonEntries)
+    }
+
+    private func localPromptSettings(in jsonEntries: [OpenClawEditableSetting]) -> OpenClawLocalPromptSettings {
+        var settings = OpenClawLocalPromptSettings()
+        if let rawMode = jsonValue("agents.defaults.localPrompt.mode", in: jsonEntries),
+           let mode = OpenClawLocalPromptSettings.PersonaMode(rawValue: rawMode) {
+            settings.personaMode = mode
+        }
+        if let rawReasoning = jsonValue("agents.defaults.localPrompt.reasoning", in: jsonEntries),
+           let reasoning = OpenClawLocalPromptSettings.ReasoningMode(rawValue: rawReasoning) {
+            settings.reasoningMode = reasoning
+        }
+        settings.notificationRuntimeContextWindow = intValue(
+            "agents.defaults.localPrompt.notificationSpeech.runtimeContextWindow",
+            in: jsonEntries,
+            default: settings.notificationRuntimeContextWindow,
+            range: 1024...4096
+        )
+        settings.notificationMaxOutputTokens = intValue(
+            "agents.defaults.localPrompt.notificationSpeech.maxOutputTokens",
+            in: jsonEntries,
+            default: settings.notificationMaxOutputTokens,
+            range: 16...128
+        )
+        settings.notificationReserveTokens = intValue(
+            "agents.defaults.localPrompt.notificationSpeech.reserveTokens",
+            in: jsonEntries,
+            default: settings.notificationReserveTokens,
+            range: 128...1024
+        )
+        settings.simpleRuntimeContextWindow = intValue(
+            "agents.defaults.localPrompt.simpleChat.runtimeContextWindow",
+            in: jsonEntries,
+            default: settings.simpleRuntimeContextWindow,
+            range: 2048...32768
+        )
+        settings.simpleMaxOutputTokens = intValue(
+            "agents.defaults.localPrompt.simpleChat.maxOutputTokens",
+            in: jsonEntries,
+            default: settings.simpleMaxOutputTokens,
+            range: 64...2048
+        )
+        settings.simpleReserveTokens = intValue(
+            "agents.defaults.localPrompt.simpleChat.reserveTokens",
+            in: jsonEntries,
+            default: settings.simpleReserveTokens,
+            range: 256...4096
+        )
+        settings.deepRuntimeContextWindow = intValue(
+            "agents.defaults.localPrompt.deepPersona.runtimeContextWindow",
+            in: jsonEntries,
+            default: settings.deepRuntimeContextWindow,
+            range: 8192...65536
+        )
+        settings.deepMaxOutputTokens = intValue(
+            "agents.defaults.localPrompt.deepPersona.maxOutputTokens",
+            in: jsonEntries,
+            default: settings.deepMaxOutputTokens,
+            range: 256...8192
+        )
+        settings.deepReserveTokens = intValue(
+            "agents.defaults.localPrompt.deepPersona.reserveTokens",
+            in: jsonEntries,
+            default: settings.deepReserveTokens,
+            range: 1024...8192
+        )
+        return settings
+    }
+
+    private func localPromptSettings() -> OpenClawLocalPromptSettings {
+        localPromptSettings(in: settingsSnapshot.jsonEntries)
+    }
+
+    private func jsonValue(_ key: String, in entries: [OpenClawEditableSetting]) -> String? {
+        entries.first(where: { $0.key == key })?.value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func intValue(
+        _ key: String,
+        in entries: [OpenClawEditableSetting],
+        default defaultValue: Int,
+        range: ClosedRange<Int>
+    ) -> Int {
+        guard let rawValue = jsonValue(key, in: entries), let value = Int(rawValue) else {
+            return defaultValue
+        }
+        return min(max(value, range.lowerBound), range.upperBound)
+    }
+
+    private func notificationSpeechProfile() -> OpenClawTaskProfile {
+        let settings = localPromptSettings()
+        return OpenClawTaskProfile.notificationSpeech.applyingRuntimeOverrides(
+            runtimeContextWindow: settings.notificationRuntimeContextWindow,
+            maxOutputTokens: settings.notificationMaxOutputTokens,
+            reserveTokens: settings.notificationReserveTokens,
+            disableThinking: settings.reasoningMode == .off
+        )
+    }
+
+    private func chatPromptProfile() -> OpenClawTaskProfile {
+        let settings = localPromptSettings()
+        let baseProfile: OpenClawTaskProfile = settings.personaMode == .deepPersona
+            ? .deepPersona
+            : .simpleChat
+        if settings.personaMode == .deepPersona {
+            return baseProfile.applyingRuntimeOverrides(
+                runtimeContextWindow: settings.deepRuntimeContextWindow,
+                maxOutputTokens: settings.deepMaxOutputTokens,
+                reserveTokens: settings.deepReserveTokens,
+                disableThinking: settings.reasoningMode == .off
+            )
+        }
+        return baseProfile.applyingRuntimeOverrides(
+            runtimeContextWindow: settings.simpleRuntimeContextWindow,
+            maxOutputTokens: settings.simpleMaxOutputTokens,
+            reserveTokens: settings.simpleReserveTokens,
+            disableThinking: settings.reasoningMode == .off
+        )
+    }
+
+    private func retrievalQuery(for profile: OpenClawTaskProfile, message: String) -> OpenClawRetrievalQuery {
+        profile.name == OpenClawTaskProfile.deepPersona.name
+            ? .deepPersona(message)
+            : .simpleChat(message)
     }
 
     private func directChatPrompt() -> String {
@@ -2672,12 +3756,163 @@ final class OpenClawLocalController: ObservableObject {
         return OpenClawQdrantClient.make(environment: environment)
     }
 
+    private func ensureQdrantServer(environment: [String: String]) async {
+        guard OpenClawQdrantClient.make(environment: environment) != nil else {
+            appendLog("Qdrant disabled by configuration.")
+            return
+        }
+
+        let baseURLString = environment["GRACULA_QDRANT_URL"]
+            ?? environment["OPENCLAW_QDRANT_URL"]
+            ?? environment["QDRANT_URL"]
+            ?? "http://127.0.0.1:6333"
+        guard let baseURL = URL(string: baseURLString) else {
+            appendLog("Qdrant URL is invalid: \(baseURLString)")
+            return
+        }
+
+        if await qdrantIsReady(baseURL: baseURL) {
+            appendLog("Qdrant already running at \(baseURL.absoluteString).")
+            return
+        }
+        if qdrantProcess?.isRunning == true {
+            appendLog("Waiting for embedded Qdrant at \(baseURL.absoluteString).")
+            await waitForQdrantReady(baseURL: baseURL)
+            return
+        }
+
+        guard let qdrantURL = qdrantExecutableURL(environment: environment) else {
+            appendLog("Qdrant binary not found. Put qdrant at .openclaw/bin/qdrant or set GRACULA_QDRANT_BIN.")
+            return
+        }
+
+        do {
+            let storageDirectory = qdrantStorageDirectory(environment: environment)
+            try FileManager.default.createDirectory(at: storageDirectory, withIntermediateDirectories: true)
+            var qdrantEnvironment = environment
+            qdrantEnvironment["QDRANT__SERVICE__HTTP_PORT"] = normalizedPort(baseURL.port.map(String.init)) ?? "6333"
+            qdrantEnvironment["QDRANT__SERVICE__GRPC_PORT"] = qdrantEnvironment["QDRANT__SERVICE__GRPC_PORT"] ?? "6334"
+            qdrantEnvironment["QDRANT__STORAGE__STORAGE_PATH"] = storageDirectory.path
+
+            qdrantProcess = try launchExecutableProcess(
+                name: "qdrant",
+                executableURL: qdrantURL,
+                arguments: [],
+                environment: qdrantEnvironment,
+                updateRunningStateOnExit: false
+            )
+            appendLog("Embedded Qdrant: \(baseURL.absoluteString), storage: \(storageDirectory.path)")
+            await waitForQdrantReady(baseURL: baseURL)
+        } catch {
+            qdrantProcess = nil
+            appendLog("Embedded Qdrant unavailable: \(error.localizedDescription)")
+        }
+    }
+
+    private func waitForQdrantReady(baseURL: URL, timeoutSeconds: Int = 20) async {
+        let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
+        while Date() < deadline {
+            if await qdrantIsReady(baseURL: baseURL) {
+                appendLog("Qdrant is ready at \(baseURL.absoluteString).")
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        appendLog("Qdrant did not become ready within \(timeoutSeconds)s.")
+    }
+
+    private func qdrantIsReady(baseURL: URL) async -> Bool {
+        let url = baseURL.appendingPathComponent("readyz")
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 0.6
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            return (response as? HTTPURLResponse)?.statusCode == 200
+        } catch {
+            return false
+        }
+    }
+
+    private func qdrantExecutableURL(environment: [String: String]) -> URL? {
+        let explicitCandidates = [
+            environment["GRACULA_QDRANT_BIN"],
+            environment["OPENCLAW_QDRANT_BIN"],
+            environment["QDRANT_BIN"]
+        ]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .map(URL.init(fileURLWithPath:))
+
+        let bundledCandidates = [
+            Bundle.main.url(forResource: "qdrant", withExtension: nil),
+            configDirectory.appendingPathComponent("bin/qdrant"),
+            repositoryDirectory.appendingPathComponent(".openclaw/bin/qdrant"),
+            URL(fileURLWithPath: "/opt/homebrew/bin/qdrant"),
+            URL(fileURLWithPath: "/usr/local/bin/qdrant")
+        ].compactMap { $0 }
+
+        return (explicitCandidates + bundledCandidates).first { url in
+            FileManager.default.isExecutableFile(atPath: url.path)
+        }
+    }
+
+    private func qdrantStorageDirectory(environment: [String: String]) -> URL {
+        let rawPath = [
+            environment["GRACULA_QDRANT_STORAGE_DIR"],
+            environment["OPENCLAW_QDRANT_STORAGE_DIR"],
+            environment["QDRANT_STORAGE_DIR"]
+        ]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+        if let rawPath {
+            return URL(fileURLWithPath: rawPath)
+        }
+        return configDirectory.appendingPathComponent("qdrant/storage", isDirectory: true)
+    }
+
     func ensureLocalModelServer(modelRef: String? = nil, environment: [String: String]? = nil) async {
         let activeModelRef = OpenClawLLMConfiguration.migratedModelRef(modelRef ?? currentPrimaryModelRef())
         guard shouldAutoStartLocalModel(for: activeModelRef) else {
             return
         }
 
+        if let existingTask = localModelEnsureTask {
+            if localModelEnsureModelRef == activeModelRef {
+                await existingTask.value
+                return
+            }
+            await existingTask.value
+            await ensureLocalModelServer(modelRef: activeModelRef, environment: environment)
+            return
+        }
+
+        let ensureTaskID = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+            defer {
+                if self.localModelEnsureTaskID == ensureTaskID {
+                    self.localModelEnsureTask = nil
+                    self.localModelEnsureTaskID = nil
+                    self.localModelEnsureModelRef = nil
+                }
+            }
+            await self.performEnsureLocalModelServer(
+                activeModelRef: activeModelRef,
+                environment: environment
+            )
+        }
+        localModelEnsureTask = task
+        localModelEnsureTaskID = ensureTaskID
+        localModelEnsureModelRef = activeModelRef
+        await task.value
+    }
+
+    private func performEnsureLocalModelServer(
+        activeModelRef: String,
+        environment: [String: String]?
+    ) async {
         let resolvedEnvironment = environment ?? (try? openClawEnvironment()) ?? ProcessInfo.processInfo.environment
         let provider = OpenClawLLMConfiguration.provider(forModelRef: activeModelRef)
         let baseURLString = provider?.baseURL ?? "http://127.0.0.1:8080/v1"
@@ -2686,16 +3921,45 @@ final class OpenClawLocalController: ObservableObject {
             return
         }
 
+        if provider?.name == "ollama" {
+            await ensureOllamaServer(
+                baseURL: baseURL,
+                modelRef: activeModelRef,
+                environment: resolvedEnvironment
+            )
+            return
+        }
+
+        cleanupStaleManagedLocalModelProcessIfNeeded()
+
         if await localModelServerHasTargetModel(baseURL: baseURL, modelRef: activeModelRef) {
             appendLog("Local MLX model server is already available for \(activeModelRef).")
             endLocalModelPreparationIfNeeded(readyMessage: "Local model ready")
             return
         }
 
+        if localModelProcess?.isRunning == false {
+            localModelProcess = nil
+        }
+
         guard localModelProcess == nil else {
             beginLocalModelPreparation("Preparing local model \(activeModelRef)...")
             appendLog("Waiting for local MLX model server to become ready for \(activeModelRef).")
-            _ = await waitForLocalModelServer(baseURL: baseURL, modelRef: activeModelRef)
+            _ = await waitForLocalModelServer(
+                baseURL: baseURL,
+                modelRef: activeModelRef,
+                timeoutSeconds: localMlxReadyTimeoutSeconds(environment: resolvedEnvironment)
+            )
+            return
+        }
+
+        if await localModelServerEndpointIsBusy(baseURL: baseURL) {
+            appendLog("Detected an existing local MLX server on \(baseURL.host ?? "127.0.0.1"):\(baseURL.port ?? 8080); waiting instead of launching a duplicate.")
+            _ = await waitForLocalModelServer(
+                baseURL: baseURL,
+                modelRef: activeModelRef,
+                timeoutSeconds: localMlxReadyTimeoutSeconds(environment: resolvedEnvironment)
+            )
             return
         }
 
@@ -2770,7 +4034,64 @@ final class OpenClawLocalController: ObservableObject {
             return
         }
 
-        _ = await waitForLocalModelServer(baseURL: baseURL, modelRef: activeModelRef)
+        _ = await waitForLocalModelServer(
+            baseURL: baseURL,
+            modelRef: activeModelRef,
+            timeoutSeconds: localMlxReadyTimeoutSeconds(environment: resolvedEnvironment)
+        )
+    }
+
+    private func ensureOllamaServer(baseURL: URL, modelRef: String, environment: [String: String]) async {
+        if await ollamaServerIsReady(baseURL: baseURL) {
+            appendLog("Ollama server is already available for \(modelRef).")
+            endLocalModelPreparationIfNeeded(readyMessage: "Local model ready")
+            return
+        }
+
+        if localModelProcess?.isRunning == false {
+            localModelProcess = nil
+        }
+
+        guard localModelProcess == nil else {
+            beginLocalModelPreparation("Preparing local model \(modelRef)...")
+            appendLog("Waiting for local Ollama server to become ready for \(modelRef).")
+            _ = await waitForOllamaServer(baseURL: baseURL, modelRef: modelRef, timeoutSeconds: 30)
+            return
+        }
+
+        if isLocalTCPPortAcceptingConnections(for: baseURL) {
+            beginLocalModelPreparation("Preparing local model \(modelRef)...")
+            appendLog("Ollama port is already occupied; waiting for a healthy server for \(modelRef).")
+            if await waitForOllamaServer(baseURL: baseURL, modelRef: modelRef, timeoutSeconds: 30) {
+                return
+            }
+            appendLog("Ollama skipped: port \(baseURL.port ?? 11434) is occupied by a different or unhealthy service.")
+            return
+        }
+
+        guard let ollamaURL = resolveOllamaExecutableURL() else {
+            endLocalModelPreparationIfNeeded(readyMessage: "Local model unavailable")
+            appendLog("Ollama server skipped: `ollama` executable not found.")
+            return
+        }
+
+        beginLocalModelPreparation("Preparing local model \(modelRef)...")
+        do {
+            localModelProcess = try launchExecutableProcess(
+                name: "ollama-serve",
+                executableURL: ollamaURL,
+                arguments: ["serve"],
+                environment: environment,
+                updateRunningStateOnExit: false
+            )
+        } catch {
+            localModelProcess = nil
+            endLocalModelPreparationIfNeeded(readyMessage: "Local model unavailable")
+            appendLog("Ollama server start failed: \(error.localizedDescription)")
+            return
+        }
+
+        _ = await waitForOllamaServer(baseURL: baseURL, modelRef: modelRef, timeoutSeconds: 30)
     }
 
     private func storeNotificationCache(inputPrompt: String, spokenText: String) async {
@@ -3281,7 +4602,10 @@ final class OpenClawLocalController: ObservableObject {
     }
 
     private func shouldAutoStartLocalModel(for modelRef: String) -> Bool {
-        OpenClawLLMConfiguration.provider(forModelRef: modelRef)?.name == "mlx"
+        guard let providerName = OpenClawLLMConfiguration.provider(forModelRef: modelRef)?.name else {
+            return false
+        }
+        return providerName == "mlx" || providerName == "ollama"
     }
 
     private func localMlxServerArguments(
@@ -3368,6 +4692,15 @@ final class OpenClawLocalController: ObservableObject {
             return pythonBinary
         }
 
+        let legacyDefaultScript = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("mlx-qwen", isDirectory: true)
+            .appendingPathComponent(".venv", isDirectory: true)
+            .appendingPathComponent("bin", isDirectory: true)
+            .appendingPathComponent("mlx_lm.server")
+        if FileManager.default.fileExists(atPath: legacyDefaultScript.path) {
+            return legacyDefaultScript
+        }
+
         return nil
     }
 
@@ -3414,7 +4747,10 @@ final class OpenClawLocalController: ObservableObject {
             }
             let text = String(decoding: data, as: UTF8.self)
             let modelName = modelRef.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: true).dropFirst().first.map(String.init) ?? modelRef
-            return text.contains(modelName) || text.contains(modelRef)
+            return text.contains(modelName)
+                || text.contains(modelRef)
+                || text.contains(#""object":"list""#)
+                || text.contains(#""data""#)
         } catch {
             return false
         }
@@ -3473,6 +4809,8 @@ final class OpenClawLocalController: ObservableObject {
                 modelID: String(modelRef.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: true).last ?? "")
             )
         } else if normalized.hasPrefix("ollama/") {
+            let environment = (try? openClawEnvironment()) ?? ProcessInfo.processInfo.environment
+            await ensureLocalModelServer(modelRef: modelRef, environment: environment)
             try await ensureOllamaModelAvailable(
                 modelID: String(modelRef.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: true).last ?? "")
             )
@@ -3529,6 +4867,32 @@ final class OpenClawLocalController: ObservableObject {
         } catch {
             return false
         }
+    }
+
+    private func ollamaServerIsReady(baseURL: URL) async -> Bool {
+        let url = baseURL.appendingPathComponent("api/tags")
+        do {
+            let (_, response) = try await URLSession.shared.data(from: url)
+            return (response as? HTTPURLResponse)?.statusCode == 200
+        } catch {
+            return false
+        }
+    }
+
+    private func waitForOllamaServer(baseURL: URL, modelRef: String, timeoutSeconds: Int) async -> Bool {
+        let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
+        while Date() < deadline {
+            if await ollamaServerIsReady(baseURL: baseURL) {
+                endLocalModelPreparationIfNeeded(readyMessage: "Local model ready")
+                appendLog("Ollama server is ready for \(modelRef).")
+                return true
+            }
+            beginLocalModelPreparation("Waiting for local model server \(modelRef)...")
+            try? await Task.sleep(for: .seconds(1))
+        }
+        endLocalModelPreparationIfNeeded(readyMessage: "Local model unavailable")
+        appendLog("Ollama server did not become ready for \(modelRef) within \(timeoutSeconds)s.")
+        return false
     }
 
     private func bootstrapMLXRuntimeIfNeeded(modelID: String) throws {
@@ -3709,6 +5073,30 @@ final class OpenClawLocalController: ObservableObject {
         """
     }
 
+    private func localModelServerEndpointIsBusy(baseURL: URL) async -> Bool {
+        let url = baseURL.appendingPathComponent("models")
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 0.8
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            return response is HTTPURLResponse
+        } catch {
+            let nsError = error as NSError
+            guard nsError.domain == NSURLErrorDomain else {
+                return true
+            }
+            switch nsError.code {
+            case NSURLErrorCannotConnectToHost,
+                NSURLErrorCannotFindHost,
+                NSURLErrorDNSLookupFailed,
+                NSURLErrorNotConnectedToInternet:
+                return false
+            default:
+                return true
+            }
+        }
+    }
+
     private func waitForLocalModelServer(baseURL: URL, modelRef: String, timeoutSeconds: Int = 180) async -> Bool {
         let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
         while Date() < deadline {
@@ -3883,6 +5271,147 @@ final class OpenClawLocalController: ObservableObject {
                     maxCharacters: 1_000
                 )
             }
+    }
+
+    private func localMlxReadyTimeoutSeconds(environment: [String: String]) -> Int {
+        let candidates = [
+            environment["GRACULA_MLX_READY_TIMEOUT_SECONDS"],
+            environment["OPENCLAW_MLX_READY_TIMEOUT_SECONDS"],
+            environment["MLX_READY_TIMEOUT_SECONDS"]
+        ]
+        for candidate in candidates {
+            guard let rawValue = candidate?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  let value = Int(rawValue),
+                  value > 0 else {
+                continue
+            }
+            return min(max(value, 60), 1800)
+        }
+        return 600
+    }
+
+    private func localMlxPromptCacheLimitGigabytes(environment: [String: String]) -> Double {
+        let candidates = [
+            environment["GRACULA_MLX_PROMPT_CACHE_MAX_GB"],
+            environment["OPENCLAW_MLX_PROMPT_CACHE_MAX_GB"],
+            environment["MLX_PROMPT_CACHE_MAX_GB"]
+        ]
+        for candidate in candidates {
+            guard let rawValue = candidate?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  let value = Double(rawValue),
+                  value >= 0 else {
+                continue
+            }
+            return value
+        }
+        return 1.0
+    }
+
+    private func localMlxPromptCacheRestartCooldownSeconds(environment: [String: String]) -> TimeInterval {
+        let candidates = [
+            environment["GRACULA_MLX_PROMPT_CACHE_RESTART_COOLDOWN_SECONDS"],
+            environment["OPENCLAW_MLX_PROMPT_CACHE_RESTART_COOLDOWN_SECONDS"],
+            environment["MLX_PROMPT_CACHE_RESTART_COOLDOWN_SECONDS"]
+        ]
+        for candidate in candidates {
+            guard let rawValue = candidate?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  let value = Double(rawValue),
+                  value > 0 else {
+                continue
+            }
+            return min(max(value, 30), 3600)
+        }
+        return 120
+    }
+
+    private func handleLocalMlxModelOutput(_ text: String) {
+        let environment = (try? openClawEnvironment()) ?? ProcessInfo.processInfo.environment
+        let limitGigabytes = localMlxPromptCacheLimitGigabytes(environment: environment)
+        guard limitGigabytes > 0 else {
+            return
+        }
+
+        for line in text.components(separatedBy: .newlines) {
+            guard let cacheGigabytes = localMlxPromptCacheGigabytes(in: line),
+                  cacheGigabytes >= limitGigabytes else {
+                continue
+            }
+            scheduleLocalMlxPromptCacheRestart(
+                cacheGigabytes: cacheGigabytes,
+                limitGigabytes: limitGigabytes,
+                environment: environment
+            )
+            return
+        }
+    }
+
+    private func scheduleLocalMlxPromptCacheRestart(
+        cacheGigabytes: Double,
+        limitGigabytes: Double,
+        environment: [String: String]
+    ) {
+        if localModelPromptCacheRestartTask != nil {
+            return
+        }
+
+        let cooldownSeconds = localMlxPromptCacheRestartCooldownSeconds(environment: environment)
+        if let lastRestart = localModelPromptCacheRestartDate,
+           Date().timeIntervalSince(lastRestart) < cooldownSeconds {
+            return
+        }
+
+        localModelPromptCacheRestartDate = Date()
+        appendLog(
+            String(
+                format: "Local MLX prompt cache reached %.2f GB (limit %.2f GB); restarting model server to clear it.",
+                cacheGigabytes,
+                limitGigabytes
+            )
+        )
+
+        localModelPromptCacheRestartTask = Task { [weak self] in
+            guard let self else {
+                return
+            }
+            self.terminateAndWait(process: self.localModelProcess, name: "mlx-model", timeoutSeconds: 3.0)
+            self.localModelProcess = nil
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else {
+                self.localModelPromptCacheRestartTask = nil
+                return
+            }
+            await self.ensureLocalModelServer(environment: environment)
+            self.localModelPromptCacheRestartTask = nil
+        }
+    }
+
+    private func localMlxPromptCacheGigabytes(in line: String) -> Double? {
+        let normalizedLine = line.replacingOccurrences(of: ",", with: ".")
+        guard normalizedLine.range(of: "Prompt Cache:", options: [.caseInsensitive]) != nil else {
+            return nil
+        }
+
+        let tokens = normalizedLine
+            .split(whereSeparator: { $0.isWhitespace || $0 == ":" })
+            .map(String.init)
+
+        for index in tokens.indices.dropLast() {
+            guard let size = Double(tokens[index]) else {
+                continue
+            }
+            switch tokens[tokens.index(after: index)].lowercased() {
+            case "gb", "gib":
+                return size
+            case "mb", "mib":
+                return size / 1024
+            case "kb", "kib":
+                return size / 1024 / 1024
+            default:
+                continue
+            }
+        }
+
+        return nil
     }
 
     private func prepareTestDirectories(configDirectory: URL, workspaceDirectory: URL) throws {
@@ -4573,6 +6102,8 @@ struct OpenClawSettingsReader {
                 key.hasPrefix("OPENCLAW_")
                     || key.hasPrefix("GRACULA_")
                     || key.hasPrefix("TELEGRAM_")
+                    || key.hasPrefix("GRACULA_")
+                    || key.hasPrefix("QDRANT_")
                     || key.hasPrefix("ONLYFANS_")
                     || key == "BROWSER"
             }

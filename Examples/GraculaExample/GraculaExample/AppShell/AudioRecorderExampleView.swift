@@ -396,6 +396,38 @@ struct BrainSettingsSection: View {
     @Binding var jsonEntries: [OpenClawEditableSetting]
     @State private var selectedPreset: BrainPreset = .localQwen
     @State private var customModelRef = ""
+    @State private var googleApiKey = ""
+    @State private var openRouterApiKey = ""
+    @State private var kiloCodeApiKey = ""
+    @State private var qdrantURL = ""
+    @State private var qdrantBinaryPath = ""
+    @State private var qdrantStoragePath = ""
+    @State private var telegramBusinessEnabled = false
+    @State private var telegramBusinessBotToken = ""
+    @State private var telegramBusinessConnectionId = ""
+    @State private var telegramBusinessAutoReplyEnabled = true
+    @State private var telegramBusinessMarkReadEnabled = true
+    @State private var telegramBusinessPollIntervalSeconds = 2
+    @State private var telegramUserEnabled = false
+    @State private var telegramUserAPIId = ""
+    @State private var telegramUserAPIHash = ""
+    @State private var telegramUserPhone = ""
+    @State private var telegramUserTDLibPath = ""
+    @State private var telegramUserDatabaseDirectory = ""
+    @State private var telegramUserFilesDirectory = ""
+    @State private var telegramUserEncryptionKey = ""
+    @State private var telegramUserChatAllowlist = ""
+    @State private var selectedPersonaMode: BrainPersonaMode = .deepPersona
+    @State private var selectedReasoningMode: BrainReasoningMode = .on
+    @State private var notificationContextTokens = 4096
+    @State private var notificationOutputTokens = 128
+    @State private var notificationReserveTokens = 512
+    @State private var simpleContextTokens = 8192
+    @State private var simpleOutputTokens = 512
+    @State private var simpleReserveTokens = 1024
+    @State private var deepContextTokens = 16384
+    @State private var deepOutputTokens = 2048
+    @State private var deepReserveTokens = 4096
     @State private var isSyncing = false
     @State private var didSeedProviderDefaults = false
 
@@ -436,9 +468,79 @@ struct BrainSettingsSection: View {
                     applyCustomModelRef(newValue)
                 }
 
-            Text("Local backends: Ollama at `http://127.0.0.1:11434` or MLX under Application Support.")
+            Divider()
+
+            Picker("Persona mode", selection: $selectedPersonaMode) {
+                ForEach(BrainPersonaMode.allCases) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: selectedPersonaMode) { _, newValue in
+                guard !isSyncing else { return }
+                upsertJSONSetting(
+                    key: "agents.defaults.localPrompt.mode",
+                    value: newValue.rawValue,
+                    isSecret: false
+                )
+            }
+
+            Picker("Reasoning", selection: $selectedReasoningMode) {
+                ForEach(BrainReasoningMode.allCases) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: selectedReasoningMode) { _, newValue in
+                guard !isSyncing else { return }
+                upsertJSONSetting(
+                    key: "agents.defaults.localPrompt.reasoning",
+                    value: newValue.rawValue,
+                    isSecret: false
+                )
+            }
+
+            promptTokenControls
+
+            SecureField("Google Gemini API key", text: $googleApiKey)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .onChange(of: googleApiKey) { _, newValue in
+                    guard !isSyncing else { return }
+                    upsertAPIKey(for: "google", value: newValue)
+                }
+
+            SecureField("OpenRouter API key", text: $openRouterApiKey)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .onChange(of: openRouterApiKey) { _, newValue in
+                    guard !isSyncing else { return }
+                    upsertAPIKey(for: "openrouter", value: newValue)
+                }
+
+            SecureField("KiloCode API key", text: $kiloCodeApiKey)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .onChange(of: kiloCodeApiKey) { _, newValue in
+                    guard !isSyncing else { return }
+                    upsertAPIKey(for: "kilocode", value: newValue)
+                }
+
+            Text("API keys are stored in the OpenClaw provider config and exported to provider environment variables when OpenClaw runs.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+
+            Divider()
+
+            qdrantControls
+
+            Divider()
+
+            telegramBusinessControls
+
+            Divider()
+
+            telegramUserControls
         }
         .onAppear {
             syncDraftFromSnapshot()
@@ -458,12 +560,122 @@ struct BrainSettingsSection: View {
 
         let currentModel = currentPrimaryModelRef()
         if currentModel.isEmpty {
-            selectedPreset = .localQwen
+            selectedPreset = .localQwenMLX
             customModelRef = selectedPreset.modelRef
         } else {
             selectedPreset = BrainPreset.allCases.first(where: { $0.modelRef == currentModel }) ?? .custom
             customModelRef = currentModel
         }
+        googleApiKey = apiKey(for: "google")
+        openRouterApiKey = apiKey(for: "openrouter")
+        kiloCodeApiKey = apiKey(for: "kilocode")
+        selectedPersonaMode = BrainPersonaMode(rawValue: value(for: "agents.defaults.localPrompt.mode") ?? "") ?? .deepPersona
+        selectedReasoningMode = BrainReasoningMode(rawValue: value(for: "agents.defaults.localPrompt.reasoning") ?? "") ?? .on
+        notificationContextTokens = intValue(
+            for: "agents.defaults.localPrompt.notificationSpeech.runtimeContextWindow",
+            default: 4096,
+            range: 1024...4096
+        )
+        notificationOutputTokens = intValue(
+            for: "agents.defaults.localPrompt.notificationSpeech.maxOutputTokens",
+            default: 128,
+            range: 16...128
+        )
+        notificationReserveTokens = intValue(
+            for: "agents.defaults.localPrompt.notificationSpeech.reserveTokens",
+            default: 512,
+            range: 128...1024
+        )
+        simpleContextTokens = intValue(
+            for: "agents.defaults.localPrompt.simpleChat.runtimeContextWindow",
+            default: 8192,
+            range: 2048...32768
+        )
+        simpleOutputTokens = intValue(
+            for: "agents.defaults.localPrompt.simpleChat.maxOutputTokens",
+            default: 512,
+            range: 64...2048
+        )
+        simpleReserveTokens = intValue(
+            for: "agents.defaults.localPrompt.simpleChat.reserveTokens",
+            default: 1024,
+            range: 256...4096
+        )
+        deepContextTokens = intValue(
+            for: "agents.defaults.localPrompt.deepPersona.runtimeContextWindow",
+            default: 16384,
+            range: 8192...65536
+        )
+        deepOutputTokens = intValue(
+            for: "agents.defaults.localPrompt.deepPersona.maxOutputTokens",
+            default: 2048,
+            range: 256...8192
+        )
+        deepReserveTokens = intValue(
+            for: "agents.defaults.localPrompt.deepPersona.reserveTokens",
+            default: 4096,
+            range: 1024...8192
+        )
+        qdrantURL = environmentValue(for: "GRACULA_QDRANT_URL") ?? "http://127.0.0.1:6333"
+        qdrantBinaryPath = environmentValue(for: "GRACULA_QDRANT_BIN")
+            ?? OpenClawRuntimePaths.configDirectory.appendingPathComponent("bin/qdrant").path
+        qdrantStoragePath = environmentValue(for: "GRACULA_QDRANT_STORAGE_DIR")
+            ?? OpenClawRuntimePaths.configDirectory.appendingPathComponent("qdrant/storage").path
+        telegramBusinessEnabled = boolValue(
+            for: "integrations.telegram.business.enabled",
+            default: false
+        )
+        telegramBusinessBotToken = value(for: "integrations.telegram.business.botToken")
+            ?? environmentValue(for: "GRACULA_TELEGRAM_BOT_TOKEN")
+            ?? environmentValue(for: "TELEGRAM_BOT_TOKEN")
+            ?? ""
+        telegramBusinessConnectionId = value(for: "integrations.telegram.business.businessConnectionId")
+            ?? environmentValue(for: "GRACULA_TELEGRAM_BUSINESS_CONNECTION_ID")
+            ?? ""
+        telegramBusinessAutoReplyEnabled = boolValue(
+            for: "integrations.telegram.business.autoReplyEnabled",
+            default: true
+        )
+        telegramBusinessMarkReadEnabled = boolValue(
+            for: "integrations.telegram.business.markReadEnabled",
+            default: true
+        )
+        telegramBusinessPollIntervalSeconds = intValue(
+            for: "integrations.telegram.business.pollIntervalSeconds",
+            default: 2,
+            range: 1...60
+        )
+        telegramUserEnabled = boolValue(
+            for: "integrations.telegram.user.enabled",
+            default: false
+        ) || environmentValue(for: "TELEGRAM_MODE")?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "mtproto"
+        telegramUserAPIId = value(for: "integrations.telegram.user.apiId")
+            ?? environmentValue(for: "GRACULA_TELEGRAM_API_ID")
+            ?? environmentValue(for: "TELEGRAM_API_ID")
+            ?? ""
+        telegramUserAPIHash = value(for: "integrations.telegram.user.apiHash")
+            ?? environmentValue(for: "GRACULA_TELEGRAM_API_HASH")
+            ?? environmentValue(for: "TELEGRAM_API_HASH")
+            ?? ""
+        telegramUserPhone = value(for: "integrations.telegram.user.phone")
+            ?? environmentValue(for: "GRACULA_TELEGRAM_PHONE")
+            ?? environmentValue(for: "TELEGRAM_PHONE")
+            ?? ""
+        telegramUserTDLibPath = value(for: "integrations.telegram.user.tdjsonLibraryPath")
+            ?? environmentValue(for: "GRACULA_TDLIB_JSON_LIBRARY")
+            ?? "/opt/homebrew/lib/libtdjson.dylib"
+        telegramUserDatabaseDirectory = value(for: "integrations.telegram.user.databaseDirectory")
+            ?? environmentValue(for: "GRACULA_TELEGRAM_USER_DATABASE_DIR")
+            ?? OpenClawRuntimePaths.configDirectory.appendingPathComponent("telegram-user/database").path
+        telegramUserFilesDirectory = value(for: "integrations.telegram.user.filesDirectory")
+            ?? environmentValue(for: "GRACULA_TELEGRAM_USER_FILES_DIR")
+            ?? OpenClawRuntimePaths.configDirectory.appendingPathComponent("telegram-user/files").path
+        telegramUserEncryptionKey = value(for: "integrations.telegram.user.encryptionKey")
+            ?? environmentValue(for: "GRACULA_TELEGRAM_USER_ENCRYPTION_KEY")
+            ?? ""
+        telegramUserChatAllowlist = value(for: "integrations.telegram.user.chatAllowlist")
+            ?? environmentValue(for: "GRACULA_TELEGRAM_USER_CHAT_ALLOWLIST")
+            ?? ""
     }
 
     private func seedProviderDefaultsIfNeeded() {
@@ -477,6 +689,297 @@ struct BrainSettingsSection: View {
         }
         ensureProviderDefaults()
         syncDraftFromSnapshot()
+    }
+
+    private var qdrantControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionHeader("Qdrant", systemImage: "externaldrive.connected.to.line.below")
+            TextField("Qdrant URL", text: $qdrantURL)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .onChange(of: qdrantURL) { _, newValue in
+                    guard !isSyncing else { return }
+                    upsertEnvironmentSetting(key: "GRACULA_QDRANT_URL", value: newValue)
+                    upsertEnvironmentSetting(key: "OPENCLAW_QDRANT_URL", value: newValue)
+                    upsertEnvironmentSetting(key: "QDRANT_URL", value: newValue)
+                }
+            TextField("Embedded qdrant binary", text: $qdrantBinaryPath)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .onChange(of: qdrantBinaryPath) { _, newValue in
+                    guard !isSyncing else { return }
+                    upsertEnvironmentSetting(key: "GRACULA_QDRANT_BIN", value: newValue)
+                    upsertEnvironmentSetting(key: "OPENCLAW_QDRANT_BIN", value: newValue)
+                }
+            TextField("Qdrant storage", text: $qdrantStoragePath)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .onChange(of: qdrantStoragePath) { _, newValue in
+                    guard !isSyncing else { return }
+                    upsertEnvironmentSetting(key: "GRACULA_QDRANT_STORAGE_DIR", value: newValue)
+                    upsertEnvironmentSetting(key: "OPENCLAW_QDRANT_STORAGE_DIR", value: newValue)
+                }
+        }
+    }
+
+    private var telegramBusinessControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionHeader("Telegram Business", systemImage: "paperplane")
+
+            Toggle("Enable Telegram Business mode", isOn: $telegramBusinessEnabled)
+                .onChange(of: telegramBusinessEnabled) { _, newValue in
+                    guard !isSyncing else { return }
+                    upsertJSONSetting(
+                        key: "integrations.telegram.business.enabled",
+                        value: newValue ? "true" : "false",
+                        isSecret: false,
+                        kind: .bool
+                    )
+                }
+
+            SecureField("Bot token", text: $telegramBusinessBotToken)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .onChange(of: telegramBusinessBotToken) { _, newValue in
+                    guard !isSyncing else { return }
+                    upsertJSONSetting(
+                        key: "integrations.telegram.business.botToken",
+                        value: newValue,
+                        isSecret: true
+                    )
+                    upsertEnvironmentSetting(key: "GRACULA_TELEGRAM_BOT_TOKEN", value: newValue, isSecret: true)
+                }
+
+            TextField("Business connection ID (optional)", text: $telegramBusinessConnectionId)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .onChange(of: telegramBusinessConnectionId) { _, newValue in
+                    guard !isSyncing else { return }
+                    upsertJSONSetting(
+                        key: "integrations.telegram.business.businessConnectionId",
+                        value: newValue,
+                        isSecret: false
+                    )
+                    upsertEnvironmentSetting(key: "GRACULA_TELEGRAM_BUSINESS_CONNECTION_ID", value: newValue)
+                }
+
+            Toggle("Auto reply from OpenClaw", isOn: $telegramBusinessAutoReplyEnabled)
+                .onChange(of: telegramBusinessAutoReplyEnabled) { _, newValue in
+                    guard !isSyncing else { return }
+                    upsertJSONSetting(
+                        key: "integrations.telegram.business.autoReplyEnabled",
+                        value: newValue ? "true" : "false",
+                        isSecret: false,
+                        kind: .bool
+                    )
+                }
+
+            Toggle("Mark incoming messages as read", isOn: $telegramBusinessMarkReadEnabled)
+                .onChange(of: telegramBusinessMarkReadEnabled) { _, newValue in
+                    guard !isSyncing else { return }
+                    upsertJSONSetting(
+                        key: "integrations.telegram.business.markReadEnabled",
+                        value: newValue ? "true" : "false",
+                        isSecret: false,
+                        kind: .bool
+                    )
+                }
+
+            Stepper(value: $telegramBusinessPollIntervalSeconds, in: 1...60, step: 1) {
+                Text("Poll interval: \(telegramBusinessPollIntervalSeconds)s")
+                    .font(.caption)
+            }
+            .onChange(of: telegramBusinessPollIntervalSeconds) { _, newValue in
+                guard !isSyncing else { return }
+                upsertJSONSetting(
+                    key: "integrations.telegram.business.pollIntervalSeconds",
+                    value: String(newValue),
+                    isSecret: false,
+                    kind: .int
+                )
+            }
+        }
+    }
+
+    private var telegramUserControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionHeader("Telegram User API", systemImage: "person.crop.circle.badge.checkmark")
+
+            Toggle("Enable Telegram user API", isOn: $telegramUserEnabled)
+                .onChange(of: telegramUserEnabled) { _, newValue in
+                    guard !isSyncing else { return }
+                    upsertJSONSetting(
+                        key: "integrations.telegram.user.enabled",
+                        value: newValue ? "true" : "false",
+                        isSecret: false,
+                        kind: .bool
+                    )
+                    upsertEnvironmentSetting(key: "GRACULA_TELEGRAM_USER_ENABLED", value: newValue ? "1" : "0")
+                }
+
+            TextField("api_id from my.telegram.org", text: $telegramUserAPIId)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .onChange(of: telegramUserAPIId) { _, newValue in
+                    guard !isSyncing else { return }
+                    upsertJSONSetting(key: "integrations.telegram.user.apiId", value: newValue, isSecret: true, kind: .int)
+                    upsertEnvironmentSetting(key: "GRACULA_TELEGRAM_API_ID", value: newValue, isSecret: true)
+                }
+
+            SecureField("api_hash from my.telegram.org", text: $telegramUserAPIHash)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .onChange(of: telegramUserAPIHash) { _, newValue in
+                    guard !isSyncing else { return }
+                    upsertJSONSetting(key: "integrations.telegram.user.apiHash", value: newValue, isSecret: true)
+                    upsertEnvironmentSetting(key: "GRACULA_TELEGRAM_API_HASH", value: newValue, isSecret: true)
+                }
+
+            TextField("Phone number (+...)", text: $telegramUserPhone)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .onChange(of: telegramUserPhone) { _, newValue in
+                    guard !isSyncing else { return }
+                    upsertJSONSetting(key: "integrations.telegram.user.phone", value: newValue, isSecret: true)
+                    upsertEnvironmentSetting(key: "GRACULA_TELEGRAM_PHONE", value: newValue, isSecret: true)
+                }
+
+            TextField("libtdjson.dylib path", text: $telegramUserTDLibPath)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .onChange(of: telegramUserTDLibPath) { _, newValue in
+                    guard !isSyncing else { return }
+                    upsertJSONSetting(key: "integrations.telegram.user.tdjsonLibraryPath", value: newValue, isSecret: false)
+                    upsertEnvironmentSetting(key: "GRACULA_TDLIB_JSON_LIBRARY", value: newValue)
+                }
+
+            TextField("TDLib database directory", text: $telegramUserDatabaseDirectory)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .onChange(of: telegramUserDatabaseDirectory) { _, newValue in
+                    guard !isSyncing else { return }
+                    upsertJSONSetting(key: "integrations.telegram.user.databaseDirectory", value: newValue, isSecret: false)
+                    upsertEnvironmentSetting(key: "GRACULA_TELEGRAM_USER_DATABASE_DIR", value: newValue)
+                }
+
+            TextField("TDLib files directory", text: $telegramUserFilesDirectory)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .onChange(of: telegramUserFilesDirectory) { _, newValue in
+                    guard !isSyncing else { return }
+                    upsertJSONSetting(key: "integrations.telegram.user.filesDirectory", value: newValue, isSecret: false)
+                    upsertEnvironmentSetting(key: "GRACULA_TELEGRAM_USER_FILES_DIR", value: newValue)
+                }
+
+            SecureField("Local TDLib encryption key", text: $telegramUserEncryptionKey)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .onChange(of: telegramUserEncryptionKey) { _, newValue in
+                    guard !isSyncing else { return }
+                    upsertJSONSetting(key: "integrations.telegram.user.encryptionKey", value: newValue, isSecret: true)
+                    upsertEnvironmentSetting(key: "GRACULA_TELEGRAM_USER_ENCRYPTION_KEY", value: newValue, isSecret: true)
+                }
+
+            TextField("Allowed chats (comma separated IDs or titles)", text: $telegramUserChatAllowlist)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .onChange(of: telegramUserChatAllowlist) { _, newValue in
+                    guard !isSyncing else { return }
+                    upsertJSONSetting(key: "integrations.telegram.user.chatAllowlist", value: newValue, isSecret: false)
+                    upsertEnvironmentSetting(key: "GRACULA_TELEGRAM_USER_CHAT_ALLOWLIST", value: newValue)
+                }
+
+            Text("Reads personal chats through TDLib after phone login. Keep an allowlist for production use.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var promptTokenControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            promptTokenRow(
+                title: "Notification speech",
+                context: $notificationContextTokens,
+                output: $notificationOutputTokens,
+                reserve: $notificationReserveTokens,
+                contextRange: 1024...4096,
+                outputRange: 16...128,
+                reserveRange: 128...1024,
+                keyPrefix: "agents.defaults.localPrompt.notificationSpeech"
+            )
+            promptTokenRow(
+                title: "Simple chat",
+                context: $simpleContextTokens,
+                output: $simpleOutputTokens,
+                reserve: $simpleReserveTokens,
+                contextRange: 2048...32768,
+                outputRange: 64...2048,
+                reserveRange: 256...4096,
+                keyPrefix: "agents.defaults.localPrompt.simpleChat"
+            )
+            promptTokenRow(
+                title: "Deep persona",
+                context: $deepContextTokens,
+                output: $deepOutputTokens,
+                reserve: $deepReserveTokens,
+                contextRange: 8192...65536,
+                outputRange: 256...8192,
+                reserveRange: 1024...8192,
+                keyPrefix: "agents.defaults.localPrompt.deepPersona"
+            )
+        }
+    }
+
+    private func promptTokenRow(
+        title: String,
+        context: Binding<Int>,
+        output: Binding<Int>,
+        reserve: Binding<Int>,
+        contextRange: ClosedRange<Int>,
+        outputRange: ClosedRange<Int>,
+        reserveRange: ClosedRange<Int>,
+        keyPrefix: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
+                promptStepperRow("Context", value: context, range: contextRange, key: "\(keyPrefix).runtimeContextWindow")
+                promptStepperRow("Output", value: output, range: outputRange, key: "\(keyPrefix).maxOutputTokens")
+                promptStepperRow("Reserve", value: reserve, range: reserveRange, key: "\(keyPrefix).reserveTokens")
+            }
+        }
+    }
+
+    private func promptStepperRow(
+        _ label: String,
+        value: Binding<Int>,
+        range: ClosedRange<Int>,
+        key: String
+    ) -> some View {
+        GridRow {
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            Stepper(value: value, in: range, step: tokenStep(for: range)) {
+                Text("\(value.wrappedValue)")
+                    .font(.system(.caption, design: .monospaced))
+            }
+            .onChange(of: value.wrappedValue) { _, newValue in
+                guard !isSyncing else { return }
+                upsertJSONSetting(
+                    key: key,
+                    value: String(newValue),
+                    isSecret: false,
+                    kind: .int
+                )
+            }
+        }
+    }
+
+    private func tokenStep(for range: ClosedRange<Int>) -> Int {
+        range.upperBound <= 128 ? 16 : 256
     }
 
     private var activeBrainDisplayName: String {
@@ -542,7 +1045,7 @@ struct BrainSettingsSection: View {
         if let value = value(for: "agents.defaults.model") {
             return OpenClawLLMConfiguration.migratedModelRef(value)
         }
-        return OpenClawLLMConfiguration.localQwenModelRef
+        return OpenClawLLMConfiguration.defaultLocalModelRef
     }
 
     private func primaryModelKey() -> String {
@@ -563,6 +1066,50 @@ struct BrainSettingsSection: View {
     private func value(for key: String) -> String? {
         jsonEntries.first(where: { $0.key == key })?.value
             ?? snapshot.jsonEntries.first(where: { $0.key == key })?.value
+    }
+
+    private func intValue(for key: String, default defaultValue: Int, range: ClosedRange<Int>) -> Int {
+        guard let rawValue = value(for: key)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let value = Int(rawValue) else {
+            return defaultValue
+        }
+        return min(max(value, range.lowerBound), range.upperBound)
+    }
+
+    private func boolValue(for key: String, default defaultValue: Bool) -> Bool {
+        guard let rawValue = value(for: key)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !rawValue.isEmpty else {
+            return defaultValue
+        }
+        switch rawValue {
+        case "1", "true", "yes", "on":
+            return true
+        case "0", "false", "no", "off":
+            return false
+        default:
+            return defaultValue
+        }
+    }
+
+    private func environmentValue(for key: String) -> String? {
+        environmentEntries.first(where: { $0.key == key })?.value
+            ?? snapshot.environmentEntries.first(where: { $0.key == key })?.value
+    }
+
+    private func providerAPIKeyPath(for providerName: String) -> String {
+        "models.providers.\(providerName).apiKey"
+    }
+
+    private func apiKey(for providerName: String) -> String {
+        value(for: providerAPIKeyPath(for: providerName)) ?? ""
+    }
+
+    private func upsertAPIKey(for providerName: String, value: String) {
+        upsertJSONSetting(
+            key: providerAPIKeyPath(for: providerName),
+            value: value,
+            isSecret: true
+        )
     }
 
     private func upsertJSONSetting(
@@ -593,6 +1140,33 @@ struct BrainSettingsSection: View {
         )
     }
 
+    private func upsertEnvironmentSetting(
+        key: String,
+        value: String,
+        isSecret: Bool = false
+    ) {
+        if let index = environmentEntries.firstIndex(where: { $0.key == key }) {
+            environmentEntries[index] = OpenClawEditableSetting(
+                key: key,
+                source: .environment,
+                kind: .string,
+                isSecret: isSecret || key.range(of: #"(?i)(token|secret|key|password)"#, options: .regularExpression) != nil,
+                value: value
+            )
+            return
+        }
+
+        environmentEntries.append(
+            OpenClawEditableSetting(
+                key: key,
+                source: .environment,
+                kind: .string,
+                isSecret: isSecret || key.range(of: #"(?i)(token|secret|key|password)"#, options: .regularExpression) != nil,
+                value: value
+            )
+        )
+    }
+
     private func ensureProviderDefaults() {
         for provider in OpenClawLLMConfiguration.providers {
             ensureProviderDefaults(provider)
@@ -603,7 +1177,7 @@ struct BrainSettingsSection: View {
     private func ensureCommonBrainDefaults() {
         ensureJSONSetting(
             key: "agents.defaults.model.primary",
-            value: OpenClawLLMConfiguration.localQwenModelRef,
+            value: OpenClawLLMConfiguration.defaultLocalModelRef,
             isSecret: false
         )
         ensureJSONSetting(
@@ -681,7 +1255,7 @@ struct BrainSettingsSection: View {
 }
 
 enum BrainPreset: String, CaseIterable, Identifiable {
-    case localQwen = "ollama/qwen3:14b"
+    case localQwen = "ollama/qwen3:30b"
     case localQwenMLX = "mlx/qwen3-14b-4bit"
     case mlxNemotronNano30B = "mlx/nemotron-nano"
     case custom
@@ -691,7 +1265,7 @@ enum BrainPreset: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .localQwen:
-            return "Local Qwen3 14B"
+            return "Local Qwen3 30B"
         case .localQwenMLX:
             return "Local Qwen3 14B MLX 4-bit"
         case .mlxNemotronNano30B:
@@ -711,6 +1285,38 @@ enum BrainPreset: String, CaseIterable, Identifiable {
             return OpenClawLLMConfiguration.localNemotronNanoModelRef
         case .custom:
             return ""
+        }
+    }
+}
+
+private enum BrainPersonaMode: String, CaseIterable, Identifiable {
+    case personaCompact = "persona_compact"
+    case deepPersona = "deep_persona"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .personaCompact:
+            return "persona_compact"
+        case .deepPersona:
+            return "deep_persona"
+        }
+    }
+}
+
+private enum BrainReasoningMode: String, CaseIterable, Identifiable {
+    case off
+    case on
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .off:
+            return "Reasoning off"
+        case .on:
+            return "Reasoning on"
         }
     }
 }

@@ -69,7 +69,7 @@ let package = Package(
         ),
         .target(
             name: "Automation",
-            dependencies: ["Domain", "Shared"],
+            dependencies: ["Application", "Domain", "Shared"],
             swiftSettings: swiftSettings
         ),
         .target(

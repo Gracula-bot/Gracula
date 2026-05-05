@@ -43,7 +43,7 @@ public struct LightweightTaskProfile: Sendable, Equatable {
 
     public static let deepPersona = LightweightTaskProfile(
         name: "deep_persona",
-        runtimeContextWindow: 32768,
+        runtimeContextWindow: 16384,
         maxOutputTokens: 2048,
         reserveTokens: 4096,
         maxHistoryMessages: 20,

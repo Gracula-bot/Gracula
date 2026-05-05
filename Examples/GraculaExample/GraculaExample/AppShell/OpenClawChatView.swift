@@ -1,3 +1,4 @@
+import Application
 import SwiftUI
 
 struct OpenClawChatView: View {
@@ -34,6 +35,22 @@ struct OpenClawChatView: View {
                         proxy.scrollTo(lastID, anchor: .bottom)
                     }
                 }
+            }
+
+            if let pendingReply = controller.pendingTelegramReply {
+                TelegramReplyDraftView(
+                    reply: pendingReply,
+                    onSend: {
+                        Task {
+                            await controller.sendPendingTelegramReply()
+                        }
+                    },
+                    onCancel: {
+                        Task {
+                            await controller.cancelPendingTelegramReply()
+                        }
+                    }
+                )
             }
 
             HStack(alignment: .bottom, spacing: 12) {
@@ -172,4 +189,56 @@ struct OpenClawChatView: View {
         formatter.dateFormat = "HH:mm"
         return formatter
     }()
+}
+
+private struct TelegramReplyDraftView: View {
+    let reply: PendingTelegramReply
+    let onSend: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Telegram draft", systemImage: "paperplane")
+                    .font(.headline)
+                Spacer()
+                Text(reply.status.rawValue)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
+                GridRow {
+                    Text("Chat")
+                        .foregroundStyle(.secondary)
+                    Text(reply.chatName)
+                        .textSelection(.enabled)
+                }
+                GridRow {
+                    Text("Reply")
+                        .foregroundStyle(.secondary)
+                    Text(reply.messageText)
+                        .textSelection(.enabled)
+                }
+            }
+            .font(.callout)
+
+            HStack {
+                Button {
+                    onSend()
+                } label: {
+                    Label("Отправить", systemImage: "paperplane.fill")
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button {
+                    onCancel()
+                } label: {
+                    Label("Отменить", systemImage: "xmark.circle")
+                }
+            }
+        }
+        .padding(12)
+        .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
+    }
 }
