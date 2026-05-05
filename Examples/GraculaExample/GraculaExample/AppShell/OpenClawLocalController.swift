@@ -2044,6 +2044,7 @@ final class OpenClawLocalController: ObservableObject {
         try fileManager.createDirectory(at: configDirectory, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: workspaceDirectory, withIntermediateDirectories: true)
         try seedCompactPersonaIfNeeded()
+        try validateProjectWorkspaceConfiguration()
         try fileManager.createDirectory(
             at: configDirectory.appendingPathComponent("canvas", isDirectory: true),
             withIntermediateDirectories: true
@@ -2061,6 +2062,22 @@ final class OpenClawLocalController: ObservableObject {
         }
         try defaultCompactPersona.write(to: url, atomically: true, encoding: .utf8)
         appendLog("Created compact persona at \(url.path).")
+    }
+
+    private func validateProjectWorkspaceConfiguration() throws {
+        let missingFiles = requiredProjectWorkspaceFiles.filter { fileName in
+            let url = workspaceDirectory.appendingPathComponent(fileName)
+            guard let contents = try? String(contentsOf: url, encoding: .utf8) else {
+                return true
+            }
+            return contents.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+
+        guard missingFiles.isEmpty else {
+            throw OpenClawLocalControllerError.missingRuntime(
+                "Project OpenClaw workspace is incomplete. Missing required personality files in \(workspaceDirectory.path): \(missingFiles.joined(separator: ", "))."
+            )
+        }
     }
 
     private func openClawEnvironment(
@@ -5017,24 +5034,53 @@ private func resolveGraculaProjectDirectory() -> URL {
     let fileManager = FileManager.default
     let env = ProcessInfo.processInfo.environment
 
+    if let sourceRoot = locateGraculaProjectRoot(
+        startingAt: URL(filePath: #filePath, directoryHint: .notDirectory).deletingLastPathComponent()
+    ) {
+        return sourceRoot
+    }
+
     if let override = env["GRACULA_PROJECT_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines),
-       !override.isEmpty {
-        return URL(filePath: override, directoryHint: .isDirectory)
+       !override.isEmpty,
+       let overrideRoot = locateGraculaProjectRoot(
+        startingAt: URL(filePath: override, directoryHint: .isDirectory)
+       ) {
+        return overrideRoot
     }
 
     let currentDirectory = URL(filePath: fileManager.currentDirectoryPath, directoryHint: .isDirectory)
-    var candidate = currentDirectory.standardizedFileURL
-    while candidate.path != "/" {
-        if fileManager.fileExists(atPath: candidate.appendingPathComponent("Package.swift").path),
-           fileManager.fileExists(atPath: candidate.appendingPathComponent("Examples", isDirectory: true).path) {
-            return candidate
-        }
-        candidate = candidate.deletingLastPathComponent()
+    if let currentRoot = locateGraculaProjectRoot(startingAt: currentDirectory) {
+        return currentRoot
     }
 
     return fileManager.homeDirectoryForCurrentUser
         .appendingPathComponent("Gracula", isDirectory: true)
 }
+
+private func locateGraculaProjectRoot(startingAt url: URL) -> URL? {
+    let fileManager = FileManager.default
+    var candidate = url.standardizedFileURL
+
+    while candidate.path != "/" {
+        if fileManager.fileExists(atPath: candidate.appendingPathComponent("Package.swift").path),
+           fileManager.fileExists(atPath: candidate.appendingPathComponent("Examples", isDirectory: true).path),
+           fileManager.fileExists(atPath: candidate.appendingPathComponent(".openclaw/workspace", isDirectory: true).path) {
+            return candidate
+        }
+        candidate = candidate.deletingLastPathComponent()
+    }
+
+    return nil
+}
+
+private let requiredProjectWorkspaceFiles = [
+    "SOUL.md",
+    "IDENTITY.md",
+    "AGENTS.md",
+    "USER.md",
+    "TOOLS.md",
+    "persona_compact.md"
+]
 
 private func resolveMLXRuntimeDirectory() -> URL {
     FileManager.default.homeDirectoryForCurrentUser
