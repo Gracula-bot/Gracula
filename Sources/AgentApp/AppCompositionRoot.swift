@@ -46,6 +46,16 @@ struct AppCompositionRoot {
         )
         let registry = ToolRegistry(tools: tools)
         let executor = ToolExecutor(registry: registry, auditLog: auditLog)
+        let telegramService = Self.makeTelegramService()
+        let telegramHandler = TelegramCommandHandler(
+            service: telegramService,
+            eventSink: { event in
+                try? await auditLog.record(
+                    AuditEvent(kind: .toolStarted, summary: event.rawValue)
+                )
+            }
+        )
+        let voiceCommandRouter = OpenClawVoiceCommandRouter(telegramHandler: telegramHandler)
         let orchestrator = AgentOrchestrator(
             planner: Self.makePlanner(availableTools: descriptors),
             policyChecker: DefaultPolicyGate(reversibleAllowlistedTools: reversibleAllowlistedTools),
@@ -56,6 +66,7 @@ struct AppCompositionRoot {
         return AgentView(
             viewModel: AgentViewModel(
                 orchestrator: orchestrator,
+                voiceCommandRouter: voiceCommandRouter,
                 toolExecutor: executor,
                 auditLog: auditLog,
                 speechSynthesizer: AppleSpeechSynthesizer(),
@@ -91,6 +102,29 @@ struct AppCompositionRoot {
                 )
             }
             .sorted { $0.name < $1.name }
+    }
+
+    private static func makeTelegramService() -> any TelegramService {
+        let environment = ProcessInfo.processInfo.environment
+        let automationService = TelegramMacAppAutomationService()
+        let userSettings = TelegramUserSettings.make(
+            environment: environment,
+            configDirectory: applicationSupportDirectory()
+        )
+        let userService: (any TelegramUserClienting)? = userSettings.enabled ? TelegramUserTDLibClient(settings: userSettings) : nil
+
+        let businessToken = environment["GRACULA_TELEGRAM_BOT_TOKEN"] ?? environment["TELEGRAM_BOT_TOKEN"] ?? ""
+        let trimmedBusinessToken = businessToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        let businessService = trimmedBusinessToken.isEmpty ? nil : TelegramBusinessBotService(botToken: trimmedBusinessToken)
+        let businessConnectionId = environment["GRACULA_TELEGRAM_BUSINESS_CONNECTION_ID"]
+            ?? environment["TELEGRAM_BUSINESS_CONNECTION_ID"]
+
+        return TelegramRoutingService(
+            automationService: automationService,
+            userService: userService,
+            businessService: businessService,
+            businessConnectionId: businessConnectionId
+        )
     }
 
     private static func botSettings(
