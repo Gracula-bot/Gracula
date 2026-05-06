@@ -25,8 +25,21 @@ public struct LLMRequestMetrics: Codable, Sendable, Equatable {
     }
 }
 
+public struct LoggedLLMRequest: Codable, Sendable, Equatable {
+    public let provider: String
+    public let endpoint: String
+    public let body: String
+
+    public init(provider: String, endpoint: String, body: String) {
+        self.provider = provider
+        self.endpoint = endpoint
+        self.body = body
+    }
+}
+
 public actor LLMRequestMetricsStore {
     private var latestMetrics: LLMRequestMetrics?
+    private var latestRequestRecord: LoggedLLMRequest?
 
     public init() {}
 
@@ -34,7 +47,30 @@ public actor LLMRequestMetricsStore {
         latestMetrics = metrics
     }
 
+    public func recordRequest(_ request: LoggedLLMRequest) {
+        latestRequestRecord = request
+    }
+
     public func latest() -> LLMRequestMetrics? {
         latestMetrics
     }
+
+    public func latestRequest() -> LoggedLLMRequest? {
+        latestRequestRecord
+    }
+}
+
+func prettyPrintedJSONString(from data: Data) -> String {
+    guard let object = try? JSONSerialization.jsonObject(with: data) else {
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    guard let prettyData = try? JSONSerialization.data(
+        withJSONObject: object,
+        options: [.prettyPrinted, .sortedKeys]
+    ) else {
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    return String(decoding: prettyData, as: UTF8.self)
 }

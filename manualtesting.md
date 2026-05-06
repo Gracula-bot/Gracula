@@ -109,7 +109,7 @@ Manual checks:
 Expected note location:
 
 ```bash
-ls "$HOME/Library/Application Support/Gracula/Notes"
+ls "$HOME/Library/Application Support/GraculaExample/Notes"
 ```
 
 ## Milestone 6 — Text-To-Speech
@@ -202,21 +202,21 @@ remember finish milestone 9
 Expected result: a note is written to:
 
 ```bash
-"$HOME/Library/Application Support/Gracula/Notes/note.txt"
+"$HOME/Library/Application Support/GraculaExample/Notes/note.txt"
 ```
 
 Manual allowed-read check:
 
 ```bash
-mkdir -p "$HOME/Documents/Gracula"
-printf "hello from allowed file\n" > "$HOME/Documents/Gracula/test.txt"
+mkdir -p "$HOME/Documents/GraculaExample"
+printf "hello from allowed file\n" > "$HOME/Documents/GraculaExample/test.txt"
 swift run Gracula
 ```
 
 Then type this command in the app, replacing `$HOME` with the full absolute path:
 
 ```text
-read /Users/gg/Documents/Gracula/test.txt
+read /Users/gg/Documents/GraculaExample/test.txt
 ```
 
 Expected result: the result panel shows `hello from allowed file`.

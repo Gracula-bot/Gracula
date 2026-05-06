@@ -25,6 +25,9 @@ public struct LLMPlanningAdapter: Planning {
     ) async throws -> AgentPlan {
         let request = promptCompiler.compile(userText: userText, context: context)
         let response = try await client.complete(request)
+        if let requestLog = response.requestLog {
+            await metricsStore?.recordRequest(requestLog)
+        }
         if let metrics = response.metrics {
             await metricsStore?.record(metrics)
         }

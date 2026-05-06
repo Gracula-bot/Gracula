@@ -33,11 +33,14 @@ struct LocalSpeechRuntimeConfiguration: Sendable {
         languageCode: String? = nil
     ) throws -> LocalSpeechRuntimeConfiguration {
         let fileManager = FileManager.default
-        let homeDirectory = fileManager.homeDirectoryForCurrentUser
         let environment = ProcessInfo.processInfo.environment
 
         let applicationSupportDirectory = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("GraculaExample", isDirectory: true)
+
+        let repositoryCandidates = candidateRepositoryRoots(
+            currentDirectory: URL(fileURLWithPath: fileManager.currentDirectoryPath)
+        )
 
         let pythonCandidates: [URL] = [
             environment["GRACULA_WHISPER_PYTHON"].map { URL(fileURLWithPath: $0) },
@@ -48,28 +51,11 @@ struct LocalSpeechRuntimeConfiguration: Sendable {
             Self.exampleDirectoryPythonURL(
                 in: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             ),
-            Self.examplePythonURL(
-                in: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-            ),
-            Self.examplePythonURL(
-                in: homeDirectory
-                    .appendingPathComponent("Documents", isDirectory: true)
-                    .appendingPathComponent("Gracula", isDirectory: true)
-            ),
-            Self.examplePythonURL(
-                in: homeDirectory.appendingPathComponent("Gracula", isDirectory: true)
-            ),
-            Self.examplePythonURL(
-                in: homeDirectory
-                    .appendingPathComponent("Code", isDirectory: true)
-                    .appendingPathComponent("Gracula", isDirectory: true)
-            )
-        ]
-        .compactMap { $0 }
+        ] + repositoryCandidates.map(Self.examplePythonURL(in:))
 
         guard let pythonURL = pythonCandidates.first(where: { fileManager.isExecutableFile(atPath: $0.path) }) else {
             throw FileSpeechTranscriberError.runtimeMissing(
-                "Python runtime not found. Expected `GRACULA_WHISPER_PYTHON`, `~/Library/Application Support/GraculaExample/PythonRuntime/bin/python`, or `Examples/GraculaExample/.whisper-venv/bin/python` under the Gracula checkout."
+                "Python runtime not found. Expected `GRACULA_WHISPER_PYTHON`, `~/Library/Application Support/GraculaExample/PythonRuntime/bin/python`, or `Examples/GraculaExample/.whisper-venv/bin/python` under the repository checkout."
             )
         }
 
@@ -142,6 +128,50 @@ struct LocalSpeechRuntimeConfiguration: Sendable {
             .appendingPathComponent(".whisper-venv", isDirectory: true)
             .appendingPathComponent("bin", isDirectory: true)
             .appendingPathComponent("python")
+    }
+
+    private static func candidateRepositoryRoots(currentDirectory: URL) -> [URL] {
+        let fileManager = FileManager.default
+        let environment = ProcessInfo.processInfo.environment
+        var candidates: [URL] = []
+
+        if let override = environment["GRACULA_PROJECT_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !override.isEmpty {
+            candidates.append(URL(fileURLWithPath: override, isDirectory: true))
+        }
+
+        candidates.append(currentDirectory)
+
+        let homeDirectory = fileManager.homeDirectoryForCurrentUser
+        candidates.append(homeDirectory.appendingPathComponent("Documents", isDirectory: true))
+        candidates.append(homeDirectory.appendingPathComponent("Code", isDirectory: true))
+        candidates.append(homeDirectory)
+
+        var resolvedRoots: [URL] = []
+        for candidate in candidates {
+            if let root = locateGraculaProjectRoot(startingAt: candidate),
+               !resolvedRoots.contains(root) {
+                resolvedRoots.append(root)
+            }
+        }
+
+        return resolvedRoots
+    }
+
+    private static func locateGraculaProjectRoot(startingAt url: URL) -> URL? {
+        let fileManager = FileManager.default
+        var candidate = url.standardizedFileURL
+
+        while candidate.path != "/" {
+            if fileManager.fileExists(atPath: candidate.appendingPathComponent("Package.swift").path),
+               fileManager.fileExists(atPath: candidate.appendingPathComponent("Examples", isDirectory: true).path),
+               fileManager.fileExists(atPath: candidate.appendingPathComponent("Examples/GraculaExample", isDirectory: true).path) {
+                return candidate
+            }
+            candidate = candidate.deletingLastPathComponent()
+        }
+
+        return nil
     }
 }
 

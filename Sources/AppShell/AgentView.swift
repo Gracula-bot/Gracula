@@ -81,7 +81,11 @@ public struct AgentView: View {
                 }
 
                 if let botSettings = viewModel.botSettings {
-                    BotSettingsView(settings: botSettings, llmMetrics: viewModel.llmMetrics)
+                    BotSettingsView(
+                        settings: botSettings,
+                        llmMetrics: viewModel.llmMetrics,
+                        llmRequestLog: viewModel.llmRequestLog
+                    )
                 }
 
                 AuditLogPreviewView(entries: viewModel.auditEntries)
@@ -157,6 +161,7 @@ private struct TelegramReplyPanel: View {
 private struct BotSettingsView: View {
     let settings: BotSettingsSnapshot
     let llmMetrics: LLMRequestMetrics?
+    let llmRequestLog: LoggedLLMRequest?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -196,6 +201,26 @@ private struct BotSettingsView: View {
                     settingsRow("Total tokens", tokenValue(llmMetrics.totalTokens))
                 }
                 .font(.callout)
+
+                if let llmRequestLog {
+                    VStack(alignment: .leading, spacing: 6) {
+                        settingsRow("Endpoint", llmRequestLog.endpoint)
+
+                        Text("Payload")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        ScrollView([.horizontal, .vertical]) {
+                            Text(llmRequestLog.body)
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(minHeight: 180, maxHeight: 280)
+                        .padding(8)
+                        .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                }
             } else {
                 Text("No LLM request has been recorded yet.")
                     .font(.caption)

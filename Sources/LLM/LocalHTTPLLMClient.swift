@@ -3,9 +3,15 @@ import Foundation
 public struct LocalHTTPLLMClient: LLMClient {
     private let endpoint: URL
     private let urlSession: URLSession
+    private let requestStore: LLMRequestMetricsStore?
 
-    public init(endpoint: URL, urlSession: URLSession = .shared) {
+    public init(
+        endpoint: URL,
+        requestStore: LLMRequestMetricsStore? = nil,
+        urlSession: URLSession = .shared
+    ) {
         self.endpoint = endpoint
+        self.requestStore = requestStore
         self.urlSession = urlSession
     }
 
@@ -13,7 +19,16 @@ public struct LocalHTTPLLMClient: LLMClient {
         var urlRequest = URLRequest(url: endpoint)
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        urlRequest.httpBody = try JSONEncoder().encode(LocalHTTPRequest(from: request))
+        let payload = LocalHTTPRequest(from: request)
+        let body = try JSONEncoder().encode(payload)
+        urlRequest.httpBody = body
+
+        let requestLog = LoggedLLMRequest(
+            provider: "Local HTTP planner",
+            endpoint: endpoint.absoluteString,
+            body: prettyPrintedJSONString(from: body)
+        )
+        await requestStore?.recordRequest(requestLog)
 
         let (data, _) = try await urlSession.data(for: urlRequest)
         let response = try JSONDecoder().decode(LocalHTTPResponse.self, from: data)
@@ -23,7 +38,8 @@ public struct LocalHTTPLLMClient: LLMClient {
                 provider: "Local HTTP planner",
                 model: request.model ?? "Not set",
                 temperature: request.temperature
-            )
+            ),
+            requestLog: requestLog
         )
     }
 

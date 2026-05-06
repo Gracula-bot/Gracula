@@ -183,19 +183,51 @@ enum OpenClawLLMConfiguration {
         repositoryEnvURL: URL,
         configEnvURL: URL,
         configURL: URL,
+        overrideConfigURL: URL? = nil,
         into environment: inout [String: String]
     ) {
         mergeEnvFile(repositoryEnvURL, into: &environment)
         mergeEnvFile(configEnvURL, into: &environment)
-        mergeOpenClawJSONEnvironment(from: configURL, into: &environment)
+        mergeOpenClawJSONEnvironment(
+            from: configURL,
+            overrideConfigURL: overrideConfigURL,
+            into: &environment
+        )
     }
 
-    static func mergeOpenClawJSONEnvironment(from configURL: URL, into environment: inout [String: String]) {
-        guard let data = try? Data(contentsOf: configURL),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+    static func mergeOpenClawJSONEnvironment(
+        from configURL: URL,
+        overrideConfigURL: URL? = nil,
+        into environment: inout [String: String]
+    ) {
+        guard let object = mergedJSONObject(
+            baseConfigURL: configURL,
+            overrideConfigURL: overrideConfigURL
+        ) else {
             return
         }
         mergeEnvVars(from: object, into: &environment)
+    }
+
+    static func mergedJSONObject(
+        baseConfigURL: URL,
+        overrideConfigURL: URL? = nil
+    ) -> [String: Any]? {
+        let baseObject = loadJSONObject(from: baseConfigURL)
+        let overrideObject = loadJSONObject(from: overrideConfigURL)
+
+        switch (baseObject, overrideObject) {
+        case let (base?, override?):
+            var merged = base
+            deepMergeJSONObject(override, into: &merged)
+            return merged
+        case let (base?, nil):
+            return base
+        case let (nil, override?):
+            return override
+        case (nil, nil):
+            return nil
+        }
     }
 
     static func entriesWithProviderDefaults(_ entries: [OpenClawEditableSetting]) -> [OpenClawEditableSetting] {
@@ -228,6 +260,28 @@ enum OpenClawLLMConfiguration {
                 environment[key] = value
             } else if let value = rawValue as? NSNumber {
                 environment[key] = value.stringValue
+            }
+        }
+    }
+
+    private static func loadJSONObject(from url: URL?) -> [String: Any]? {
+        guard let url,
+              let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return object
+    }
+
+    private static func deepMergeJSONObject(_ override: [String: Any], into base: inout [String: Any]) {
+        for (key, overrideValue) in override {
+            if let overrideDictionary = overrideValue as? [String: Any],
+               let baseDictionary = base[key] as? [String: Any] {
+                var mergedChild = baseDictionary
+                deepMergeJSONObject(overrideDictionary, into: &mergedChild)
+                base[key] = mergedChild
+            } else {
+                base[key] = overrideValue
             }
         }
     }
@@ -2251,13 +2305,28 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         workspaceFiles: [OpenClawWorkspaceFile]
     ) {
         do {
+            let wasRunning = isRunning
+            let hadTelegramUserClient = telegramUserClient != nil
             try OpenClawSettingsReader.writeEnvironment(entries: environmentEntries)
             try OpenClawSettingsReader.writeJSON(entries: jsonEntries)
             try OpenClawSettingsReader.writeWorkspaceFiles(workspaceFiles)
             reloadSettings()
-            settingsStatusText = isRunning
-                ? "Settings applied. Restart OpenClaw to apply process environment changes."
-                : "Settings applied."
+            if wasRunning {
+                stop()
+                start()
+            }
+            if hadTelegramUserClient {
+                Task { [weak self] in
+                    await self?.closeTelegramUserClient()
+                    await self?.startTelegramUserAPI()
+                }
+            }
+            settingsStatusText =
+                if wasRunning || hadTelegramUserClient {
+                    "Settings applied and runtime restarted."
+                } else {
+                    "Settings applied."
+                }
             appendLog(settingsStatusText)
         } catch {
             settingsStatusText = "Settings apply failed: \(error.localizedDescription)"
@@ -2830,6 +2899,13 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         let configDirectory = configDirectory ?? self.configDirectory
         let workspaceDirectory = workspaceDirectory ?? self.workspaceDirectory
         let stateDirectory = stateDirectory ?? configDirectory
+        let sourceConfigURL = configPath ?? configDirectory.appendingPathComponent("openclaw.json")
+        let overrideConfigURL = sourceConfigURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("gracula-example.json")
+        let runtimeConfigURL = sourceConfigURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("runtime-openclaw.json")
         var environment = ProcessInfo.processInfo.environment
         environment["HOME"] = FileManager.default.homeDirectoryForCurrentUser.path
         environment["TERM"] = environment["TERM"] ?? "xterm-256color"
@@ -2845,18 +2921,21 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         OpenClawLLMConfiguration.mergeEnvironmentSources(
             repositoryEnvURL: repositoryDirectory.appendingPathComponent(".env"),
             configEnvURL: configDirectory.appendingPathComponent(".env"),
-            configURL: configDirectory.appendingPathComponent("openclaw.json"),
+            configURL: sourceConfigURL,
+            overrideConfigURL: overrideConfigURL,
             into: &environment
+        )
+
+        try writeRuntimeConfig(
+            baseConfigURL: sourceConfigURL,
+            overrideConfigURL: overrideConfigURL,
+            destinationURL: runtimeConfigURL
         )
 
         environment["OPENCLAW_CONFIG_DIR"] = configDirectory.path
         environment["OPENCLAW_WORKSPACE_DIR"] = workspaceDirectory.path
         environment["OPENCLAW_STATE_DIR"] = stateDirectory.path
-        if let configPath {
-            environment["OPENCLAW_CONFIG_PATH"] = configPath.path
-        } else {
-            environment["OPENCLAW_CONFIG_PATH"] = configDirectory.appendingPathComponent("openclaw.json").path
-        }
+        environment["OPENCLAW_CONFIG_PATH"] = runtimeConfigURL.path
         environment["OPENCLAW_GATEWAY_BIND"] = "loopback"
         environment["OPENCLAW_GATEWAY_PORT"] = environment["OPENCLAW_GATEWAY_PORT"] ?? configuredGatewayPort(from: environment)
         environment["OPENCLAW_GATEWAY_URL"] = "ws://\(gatewayHost):\(environment["OPENCLAW_GATEWAY_PORT"] ?? gatewayPort)"
@@ -2874,6 +2953,26 @@ final class OpenClawLocalController: NSObject, ObservableObject {
     private static func makeSettingsSnapshot(environment: [String: String]? = nil) -> OpenClawSettingsSnapshot {
         let controller = OpenClawSettingsReader(environment: environment)
         return controller.snapshot()
+    }
+
+    private func writeRuntimeConfig(
+        baseConfigURL: URL,
+        overrideConfigURL: URL,
+        destinationURL: URL
+    ) throws {
+        let mergedObject = OpenClawLLMConfiguration.mergedJSONObject(
+            baseConfigURL: baseConfigURL,
+            overrideConfigURL: overrideConfigURL
+        ) ?? [:]
+        try FileManager.default.createDirectory(
+            at: destinationURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let data = try JSONSerialization.data(
+            withJSONObject: mergedObject,
+            options: [.prettyPrinted, .sortedKeys]
+        )
+        try data.write(to: destinationURL, options: [.atomic])
     }
 
     private var gatewayPort: String {
@@ -4780,6 +4879,7 @@ struct OpenClawSettingsReader {
             repositoryEnvURL: repositoryDirectory.appendingPathComponent(".env"),
             configEnvURL: configDirectory.appendingPathComponent(".env"),
             configURL: configDirectory.appendingPathComponent("openclaw.json"),
+            overrideConfigURL: OpenClawRuntimePaths.graculaExampleSettingsURL,
             into: &mergedEnvironment
         )
         if let environment {
@@ -5378,8 +5478,7 @@ private func resolveGraculaProjectDirectory() -> URL {
         return currentRoot
     }
 
-    return fileManager.homeDirectoryForCurrentUser
-        .appendingPathComponent("Gracula", isDirectory: true)
+    return currentDirectory
 }
 
 private func locateGraculaProjectRoot(startingAt url: URL) -> URL? {

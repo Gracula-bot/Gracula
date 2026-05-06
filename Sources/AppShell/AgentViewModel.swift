@@ -15,6 +15,7 @@ public final class AgentViewModel: ObservableObject {
     @Published public private(set) var auditEntries: [String]
     @Published public private(set) var botSettings: BotSettingsSnapshot?
     @Published public private(set) var llmMetrics: LLMRequestMetrics?
+    @Published public private(set) var llmRequestLog: LoggedLLMRequest?
 
     private let orchestrator: AgentOrchestrator?
     private let voiceCommandRouter: OpenClawVoiceCommandRouter?
@@ -49,6 +50,7 @@ public final class AgentViewModel: ObservableObject {
         self.auditEntries = []
         self.botSettings = botSettings
         self.llmMetrics = nil
+        self.llmRequestLog = nil
     }
 
     public var canRun: Bool {
@@ -90,7 +92,7 @@ public final class AgentViewModel: ObservableObject {
             resultText = String(describing: error)
         }
 
-        await refreshLLMMetrics()
+        await refreshLLMState()
         await refreshAuditEntries()
     }
 
@@ -127,7 +129,7 @@ public final class AgentViewModel: ObservableObject {
             resultText = String(describing: error)
         }
 
-        await refreshLLMMetrics()
+        await refreshLLMState()
         await refreshAuditEntries()
     }
 
@@ -167,7 +169,7 @@ public final class AgentViewModel: ObservableObject {
         let result = await voiceCommandRouter.route(text: "отправь")
         _ = applyTelegramResult(result)
         await speakCurrentResultIfNeeded()
-        await refreshLLMMetrics()
+        await refreshLLMState()
         await refreshAuditEntries()
     }
 
@@ -178,7 +180,7 @@ public final class AgentViewModel: ObservableObject {
         let result = await voiceCommandRouter.route(text: "отмени")
         _ = applyTelegramResult(result)
         await speakCurrentResultIfNeeded()
-        await refreshLLMMetrics()
+        await refreshLLMState()
         await refreshAuditEntries()
     }
 
@@ -225,8 +227,9 @@ public final class AgentViewModel: ObservableObject {
         }
     }
 
-    private func refreshLLMMetrics() async {
+    private func refreshLLMState() async {
         llmMetrics = await llmMetricsStore?.latest()
+        llmRequestLog = await llmMetricsStore?.latestRequest()
     }
 
     private func speakCurrentResultIfNeeded() async {

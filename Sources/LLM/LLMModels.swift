@@ -22,10 +22,16 @@ public struct LLMRequest: Codable, Sendable, Equatable {
 public struct LLMResponse: Codable, Sendable, Equatable {
     public let text: String
     public let metrics: LLMRequestMetrics?
+    public let requestLog: LoggedLLMRequest?
 
-    public init(text: String, metrics: LLMRequestMetrics? = nil) {
+    public init(
+        text: String,
+        metrics: LLMRequestMetrics? = nil,
+        requestLog: LoggedLLMRequest? = nil
+    ) {
         self.text = text
         self.metrics = metrics
+        self.requestLog = requestLog
     }
 }
 

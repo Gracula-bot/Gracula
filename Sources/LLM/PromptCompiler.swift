@@ -4,10 +4,16 @@ import Domain
 public struct PromptCompiler: Sendable {
     private let availableTools: [ToolDescriptor]
     private let model: String?
+    private let temperature: Double
 
-    public init(availableTools: [ToolDescriptor], model: String? = nil) {
+    public init(
+        availableTools: [ToolDescriptor],
+        model: String? = nil,
+        temperature: Double = 0.0
+    ) {
         self.availableTools = availableTools.sorted { $0.name < $1.name }
         self.model = model
+        self.temperature = temperature
     }
 
     public func compile(userText: String, context: ConversationContext) -> LLMRequest {
@@ -15,7 +21,7 @@ public struct PromptCompiler: Sendable {
             systemPrompt: systemPrompt,
             userPrompt: userPrompt(userText: userText, context: context),
             model: model,
-            temperature: 0.0
+            temperature: temperature
         )
     }
 

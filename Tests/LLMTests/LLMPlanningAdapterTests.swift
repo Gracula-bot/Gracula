@@ -44,6 +44,49 @@ func llmPlanningAdapterCompilesPromptAndParsesResponse() async throws {
     #expect(await client.requests[0].userPrompt.contains("open_url"))
 }
 
+@Test
+func llmPlanningAdapterStoresRequestLog() async throws {
+    let tools = [
+        ToolDescriptor(name: "open_url", description: "Open URL", riskLevel: .safe)
+    ]
+    let store = LLMRequestMetricsStore()
+    let client = FakeLLMClient(
+        response: LLMResponse(
+            text: """
+            {
+              "summary": "Open website",
+              "toolCalls": [
+                {
+                  "name": "open_url",
+                  "riskLevel": "safe",
+                  "arguments": { "url": { "string": "https://apple.com" } }
+                }
+              ]
+            }
+            """,
+            requestLog: LoggedLLMRequest(
+                provider: "Fake",
+                endpoint: "https://example.com/v1/chat/completions",
+                body: "{\"model\":\"fake\"}"
+            )
+        )
+    )
+    let adapter = LLMPlanningAdapter(
+        client: client,
+        promptCompiler: PromptCompiler(availableTools: tools),
+        parser: AgentPlanParser(availableTools: tools),
+        metricsStore: store
+    )
+
+    _ = try await adapter.makePlan(
+        userText: "Open apple.com",
+        context: ConversationContext(messages: [])
+    )
+
+    #expect(await store.latestRequest()?.endpoint == "https://example.com/v1/chat/completions")
+    #expect(await store.latestRequest()?.body == "{\"model\":\"fake\"}")
+}
+
 private actor FakeLLMClient: LLMClient {
     private let response: LLMResponse
     private(set) var requests: [LLMRequest] = []
@@ -61,4 +104,3 @@ private actor FakeLLMClient: LLMClient {
         throw LLMError.unsupportedStreaming
     }
 }
-

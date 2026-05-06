@@ -10,7 +10,8 @@ func promptCompilerIncludesCommandContextToolsSafetyAndSchema() {
             ToolDescriptor(name: "send_message", description: "Send message", riskLevel: .externalCommunication),
             ToolDescriptor(name: "open_url", description: "Open URL", riskLevel: .safe)
         ],
-        model: "local-model"
+        model: "local-model",
+        temperature: 0.35
     )
 
     let request = compiler.compile(
@@ -21,7 +22,7 @@ func promptCompilerIncludesCommandContextToolsSafetyAndSchema() {
     )
 
     #expect(request.model == "local-model")
-    #expect(request.temperature == 0.0)
+    #expect(request.temperature == 0.35)
     #expect(request.systemPrompt.contains("Return only valid JSON"))
     #expect(request.userPrompt.contains("Open apple.com"))
     #expect(request.userPrompt.contains("Remember this"))

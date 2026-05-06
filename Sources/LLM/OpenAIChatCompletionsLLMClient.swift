@@ -5,16 +5,19 @@ public struct OpenAIChatCompletionsLLMClient: LLMClient {
     private let endpoint: URL
     private let defaultModel: String
     private let urlSession: URLSession
+    private let requestStore: LLMRequestMetricsStore?
 
     public init(
         apiKey: String,
         endpoint: URL = URL(string: "https://api.openai.com/v1/chat/completions")!,
         defaultModel: String,
+        requestStore: LLMRequestMetricsStore? = nil,
         urlSession: URLSession = .shared
     ) {
         self.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         self.endpoint = endpoint
         self.defaultModel = defaultModel
+        self.requestStore = requestStore
         self.urlSession = urlSession
     }
 
@@ -27,12 +30,19 @@ public struct OpenAIChatCompletionsLLMClient: LLMClient {
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        urlRequest.httpBody = try JSONEncoder().encode(
-            OpenAIChatCompletionRequest(
-                request: request,
-                defaultModel: defaultModel
-            )
+        let payload = OpenAIChatCompletionRequest(
+            request: request,
+            defaultModel: defaultModel
         )
+        let body = try JSONEncoder().encode(payload)
+        urlRequest.httpBody = body
+
+        let requestLog = LoggedLLMRequest(
+            provider: "OpenAI Chat Completions",
+            endpoint: endpoint.absoluteString,
+            body: prettyPrintedJSONString(from: body)
+        )
+        await requestStore?.recordRequest(requestLog)
 
         let (data, response) = try await urlSession.data(for: urlRequest)
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -55,7 +65,8 @@ public struct OpenAIChatCompletionsLLMClient: LLMClient {
                 promptTokens: decoded.usage?.promptTokens,
                 completionTokens: decoded.usage?.completionTokens,
                 totalTokens: decoded.usage?.totalTokens
-            )
+            ),
+            requestLog: requestLog
         )
     }
 
