@@ -21,6 +21,14 @@
         "fallbacks": [],
         "primary": "openai/gpt-5.4-mini"
       },
+      "models": {
+        "kilocode/kilo/auto": {
+          "alias": "Kilo Gateway"
+        },
+        "openrouter/auto": {
+          "alias": "OpenRouter"
+        }
+      },
       "subagents": {
         "maxConcurrent": 8
       },
@@ -29,7 +37,16 @@
     }
   },
   "auth": {
-    "profiles": {}
+    "profiles": {
+      "kilocode:default": {
+        "mode": "api_key",
+        "provider": "kilocode"
+      },
+      "openrouter:default": {
+        "mode": "api_key",
+        "provider": "openrouter"
+      }
+    }
   },
   "channels": {
     "telegram": {
@@ -67,12 +84,15 @@
   },
   "env": {
     "vars": {
+      "GEMINI_API_KEY": "",
+      "GOOGLE_API_KEY": "",
       "GRACULA_QDRANT_BIN": ".openclaw/bin/qdrant",
       "GRACULA_QDRANT_STORAGE_DIR": ".openclaw/qdrant/storage",
       "GRACULA_QDRANT_URL": "http://127.0.0.1:6333",
       "OPENCLAW_QDRANT_BIN": ".openclaw/bin/qdrant",
       "OPENCLAW_QDRANT_STORAGE_DIR": ".openclaw/qdrant/storage",
       "OPENCLAW_QDRANT_URL": "http://127.0.0.1:6333",
+      "OPENROUTER_API_KEY": "",
       "QDRANT_URL": "http://127.0.0.1:6333"
     }
   },
@@ -183,6 +203,103 @@
   "models": {
     "mode": "merge",
     "providers": {
+      "google": {
+        "api": "google-generative-ai",
+        "apiKey": "",
+        "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+        "models": [
+          {
+            "api": "google-generative-ai",
+            "contextWindow": 1048576,
+            "cost": {
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "input": 0,
+              "output": 0
+            },
+            "id": "gemini-3.1-pro-preview",
+            "input": [
+              "text",
+              "image"
+            ],
+            "maxTokens": 65536,
+            "name": "Gemini 3.1 Pro Preview",
+            "reasoning": true
+          },
+          {
+            "api": "google-generative-ai",
+            "contextWindow": 1048576,
+            "cost": {
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "input": 0,
+              "output": 0
+            },
+            "id": "gemini-3-flash-preview",
+            "input": [
+              "text",
+              "image"
+            ],
+            "maxTokens": 65536,
+            "name": "Gemini 3 Flash Preview",
+            "reasoning": false
+          }
+        ]
+      },
+      "kilocode": {
+        "api": "openai-completions",
+        "baseUrl": "https://api.kilo.ai/api/gateway/",
+        "models": [
+          {
+            "contextWindow": 1000000,
+            "cost": {
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "input": 0,
+              "output": 0
+            },
+            "id": "kilo/auto",
+            "input": [
+              "text",
+              "image"
+            ],
+            "maxTokens": 128000,
+            "name": "Kilo Auto",
+            "reasoning": true
+          }
+        ]
+      },
+      "mlx": {
+        "api": "openai-completions",
+        "apiKey": "mlx-local",
+        "auth": "api-key",
+        "authHeader": true,
+        "baseUrl": "http://127.0.0.1:8080/v1",
+        "models": [
+          {
+            "api": "openai-completions",
+            "compat": {
+              "supportsStrictMode": false,
+              "supportsTools": true
+            },
+            "contextTokens": 16384,
+            "contextWindow": 32768,
+            "cost": {
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "input": 0,
+              "output": 0
+            },
+            "id": "Qwen/Qwen3-30B-A3B-MLX-4bit",
+            "input": [
+              "text"
+            ],
+            "maxTokens": 4096,
+            "name": "Qwen/Qwen3-30B-A3B-MLX-4bit",
+            "reasoning": true
+          }
+        ]
+      },
       "openai": {
         "api": "openai-completions",
         "apiKey": "",
@@ -212,6 +329,35 @@
             "reasoning": true
           }
         ]
+      },
+      "openrouter": {
+        "api": "openai-completions",
+        "apiKey": "",
+        "auth": "api-key",
+        "authHeader": true,
+        "baseUrl": "https://openrouter.ai/api/v1",
+        "models": [
+          {
+            "api": "openai-completions",
+            "compat": {
+              "supportsTools": false
+            },
+            "contextWindow": 128000,
+            "cost": {
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "input": 0,
+              "output": 0
+            },
+            "id": "free",
+            "input": [
+              "text"
+            ],
+            "maxTokens": 8192,
+            "name": "OpenRouter Free",
+            "reasoning": false
+          }
+        ]
       }
     }
   },
@@ -223,16 +369,20 @@
       "cloudflare-ai-gateway",
       "device-pair",
       "github-copilot",
+      "google",
       "huggingface",
+      "kilocode",
       "kimi",
       "memory-core",
       "minimax",
       "mistral",
       "moonshot",
       "nvidia",
+      "ollama",
       "openai",
       "opencode",
       "opencode-go",
+      "openrouter",
       "phone-control",
       "qianfan",
       "sglang",
@@ -252,6 +402,15 @@
     ],
     "entries": {
       "browser": {
+        "enabled": true
+      },
+      "google": {
+        "enabled": true
+      },
+      "kilocode": {
+        "enabled": true
+      },
+      "openrouter": {
         "enabled": true
       },
       "vibe-rag": {

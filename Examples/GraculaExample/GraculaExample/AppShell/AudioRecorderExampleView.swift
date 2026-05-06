@@ -42,7 +42,6 @@ struct AudioRecorderExampleView: View {
                     )
                 )
             }
-            await openClawController.ensureLocalModelServer()
             await viewModel.loadRecordings()
             guard !didBootstrapOpenClaw else {
                 return
@@ -397,6 +396,9 @@ struct BrainSettingsSection: View {
     @State private var selectedPreset: BrainPreset = .openAIGPT54Mini
     @State private var customModelRef = ""
     @State private var openAIApiKey = ""
+    @State private var openAITemperature = 0.35
+    @State private var openAITopP = 0.85
+    @State private var openAIMaxTokens = 512
     @State private var qdrantURL = ""
     @State private var qdrantBinaryPath = ""
     @State private var qdrantStoragePath = ""
@@ -508,6 +510,8 @@ struct BrainSettingsSection: View {
                     upsertAPIKey(for: "openai", value: newValue)
                 }
 
+            openAIRequestControls
+
             Text("GraculaExample accepts only OpenAI models and uses only the OpenAI API key.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -549,6 +553,21 @@ struct BrainSettingsSection: View {
             customModelRef = currentModel
         }
         openAIApiKey = apiKey(for: "openai")
+        openAITemperature = doubleValue(
+            for: "agents.defaults.localPrompt.openAIChat.temperature",
+            default: 0.35,
+            range: 0...2
+        )
+        openAITopP = doubleValue(
+            for: "agents.defaults.localPrompt.openAIChat.topP",
+            default: 0.85,
+            range: 0...1
+        )
+        openAIMaxTokens = intValue(
+            for: "agents.defaults.localPrompt.openAIChat.maxTokens",
+            default: 512,
+            range: 32...8192
+        )
         selectedPersonaMode = BrainPersonaMode(rawValue: value(for: "agents.defaults.localPrompt.mode") ?? "") ?? .deepPersona
         selectedReasoningMode = BrainReasoningMode(rawValue: value(for: "agents.defaults.localPrompt.reasoning") ?? "") ?? .on
         notificationContextTokens = intValue(
@@ -700,6 +719,74 @@ struct BrainSettingsSection: View {
                     upsertEnvironmentSetting(key: "GRACULA_QDRANT_STORAGE_DIR", value: newValue)
                     upsertEnvironmentSetting(key: "OPENCLAW_QDRANT_STORAGE_DIR", value: newValue)
                 }
+        }
+    }
+
+    private var openAIRequestControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionHeader("OpenAI Request Settings", systemImage: "slider.horizontal.3")
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Temperature")
+                        .font(.caption)
+                    Spacer()
+                    Text(String(format: "%.2f", openAITemperature))
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                Slider(value: $openAITemperature, in: 0...2, step: 0.05)
+                    .onChange(of: openAITemperature) { _, newValue in
+                        guard !isSyncing else { return }
+                        upsertJSONSetting(
+                            key: "agents.defaults.localPrompt.openAIChat.temperature",
+                            value: String(format: "%.2f", newValue),
+                            isSecret: false,
+                            kind: .double
+                        )
+                        syncOpenAIProviderModelParameters()
+                    }
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Top P")
+                        .font(.caption)
+                    Spacer()
+                    Text(String(format: "%.2f", openAITopP))
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                Slider(value: $openAITopP, in: 0...1, step: 0.05)
+                    .onChange(of: openAITopP) { _, newValue in
+                        guard !isSyncing else { return }
+                        upsertJSONSetting(
+                            key: "agents.defaults.localPrompt.openAIChat.topP",
+                            value: String(format: "%.2f", newValue),
+                            isSecret: false,
+                            kind: .double
+                        )
+                        syncOpenAIProviderModelParameters()
+                    }
+            }
+
+            Stepper(value: $openAIMaxTokens, in: 32...8192, step: 32) {
+                Text("OpenAI max tokens cap: \(openAIMaxTokens)")
+                    .font(.caption)
+            }
+            .onChange(of: openAIMaxTokens) { _, newValue in
+                guard !isSyncing else { return }
+                upsertJSONSetting(
+                    key: "agents.defaults.localPrompt.openAIChat.maxTokens",
+                    value: String(newValue),
+                    isSecret: false,
+                    kind: .int
+                )
+            }
+
+            Text("These values are applied to direct OpenAI chat requests after you press Apply.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -1055,6 +1142,14 @@ struct BrainSettingsSection: View {
         return min(max(value, range.lowerBound), range.upperBound)
     }
 
+    private func doubleValue(for key: String, default defaultValue: Double, range: ClosedRange<Double>) -> Double {
+        guard let rawValue = value(for: key)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let value = Double(rawValue) else {
+            return defaultValue
+        }
+        return min(max(value, range.lowerBound), range.upperBound)
+    }
+
     private func boolValue(for key: String, default defaultValue: Bool) -> Bool {
         guard let rawValue = value(for: key)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
               !rawValue.isEmpty else {
@@ -1149,6 +1244,37 @@ struct BrainSettingsSection: View {
         )
     }
 
+    private func syncOpenAIProviderModelParameters() {
+        let jsonString = value(for: "models.providers.openai.models")
+            ?? OpenClawLLMConfiguration.providers.first(where: { $0.name == "openai" })?.modelsJSON
+            ?? "[]"
+        guard let data = jsonString.data(using: .utf8),
+              var models = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]],
+              !models.isEmpty else {
+            return
+        }
+
+        var firstModel = models[0]
+        var params = firstModel["params"] as? [String: Any] ?? [:]
+        params["temperature"] = openAITemperature
+        params["top_p"] = openAITopP
+        firstModel["params"] = params
+        models[0] = firstModel
+
+        guard JSONSerialization.isValidJSONObject(models),
+              let updatedData = try? JSONSerialization.data(withJSONObject: models, options: [.sortedKeys]),
+              let updatedString = String(data: updatedData, encoding: .utf8) else {
+            return
+        }
+
+        upsertJSONSetting(
+            key: "models.providers.openai.models",
+            value: updatedString,
+            isSecret: false,
+            kind: .array
+        )
+    }
+
     private func ensureProviderDefaults() {
         for provider in OpenClawLLMConfiguration.providers {
             ensureProviderDefaults(provider)
@@ -1177,6 +1303,24 @@ struct BrainSettingsSection: View {
             key: "agents.defaults.reasoningDefault",
             value: "off",
             isSecret: false
+        )
+        ensureJSONSetting(
+            key: "agents.defaults.localPrompt.openAIChat.temperature",
+            value: "0.35",
+            isSecret: false,
+            kind: .double
+        )
+        ensureJSONSetting(
+            key: "agents.defaults.localPrompt.openAIChat.topP",
+            value: "0.85",
+            isSecret: false,
+            kind: .double
+        )
+        ensureJSONSetting(
+            key: "agents.defaults.localPrompt.openAIChat.maxTokens",
+            value: "512",
+            isSecret: false,
+            kind: .int
         )
     }
 

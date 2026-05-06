@@ -12,10 +12,7 @@ Choose an input source, then tap `Record Message` once to start recording. Tap t
 
 The app keeps speech recognition and speech synthesis behind a config file so you can swap backends without changing the UI wiring. The default recognizer now uses a local Whisper worker, Parakeet stays available as a config option, and recognized text can be spoken back through the macOS system voice.
 
-The OpenClaw model picker now supports two local model paths:
-
-- Ollama via `ollama/qwen3:30b` at `http://127.0.0.1:11434`
-- MLX via `mlx/qwen3-14b-4bit`, using a dedicated runtime at `~/Library/Application Support/GraculaExample/MLXRuntime` and model files at `~/Library/Application Support/GraculaExample/MLXModels/Qwen3-14B-4bit`
+The OpenClaw brain in `GraculaExample` now runs in OpenAI-only mode. The default model is `openai/gpt-5.4-mini`, and the Settings tab exposes the active model ref, OpenAI API key, `temperature`, `top_p`, and the direct request `max_tokens` cap.
 
 The config file lives at:
 
@@ -66,7 +63,7 @@ What changed in this refactor:
 - moved logging and timing helpers into `Shared/`
 - kept the Xcode project working through file-system-synced folders, so the new structure is reflected without extra manual project wiring
 
-The local runtime currently expects:
+The speech runtime currently expects:
 
 ```bash
 ${HOME}/Library/Application Support/GraculaExample/PythonRuntime/bin/python

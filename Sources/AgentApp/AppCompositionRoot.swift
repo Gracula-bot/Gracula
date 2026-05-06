@@ -214,7 +214,7 @@ struct AppCompositionRoot {
             }
         }
 
-        return "gpt-5.5"
+        return "gpt-5.4-mini"
     }
 }
 

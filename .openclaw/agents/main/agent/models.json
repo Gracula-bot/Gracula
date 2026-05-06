@@ -2,56 +2,56 @@
   "providers": {
     "openrouter": {
       "baseUrl": "https://openrouter.ai/api/v1",
+      "apiKey": "OPENROUTER_API_KEY",
+      "auth": "api-key",
       "api": "openai-completions",
+      "authHeader": true,
       "models": [
         {
-          "api": "openai-completions",
-          "compat": {
-            "supportsTools": false
-          },
-          "contextWindow": 128000,
-          "cost": {
-            "cacheRead": 0,
-            "cacheWrite": 0,
-            "input": 0,
-            "output": 0
-          },
           "id": "free",
+          "name": "OpenRouter Free",
+          "api": "openai-completions",
+          "reasoning": false,
           "input": [
             "text"
           ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 128000,
           "maxTokens": 8192,
-          "name": "OpenRouter Free",
-          "reasoning": false
+          "compat": {
+            "supportsTools": false
+          }
         }
-      ],
-      "apiKey": "OPENROUTER_API_KEY",
-      "auth": "api-key",
-      "authHeader": true
+      ]
     },
     "kilocode": {
-      "api": "openai-completions",
       "baseUrl": "https://api.kilo.ai/api/gateway/",
+      "api": "openai-completions",
       "models": [
         {
-          "contextWindow": 1000000,
-          "cost": {
-            "cacheRead": 0,
-            "cacheWrite": 0,
-            "input": 0,
-            "output": 0
-          },
           "id": "kilo/auto",
+          "name": "Kilo Auto",
+          "reasoning": true,
           "input": [
             "text",
             "image"
           ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 1000000,
           "maxTokens": 128000,
-          "name": "Kilo Auto",
-          "reasoning": true
+          "api": "openai-completions"
         }
-      ],
-      "apiKey": ""
+      ]
     },
     "openai-codex": {
       "baseUrl": "https://chatgpt.com/backend-api",
@@ -177,54 +177,54 @@
       ]
     },
     "google": {
-      "api": "google-generative-ai",
-      "apiKey": "GEMINI_API_KEY",
       "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+      "apiKey": "GEMINI_API_KEY",
+      "api": "google-generative-ai",
       "models": [
         {
-          "api": "google-generative-ai",
-          "contextWindow": 1048576,
-          "cost": {
-            "cacheRead": 0,
-            "cacheWrite": 0,
-            "input": 0,
-            "output": 0
-          },
           "id": "gemini-3.1-pro-preview",
+          "name": "Gemini 3.1 Pro Preview",
+          "api": "google-generative-ai",
+          "reasoning": true,
           "input": [
             "text",
             "image"
           ],
-          "maxTokens": 65536,
-          "name": "Gemini 3.1 Pro Preview",
-          "reasoning": true
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 1048576,
+          "maxTokens": 65536
         },
         {
-          "api": "google-generative-ai",
-          "contextWindow": 1048576,
-          "cost": {
-            "cacheRead": 0,
-            "cacheWrite": 0,
-            "input": 0,
-            "output": 0
-          },
           "id": "gemini-3-flash-preview",
+          "name": "Gemini 3 Flash Preview",
+          "api": "google-generative-ai",
+          "reasoning": false,
           "input": [
             "text",
             "image"
           ],
-          "maxTokens": 65536,
-          "name": "Gemini 3 Flash Preview",
-          "reasoning": false
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 1048576,
+          "maxTokens": 65536
         }
       ]
     },
     "mlx": {
-      "api": "openai-completions",
+      "baseUrl": "http://127.0.0.1:8080/v1",
       "apiKey": "mlx-local",
       "auth": "api-key",
+      "api": "openai-completions",
       "authHeader": true,
-      "baseUrl": "http://127.0.0.1:8080/v1",
       "models": [
         {
           "id": "Qwen/Qwen3-30B-A3B-MLX-4bit",
@@ -241,12 +241,42 @@
             "cacheWrite": 0
           },
           "contextWindow": 32768,
+          "contextTokens": 16384,
           "maxTokens": 4096,
           "compat": {
             "supportsTools": true,
             "supportsStrictMode": false
+          }
+        }
+      ]
+    },
+    "openai": {
+      "baseUrl": "https://api.openai.com/v1",
+      "apiKey": "OPENAI_API_KEY",
+      "auth": "api-key",
+      "api": "openai-completions",
+      "authHeader": true,
+      "models": [
+        {
+          "id": "gpt-5.4-mini",
+          "name": "GPT-5.4 Mini",
+          "api": "openai-completions",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
           },
-          "contextTokens": 16384
+          "contextWindow": 400000,
+          "maxTokens": 128000,
+          "compat": {
+            "supportsTools": true
+          }
         }
       ]
     }

@@ -10,15 +10,6 @@ struct OpenClawControlView: View {
                     .font(.headline)
                 Text(controller.statusText)
                     .foregroundStyle(controller.isRunning ? .green : .secondary)
-                if controller.isPreparingLocalModel {
-                    HStack(spacing: 6) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text(controller.localModelStatusText)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
             }
 
             Spacer()
@@ -103,25 +94,6 @@ struct OpenClawSettingsView: View {
             Text(controller.settingsStatusText)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-
-            if controller.isPreparingLocalModel {
-                VStack(alignment: .leading, spacing: 6) {
-                    if let progress = controller.localModelPreparationProgress {
-                        ProgressView(value: progress, total: 1)
-                            .controlSize(.small)
-                        Text("\(Int((progress * 100).rounded()))%")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ProgressView()
-                            .controlSize(.small)
-                    }
-                    Text(controller.localModelStatusText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
             BrainSettingsSection(
                 snapshot: snapshot,
                 environmentEntries: $environmentEntries,

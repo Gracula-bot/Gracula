@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "jobs": {
+    "bef2a22c-e08f-4143-9528-f9db08cb6360": {
+      "updatedAtMs": 1773773115134,
+      "scheduleIdentity": "{\"version\":1,\"enabled\":false,\"schedule\":{\"kind\":\"at\",\"at\":\"2026-03-17T18:45:00.000Z\"}}",
+      "state": {
+        "lastRunAtMs": 1773773100031,
+        "lastRunStatus": "error",
+        "lastStatus": "error",
+        "lastDurationMs": 15103,
+        "lastError": "401 Missing Authentication header",
+        "lastErrorReason": "auth",
+        "lastDelivered": true,
+        "lastDeliveryStatus": "delivered",
+        "consecutiveErrors": 1
+      }
+    },
+    "b2f8958b-070c-4ee5-827b-03c8902a3d78": {
+      "updatedAtMs": 1778066417114,
+      "scheduleIdentity": "{\"version\":1,\"enabled\":true,\"schedule\":{\"kind\":\"cron\",\"expr\":\"0 6 * * *\",\"tz\":\"Europe/Moscow\"}}",
+      "state": {
+        "nextRunAtMs": 1778122800000,
+        "lastRunAtMs": 1778066403711,
+        "lastRunStatus": "error",
+        "lastStatus": "error",
+        "lastDurationMs": 13403,
+        "lastDeliveryStatus": "unknown",
+        "consecutiveErrors": 3,
+        "lastError": "cron payload.model 'kilocode/kilo-auto/free' rejected by agents.defaults.models allowlist: kilocode/kilo-auto/free",
+        "consecutiveSkipped": 0
+      }
+    }
+  }
+}

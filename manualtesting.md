@@ -156,7 +156,7 @@ Manual OpenAI planner check:
 
 ```bash
 OPENAI_API_KEY="your-openai-api-key" \
-OPENAI_MODEL="gpt-5.5" \
+OPENAI_MODEL="gpt-5.4-mini" \
 swift run Gracula
 ```
 

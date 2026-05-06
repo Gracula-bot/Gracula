@@ -13,6 +13,11 @@
           "reserveTokens" : 512,
           "runtimeContextWindow" : 4096
         },
+        "openAIChat" : {
+          "maxTokens" : 512,
+          "temperature" : 0.35,
+          "topP" : 0.85
+        },
         "reasoning" : "on",
         "simpleChat" : {
           "maxOutputTokens" : 512,
