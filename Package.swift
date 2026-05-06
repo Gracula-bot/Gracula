@@ -117,6 +117,11 @@ let package = Package(
             name: "SecurityTests",
             dependencies: ["AgentSecurity"],
             swiftSettings: swiftSettings
+        ),
+        .testTarget(
+            name: "PersistenceTests",
+            dependencies: ["Persistence"],
+            swiftSettings: swiftSettings
         )
     ]
 )

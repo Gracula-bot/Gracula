@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import Foundation
+import Persistence
 
 @MainActor
 final class AudioRecorderViewModel: ObservableObject {
@@ -39,6 +40,7 @@ final class AudioRecorderViewModel: ObservableObject {
     private var lastSeenNotificationID: Int64 = 0
     private var didFinishInitializing = false
     private var isApplyingVoiceSettings = false
+    private var recordingTransitionInFlight = false
 
     init(recorder: DiskAudioRecorder) {
         self.recorder = recorder
@@ -50,8 +52,7 @@ final class AudioRecorderViewModel: ObservableObject {
             settings: loadedSettings,
             player: SystemAudioPlayer()
         )
-        self.diagnosticsFileURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("GraculaExample", isDirectory: true)
+        self.diagnosticsFileURL = ProjectRuntimeLayout.resolveDefault().logsDirectoryURL
             .appendingPathComponent("recorder-diagnostics.log")
         log.info("AudioRecorderViewModel initialized. appLog=\(log.logFilePath)")
         appendDiagnostic("Voice settings file: \(VoicePipelineSettingsStore.defaultFileURL().path)")
@@ -85,9 +86,12 @@ final class AudioRecorderViewModel: ObservableObject {
         sendRecognizedText: ((String) async -> String?)? = nil,
         reportError: ((String) -> Void)? = nil
     ) async {
-        guard !isTranscribing else {
+        guard !isTranscribing, !recordingTransitionInFlight else {
             return
         }
+
+        recordingTransitionInFlight = true
+        defer { recordingTransitionInFlight = false }
 
         if isRecording {
             await stopRecording(sendRecognizedText: sendRecognizedText, reportError: reportError)
@@ -98,9 +102,11 @@ final class AudioRecorderViewModel: ObservableObject {
     }
 
     func beginHoldToRecord(reportError: ((String) -> Void)? = nil) async {
-        guard !isTranscribing, !isRecording else {
+        guard !isTranscribing, !isRecording, !recordingTransitionInFlight else {
             return
         }
+        recordingTransitionInFlight = true
+        defer { recordingTransitionInFlight = false }
         await voicePipeline.stopSpeaking()
         await startRecording(reportError: reportError)
     }
@@ -109,9 +115,11 @@ final class AudioRecorderViewModel: ObservableObject {
         sendRecognizedText: ((String) async -> String?)? = nil,
         reportError: ((String) -> Void)? = nil
     ) async {
-        guard isRecording else {
+        guard isRecording, !recordingTransitionInFlight else {
             return
         }
+        recordingTransitionInFlight = true
+        defer { recordingTransitionInFlight = false }
         await stopRecording(sendRecognizedText: sendRecognizedText, reportError: reportError)
     }
 
@@ -139,7 +147,7 @@ final class AudioRecorderViewModel: ObservableObject {
 
         Task {
             if persist {
-                await VoicePipelineSettingsStore.shared.save(settings)
+                VoicePipelineSettingsStore.shared.save(settings)
             }
             await transcriber.prewarm()
         }
@@ -489,7 +497,7 @@ final class AudioRecorderViewModel: ObservableObject {
         )
         appendDiagnostic("Selected macOS bot voice: \(selectedVoice.name) (\(selectedVoice.languageCode)).")
         Task {
-            await VoicePipelineSettingsStore.shared.save(voiceSettings)
+            VoicePipelineSettingsStore.shared.save(voiceSettings)
         }
     }
 

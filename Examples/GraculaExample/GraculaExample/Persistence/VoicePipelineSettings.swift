@@ -1,4 +1,5 @@
 import Foundation
+import Persistence
 
 enum SpeechRecognitionBackend: String, Codable, CaseIterable, Sendable {
     case parakeet
@@ -74,12 +75,7 @@ struct VoicePipelineSettings: Codable, Sendable {
     }
 
     static func loadFromDisk() -> VoicePipelineSettings {
-        do {
-            let data = try Data(contentsOf: VoicePipelineSettingsStore.defaultFileURL())
-            return try JSONDecoder().decode(VoicePipelineSettings.self, from: data)
-        } catch {
-            return VoicePipelineSettings()
-        }
+        VoicePipelineSettingsStore.shared.load()
     }
 
     enum CodingKeys: String, CodingKey {
@@ -236,22 +232,19 @@ struct VoicePipelineSettings: Codable, Sendable {
     }
 }
 
-actor VoicePipelineSettingsStore {
+final class VoicePipelineSettingsStore: @unchecked Sendable {
     static let shared = VoicePipelineSettingsStore()
 
-    private let fileURL: URL
-    private let encoder = JSONEncoder()
-    private let decoder = JSONDecoder()
+    private let store: AppConfigurationStore
 
-    init(fileURL: URL = VoicePipelineSettingsStore.defaultFileURL()) {
-        self.fileURL = fileURL
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    init(store: AppConfigurationStore = AppConfigurationStore(layout: ProjectRuntimeLayout.resolveDefault())) {
+        self.store = store
     }
 
     func load() -> VoicePipelineSettings {
         do {
-            let data = try Data(contentsOf: fileURL)
-            return try decoder.decode(VoicePipelineSettings.self, from: data)
+            let configuration = try store.loadOrCreate()
+            return VoicePipelineSettings(configuration: configuration)
         } catch {
             return VoicePipelineSettings()
         }
@@ -259,22 +252,55 @@ actor VoicePipelineSettingsStore {
 
     func save(_ settings: VoicePipelineSettings) {
         do {
-            let directory = fileURL.deletingLastPathComponent()
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let data = try encoder.encode(settings)
-            try data.write(to: fileURL, options: [.atomic])
+            _ = try store.update { configuration in
+                settings.apply(to: &configuration)
+            }
         } catch {
             log.warning("Failed to save voice pipeline settings: \(error.localizedDescription)")
         }
     }
 
     func filePath() -> String {
-        fileURL.path
+        store.layout.configurationFileURL.path
     }
 
     static func defaultFileURL() -> URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("GraculaExample", isDirectory: true)
-            .appendingPathComponent("voice-pipeline.json")
+        ProjectRuntimeLayout.resolveDefault().configurationFileURL
+    }
+}
+
+private extension VoicePipelineSettings {
+    init(configuration: AppConfiguration) {
+        speechRecognitionBackend = SpeechRecognitionBackend(rawValue: configuration.voice.speechRecognitionBackend) ?? .whisper
+        whisperModelName = Self.normalizedWhisperModelName(configuration.voice.whisperModelName)
+        whisperLanguageCode = Self.normalizedWhisperLanguageCode(configuration.voice.whisperLanguageCode)
+        parakeetModelName = configuration.voice.parakeetModelName
+        parakeetLanguageCode = configuration.voice.parakeetLanguageCode
+        speechSynthesisBackend = SpeechSynthesisBackend(rawValue: configuration.voice.speechSynthesisBackend) ?? .appleSystem
+        speakRecognizedText = configuration.voice.speakRecognizedText
+        appleSystemVoiceLanguageCode = configuration.voice.appleSystemVoiceLanguageCode
+        appleSystemVoiceIdentifier = configuration.voice.appleSystemVoiceIdentifier
+        appleSystemSpeechRate = configuration.voice.appleSystemSpeechRate
+        appleSystemSpeechPitch = configuration.voice.appleSystemSpeechPitch
+        announceLocalNotifications = configuration.voice.announceLocalNotifications
+        localNotificationPollIntervalSeconds = configuration.voice.localNotificationPollIntervalSeconds
+        includeNotificationAppName = configuration.voice.includeNotificationAppName
+    }
+
+    func apply(to configuration: inout AppConfiguration) {
+        configuration.voice.speechRecognitionBackend = speechRecognitionBackend.rawValue
+        configuration.voice.whisperModelName = whisperModelName
+        configuration.voice.whisperLanguageCode = whisperLanguageCode
+        configuration.voice.parakeetModelName = parakeetModelName
+        configuration.voice.parakeetLanguageCode = parakeetLanguageCode
+        configuration.voice.speechSynthesisBackend = speechSynthesisBackend.rawValue
+        configuration.voice.speakRecognizedText = speakRecognizedText
+        configuration.voice.appleSystemVoiceLanguageCode = appleSystemVoiceLanguageCode
+        configuration.voice.appleSystemVoiceIdentifier = appleSystemVoiceIdentifier
+        configuration.voice.appleSystemSpeechRate = appleSystemSpeechRate
+        configuration.voice.appleSystemSpeechPitch = appleSystemSpeechPitch
+        configuration.voice.announceLocalNotifications = announceLocalNotifications
+        configuration.voice.localNotificationPollIntervalSeconds = localNotificationPollIntervalSeconds
+        configuration.voice.includeNotificationAppName = includeNotificationAppName
     }
 }

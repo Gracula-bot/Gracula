@@ -3,25 +3,7 @@ import Application
 import Automation
 import Darwin
 import Foundation
-
-enum OpenClawRuntimePaths {
-    static var configDirectory: URL {
-        resolveGraculaProjectDirectory()
-            .appendingPathComponent(".openclaw", isDirectory: true)
-    }
-
-    static var workspaceDirectory: URL {
-        configDirectory.appendingPathComponent("workspace", isDirectory: true)
-    }
-
-    static var configURL: URL {
-        configDirectory.appendingPathComponent("openclaw.json")
-    }
-
-    static var graculaExampleSettingsURL: URL {
-        configDirectory.appendingPathComponent("gracula-example.json")
-    }
-}
+import Persistence
 
 struct OpenClawLLMProviderConfiguration {
     let name: String
@@ -179,57 +161,6 @@ enum OpenClawLLMConfiguration {
         return !normalized.isEmpty && !normalized.hasPrefix("openai/")
     }
 
-    static func mergeEnvironmentSources(
-        repositoryEnvURL: URL,
-        configEnvURL: URL,
-        configURL: URL,
-        overrideConfigURL: URL? = nil,
-        into environment: inout [String: String]
-    ) {
-        mergeEnvFile(repositoryEnvURL, into: &environment)
-        mergeEnvFile(configEnvURL, into: &environment)
-        mergeOpenClawJSONEnvironment(
-            from: configURL,
-            overrideConfigURL: overrideConfigURL,
-            into: &environment
-        )
-    }
-
-    static func mergeOpenClawJSONEnvironment(
-        from configURL: URL,
-        overrideConfigURL: URL? = nil,
-        into environment: inout [String: String]
-    ) {
-        guard let object = mergedJSONObject(
-            baseConfigURL: configURL,
-            overrideConfigURL: overrideConfigURL
-        ) else {
-            return
-        }
-        mergeEnvVars(from: object, into: &environment)
-    }
-
-    static func mergedJSONObject(
-        baseConfigURL: URL,
-        overrideConfigURL: URL? = nil
-    ) -> [String: Any]? {
-        let baseObject = loadJSONObject(from: baseConfigURL)
-        let overrideObject = loadJSONObject(from: overrideConfigURL)
-
-        switch (baseObject, overrideObject) {
-        case let (base?, override?):
-            var merged = base
-            deepMergeJSONObject(override, into: &merged)
-            return merged
-        case let (base?, nil):
-            return base
-        case let (nil, override?):
-            return override
-        case (nil, nil):
-            return nil
-        }
-    }
-
     static func entriesWithProviderDefaults(_ entries: [OpenClawEditableSetting]) -> [OpenClawEditableSetting] {
         var normalized = entries
         for provider in providers {
@@ -244,75 +175,6 @@ enum OpenClawLLMConfiguration {
             }
         }
         return normalized
-    }
-
-    private static func mergeEnvVars(from rootObject: [String: Any], into environment: inout [String: String]) {
-        guard let envObject = rootObject["env"] as? [String: Any],
-              let vars = envObject["vars"] as? [String: Any] else {
-            return
-        }
-
-        for (key, rawValue) in vars {
-            guard isValidEnvironmentKey(key) else {
-                continue
-            }
-            if let value = rawValue as? String {
-                environment[key] = value
-            } else if let value = rawValue as? NSNumber {
-                environment[key] = value.stringValue
-            }
-        }
-    }
-
-    private static func loadJSONObject(from url: URL?) -> [String: Any]? {
-        guard let url,
-              let data = try? Data(contentsOf: url),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
-        }
-        return object
-    }
-
-    private static func deepMergeJSONObject(_ override: [String: Any], into base: inout [String: Any]) {
-        for (key, overrideValue) in override {
-            if let overrideDictionary = overrideValue as? [String: Any],
-               let baseDictionary = base[key] as? [String: Any] {
-                var mergedChild = baseDictionary
-                deepMergeJSONObject(overrideDictionary, into: &mergedChild)
-                base[key] = mergedChild
-            } else {
-                base[key] = overrideValue
-            }
-        }
-    }
-
-    private static func mergeEnvFile(_ url: URL, into environment: inout [String: String]) {
-        guard let contents = try? String(contentsOf: url) else {
-            return
-        }
-
-        for rawLine in contents.components(separatedBy: .newlines) {
-            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !line.isEmpty, !line.hasPrefix("#"), let separatorIndex = line.firstIndex(of: "=") else {
-                continue
-            }
-
-            let key = String(line[..<separatorIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard isValidEnvironmentKey(key) else {
-                continue
-            }
-
-            var value = String(line[line.index(after: separatorIndex)...])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if value.count >= 2,
-               let first = value.first,
-               let last = value.last,
-               (first == "\"" && last == "\"") || (first == "'" && last == "'") {
-                value.removeFirst()
-                value.removeLast()
-            }
-            environment[key] = value
-        }
     }
 
     private static func ensureEntry(
@@ -333,10 +195,6 @@ enum OpenClawLLMConfiguration {
                 value: value
             )
         )
-    }
-
-    private static func isValidEnvironmentKey(_ key: String) -> Bool {
-        key.range(of: #"^[A-Za-z_][A-Za-z0-9_]*$"#, options: .regularExpression) != nil
     }
 }
 
@@ -1439,11 +1297,16 @@ final class OpenClawLocalController: NSObject, ObservableObject {
     @Published private(set) var isStartingTelegramUserAPI = false
     @Published private(set) var settingsSnapshot: OpenClawSettingsSnapshot
     @Published private(set) var settingsStatusText = "Settings loaded."
+    @Published private(set) var bootstrapStatusText = "Bootstrap not run."
+    @Published private(set) var bootstrapDependencyItems: [DependencyReport.Item] = []
 
-    let repositoryDirectory = resolveOpenClawRepositoryDirectory()
-    let projectDirectory = resolveGraculaProjectDirectory()
-    let configDirectory = OpenClawRuntimePaths.configDirectory
-    let workspaceDirectory = OpenClawRuntimePaths.workspaceDirectory
+    let projectDirectory: URL
+    let runtimeLayout: ProjectRuntimeLayout
+    let configurationStore: AppConfigurationStore
+    let bootstrapper: AppBootstrapper
+    let configDirectory: URL
+    let workspaceDirectory: URL
+    let repositoryDirectory: URL
 
     private let nodeURL = resolveNodeExecutableURL()
     private let gatewayHost = "127.0.0.1"
@@ -1468,14 +1331,29 @@ final class OpenClawLocalController: NSObject, ObservableObject {
     private var telegramUserClient: TelegramUserTDLibClient?
 
     override init() {
+        let runtimeLayout = ProjectRuntimeLayout.resolveDefault()
+        let configurationStore = AppConfigurationStore(layout: runtimeLayout)
+        let bootstrapper = AppBootstrapper(
+            layout: runtimeLayout,
+            store: configurationStore,
+            verifier: DependencyVerifier(layout: runtimeLayout),
+            installer: RuntimeDependencyInstaller(layout: runtimeLayout)
+        )
         let telegramHandler = TelegramCommandHandler(
             service: TelegramMacAppAutomationService(),
             eventSink: { event in
                 NSLog("%@", event.rawValue)
             }
         )
+        self.projectDirectory = runtimeLayout.projectRootURL
+        self.runtimeLayout = runtimeLayout
+        self.configurationStore = configurationStore
+        self.bootstrapper = bootstrapper
+        self.configDirectory = runtimeLayout.runtimeDirectoryURL
+        self.workspaceDirectory = runtimeLayout.workspaceDirectoryURL
+        self.repositoryDirectory = runtimeLayout.openClawGatewayRootURL
         self.telegramCommandRouter = OpenClawVoiceCommandRouter(telegramHandler: telegramHandler)
-        self.settingsSnapshot = Self.makeSettingsSnapshot()
+        self.settingsSnapshot = Self.makeSettingsSnapshot(layout: runtimeLayout, store: configurationStore)
         super.init()
         NotificationCenter.default.addObserver(
             self,
@@ -1524,10 +1402,17 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         defer { startupTask = nil }
 
         do {
-            try validateRuntime()
-            try prepareDirectories()
-            let environment = try openClawEnvironment()
-            settingsSnapshot = Self.makeSettingsSnapshot(environment: environment)
+            let bootstrapResult = try bootstrapper.bootstrap()
+            applyBootstrapResult(bootstrapResult)
+            for diagnostic in bootstrapResult.diagnostics.messages {
+                appendLog(diagnostic.message)
+            }
+            let configuration = bootstrapResult.configuration
+            let environment = AppConfigurationEnvironmentBuilder.build(
+                configuration: configuration,
+                layout: runtimeLayout
+            )
+            settingsSnapshot = Self.makeSettingsSnapshot(layout: runtimeLayout, store: configurationStore)
             await ensureQdrantServer(environment: environment)
             startTelegramBusinessPolling(environment: environment)
             let primaryModelRef = currentPrimaryModelRef()
@@ -1544,6 +1429,8 @@ final class OpenClawLocalController: NSObject, ObservableObject {
                 scheduleDirectModelPrewarm(modelRef: primaryModelRef)
                 return
             }
+
+            try validateRuntime()
 
             let configuredGatewayPort = environment["OPENCLAW_GATEWAY_PORT"] ?? gatewayPort
             if await attachToExistingGatewayIfHealthy(port: configuredGatewayPort) {
@@ -1724,7 +1611,7 @@ final class OpenClawLocalController: NSObject, ObservableObject {
     }
 
     func startTelegramUserAPI() async {
-        let environment = (try? openClawEnvironment()) ?? ProcessInfo.processInfo.environment
+        let environment = (try? openClawEnvironment()) ?? [:]
         await startTelegramUserAPI(environment: environment)
     }
 
@@ -2204,10 +2091,12 @@ final class OpenClawLocalController: NSObject, ObservableObject {
 
     func prepareForLocalAutomation() async -> Bool {
         do {
-            try validateRuntime()
-            try prepareDirectories()
-            let environment = try openClawEnvironment()
-            settingsSnapshot = Self.makeSettingsSnapshot(environment: environment)
+            let bootstrapResult = try bootstrapper.bootstrap()
+            applyBootstrapResult(bootstrapResult)
+            for diagnostic in bootstrapResult.diagnostics.messages {
+                appendLog(diagnostic.message)
+            }
+            settingsSnapshot = Self.makeSettingsSnapshot(layout: runtimeLayout, store: configurationStore)
             return true
         } catch {
             let message = "OpenClaw is not ready for local automation: \(error.localizedDescription)"
@@ -2218,10 +2107,26 @@ final class OpenClawLocalController: NSObject, ObservableObject {
     }
 
     func reloadSettings() {
-        settingsSnapshot = Self.makeSettingsSnapshot()
+        settingsSnapshot = Self.makeSettingsSnapshot(layout: runtimeLayout, store: configurationStore)
         directPersonaContextCache = nil
         directCompactPersonaContextCache = nil
         settingsStatusText = "Settings reloaded."
+    }
+
+    private func applyBootstrapResult(_ result: AppBootstrapper.Result) {
+        bootstrapDependencyItems = result.dependencyReport.items
+        switch result.diagnostics.status {
+        case .idle:
+            bootstrapStatusText = "Bootstrap idle."
+        case .bootstrapping:
+            bootstrapStatusText = "Bootstrap in progress."
+        case .ready:
+            bootstrapStatusText = "Bootstrap ready."
+        case .degraded:
+            bootstrapStatusText = "Bootstrap degraded."
+        case .failed:
+            bootstrapStatusText = "Bootstrap failed."
+        }
     }
 
     func testSelectedModel(
@@ -2233,31 +2138,25 @@ final class OpenClawLocalController: NSObject, ObservableObject {
             settingsStatusText = "Testing selected model..."
             let tempDirectory = FileManager.default.temporaryDirectory
                 .appendingPathComponent("gracula-model-test-\(UUID().uuidString)", isDirectory: true)
-            let tempConfigDirectory = tempDirectory.appendingPathComponent(".openclaw", isDirectory: true)
-            let tempWorkspaceDirectory = tempConfigDirectory.appendingPathComponent("workspace", isDirectory: true)
-            let tempConfigURL = tempConfigDirectory.appendingPathComponent("openclaw.json")
+            let tempLayout = ProjectRuntimeLayout(projectRootURL: tempDirectory)
+            let tempStore = AppConfigurationStore(layout: tempLayout)
+            let tempBridge = OpenClawCanonicalSettingsBridge(layout: tempLayout, store: tempStore)
             try prepareTestDirectories(
-                configDirectory: tempConfigDirectory,
-                workspaceDirectory: tempWorkspaceDirectory
+                configDirectory: tempLayout.runtimeDirectoryURL,
+                workspaceDirectory: tempLayout.workspaceDirectoryURL
             )
-            try OpenClawSettingsReader.writeEnvironment(
-                entries: environmentEntries,
-                to: tempConfigDirectory.appendingPathComponent(".env")
+            try tempBridge.apply(
+                environmentEntries: environmentEntries,
+                jsonEntries: jsonEntries,
+                workspaceFiles: workspaceFiles
             )
-            try OpenClawSettingsReader.writeJSON(
-                entries: jsonEntries,
-                to: tempConfigURL
-            )
-            try OpenClawSettingsReader.writeWorkspaceFiles(workspaceFiles, to: tempWorkspaceDirectory)
             try copyAuthStoreIntoTestSandbox(
                 sandboxDirectory: tempDirectory
             )
 
-            let environment = try openClawEnvironment(
-                configDirectory: tempConfigDirectory,
-                workspaceDirectory: tempWorkspaceDirectory,
-                configPath: tempConfigURL,
-                stateDirectory: tempDirectory
+            let environment = AppConfigurationEnvironmentBuilder.build(
+                configuration: try tempStore.loadOrCreate(),
+                layout: tempLayout
             )
             let primaryModelRef = currentPrimaryModelRef(in: jsonEntries)
             let reply: String
@@ -2382,9 +2281,12 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         do {
             let wasRunning = isRunning
             let hadTelegramUserClient = telegramUserClient != nil
-            try OpenClawSettingsReader.writeEnvironment(entries: environmentEntries)
-            try OpenClawSettingsReader.writeJSON(entries: jsonEntries)
-            try OpenClawSettingsReader.writeWorkspaceFiles(workspaceFiles)
+            let bridge = OpenClawCanonicalSettingsBridge(layout: runtimeLayout, store: configurationStore)
+            try bridge.apply(
+                environmentEntries: environmentEntries,
+                jsonEntries: jsonEntries,
+                workspaceFiles: workspaceFiles
+            )
             reloadSettings()
             if wasRunning {
                 stop()
@@ -2807,7 +2709,7 @@ final class OpenClawLocalController: NSObject, ObservableObject {
                 repositoryDirectory.path
             ],
             currentDirectoryURL: parentDirectory,
-            environment: ProcessInfo.processInfo.environment
+            environment: (try? openClawEnvironment()) ?? [:]
         )
 
         if cloneOutput.exitCode != 0 {
@@ -2881,7 +2783,6 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: configDirectory, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: workspaceDirectory, withIntermediateDirectories: true)
-        try ensureRuntimeWorkspaceLink()
         try seedCompactPersonaIfNeeded()
         try validateProjectWorkspaceConfiguration()
         try fileManager.createDirectory(
@@ -2901,52 +2802,6 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         }
         try defaultCompactPersona.write(to: url, atomically: true, encoding: .utf8)
         appendLog("Created compact persona at \(url.path).")
-    }
-
-    private func ensureRuntimeWorkspaceLink() throws {
-        let fileManager = FileManager.default
-        let runtimeConfigDirectory = repositoryDirectory.appendingPathComponent(".openclaw", isDirectory: true)
-        let runtimeWorkspaceURL = runtimeConfigDirectory.appendingPathComponent("workspace", isDirectory: true)
-        let targetWorkspaceURL = workspaceDirectory.standardizedFileURL
-        let relativeTargetPath = relativePath(from: runtimeConfigDirectory, to: targetWorkspaceURL)
-
-        try fileManager.createDirectory(at: runtimeConfigDirectory, withIntermediateDirectories: true)
-
-        if let destination = try? fileManager.destinationOfSymbolicLink(atPath: runtimeWorkspaceURL.path) {
-            let resolvedDestination = URL(filePath: destination, relativeTo: runtimeWorkspaceURL.deletingLastPathComponent())
-                .standardizedFileURL
-            if resolvedDestination == targetWorkspaceURL {
-                return
-            }
-            try fileManager.removeItem(at: runtimeWorkspaceURL)
-        } else if fileManager.fileExists(atPath: runtimeWorkspaceURL.path) {
-            let formatter = DateFormatter()
-            formatter.dateFormat = "yyyyMMdd-HHmmss"
-            let backupURL = runtimeConfigDirectory
-                .appendingPathComponent("workspace.runtime.bak.\(formatter.string(from: Date()))", isDirectory: true)
-            try? fileManager.removeItem(at: backupURL)
-            try fileManager.moveItem(at: runtimeWorkspaceURL, to: backupURL)
-            appendLog("Moved stale runtime workspace to \(backupURL.path).")
-        }
-
-        try fileManager.createSymbolicLink(atPath: runtimeWorkspaceURL.path, withDestinationPath: relativeTargetPath)
-        appendLog("Linked runtime workspace to project workspace via relative path \(relativeTargetPath).")
-    }
-
-    private func relativePath(from baseDirectory: URL, to targetURL: URL) -> String {
-        let baseComponents = baseDirectory.standardizedFileURL.pathComponents
-        let targetComponents = targetURL.standardizedFileURL.pathComponents
-        var sharedPrefixCount = 0
-
-        while sharedPrefixCount < min(baseComponents.count, targetComponents.count),
-              baseComponents[sharedPrefixCount] == targetComponents[sharedPrefixCount] {
-            sharedPrefixCount += 1
-        }
-
-        let upwardSegments = Array(repeating: "..", count: max(baseComponents.count - sharedPrefixCount, 0))
-        let downwardSegments = Array(targetComponents.dropFirst(sharedPrefixCount))
-        let segments = upwardSegments + downwardSegments
-        return segments.isEmpty ? "." : NSString.path(withComponents: segments)
     }
 
     private func validateProjectWorkspaceConfiguration() throws {
@@ -2971,114 +2826,43 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         configPath: URL? = nil,
         stateDirectory: URL? = nil
     ) throws -> [String: String] {
-        let configDirectory = configDirectory ?? self.configDirectory
-        let workspaceDirectory = workspaceDirectory ?? self.workspaceDirectory
-        let stateDirectory = stateDirectory ?? configDirectory
-        let sourceConfigURL = configPath ?? configDirectory.appendingPathComponent("openclaw.json")
-        let overrideConfigURL = sourceConfigURL
-            .deletingLastPathComponent()
-            .appendingPathComponent("gracula-example.json")
-        let runtimeConfigURL = sourceConfigURL
-            .deletingLastPathComponent()
-            .appendingPathComponent("runtime-openclaw.json")
-        var environment = ProcessInfo.processInfo.environment
-        environment["HOME"] = FileManager.default.homeDirectoryForCurrentUser.path
-        environment["TERM"] = environment["TERM"] ?? "xterm-256color"
-        environment["PATH"] = [
-            "/opt/homebrew/bin",
-            "/usr/local/bin",
-            "/usr/bin",
-            "/bin",
-            "/usr/sbin",
-            "/sbin"
-        ].joined(separator: ":")
-
-        OpenClawLLMConfiguration.mergeEnvironmentSources(
-            repositoryEnvURL: repositoryDirectory.appendingPathComponent(".env"),
-            configEnvURL: configDirectory.appendingPathComponent(".env"),
-            configURL: sourceConfigURL,
-            overrideConfigURL: overrideConfigURL,
-            into: &environment
+        var configuration = try configurationStore.loadOrCreate()
+        if let configDirectory {
+            configuration.runtimePaths.runtimeRootPath = configDirectory.path
+        }
+        if let workspaceDirectory {
+            configuration.runtimePaths.workspacePath = workspaceDirectory.path
+        }
+        if let stateDirectory {
+            configuration.runtimePaths.logsPath = stateDirectory.path
+        }
+        if let configPath {
+            configuration.runtimePaths.canonicalPlistPath = configPath.path
+        }
+        let environment = AppConfigurationEnvironmentBuilder.build(
+            configuration: configuration,
+            layout: runtimeLayout
         )
-
-        try writeRuntimeConfig(
-            baseConfigURL: sourceConfigURL,
-            overrideConfigURL: overrideConfigURL,
-            destinationURL: runtimeConfigURL
-        )
-
-        environment["OPENCLAW_CONFIG_DIR"] = configDirectory.path
-        environment["OPENCLAW_WORKSPACE_DIR"] = workspaceDirectory.path
-        environment["OPENCLAW_STATE_DIR"] = stateDirectory.path
-        environment["OPENCLAW_CONFIG_PATH"] = runtimeConfigURL.path
-        environment["OPENCLAW_GATEWAY_BIND"] = "loopback"
-        environment["OPENCLAW_GATEWAY_PORT"] = environment["OPENCLAW_GATEWAY_PORT"] ?? configuredGatewayPort(from: environment)
-        environment["OPENCLAW_GATEWAY_URL"] = "ws://\(gatewayHost):\(environment["OPENCLAW_GATEWAY_PORT"] ?? gatewayPort)"
-        environment["OPENCLAW_BRIDGE_PORT"] = environment["OPENCLAW_BRIDGE_PORT"] ?? "18790"
-        environment["OPENCLAW_STREAM_BRIDGE_HOST"] = gatewayHost
-        environment["OPENCLAW_STREAM_BRIDGE_PORT"] = streamBridgePort
-        environment["OPENCLAW_STREAM_BRIDGE_URL"] = "http://\(gatewayHost):\(streamBridgePort)/api/control/speak"
-        environment["OPENCLAW_TRACK_BRIDGE_URL"] = "http://\(gatewayHost):\(streamBridgePort)/track"
-        environment["OPENCLAW_TRACK_ONLY_GROUPS"] = environment["OPENCLAW_TRACK_ONLY_GROUPS"] ?? "1"
-        environment["OPENCLAW_TRACK_AUTO_LINKS"] = environment["OPENCLAW_TRACK_AUTO_LINKS"] ?? "1"
-        environment["BROWSER"] = environment["BROWSER"] ?? "echo"
         return environment
     }
 
-    private static func makeSettingsSnapshot(environment: [String: String]? = nil) -> OpenClawSettingsSnapshot {
-        let controller = OpenClawSettingsReader(environment: environment)
-        return controller.snapshot()
-    }
-
-    private func writeRuntimeConfig(
-        baseConfigURL: URL,
-        overrideConfigURL: URL,
-        destinationURL: URL
-    ) throws {
-        let mergedObject = OpenClawLLMConfiguration.mergedJSONObject(
-            baseConfigURL: baseConfigURL,
-            overrideConfigURL: overrideConfigURL
-        ) ?? [:]
-        try FileManager.default.createDirectory(
-            at: destinationURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        let data = try JSONSerialization.data(
-            withJSONObject: mergedObject,
-            options: [.prettyPrinted, .sortedKeys]
-        )
-        try data.write(to: destinationURL, options: [.atomic])
+    private static func makeSettingsSnapshot(
+        layout: ProjectRuntimeLayout,
+        store: AppConfigurationStore
+    ) -> OpenClawSettingsSnapshot {
+        let bridge = OpenClawCanonicalSettingsBridge(layout: layout, store: store)
+        return bridge.snapshot()
     }
 
     private var gatewayPort: String {
-        configuredGatewayPort(from: ProcessInfo.processInfo.environment)
+        String((try? configurationStore.loadOrCreate().llm.gatewayPort) ?? Int(fallbackGatewayPort) ?? 18789)
     }
 
     private func configuredGatewayPort(from environment: [String: String]) -> String {
         if let port = normalizedPort(environment["OPENCLAW_GATEWAY_PORT"]) {
             return port
         }
-        if let port = configuredGatewayPortFromOpenClawJSON() {
-            return port
-        }
-        return fallbackGatewayPort
-    }
-
-    private func configuredGatewayPortFromOpenClawJSON() -> String? {
-        let configURL = configDirectory.appendingPathComponent("openclaw.json")
-        guard let data = try? Data(contentsOf: configURL),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let gateway = object["gateway"] as? [String: Any] else {
-            return nil
-        }
-
-        if let stringPort = gateway["port"] as? String {
-            return normalizedPort(stringPort)
-        }
-        if let numericPort = gateway["port"] as? NSNumber {
-            return normalizedPort(numericPort.stringValue)
-        }
-        return nil
+        return String((try? configurationStore.loadOrCreate().llm.gatewayPort) ?? Int(fallbackGatewayPort) ?? 18789)
     }
 
     private func normalizedPort(_ rawPort: String?) -> String? {
@@ -3392,11 +3176,23 @@ final class OpenClawLocalController: NSObject, ObservableObject {
     }
 
     private func shouldUseDirectModelSmokeTest(for modelRef: String) -> Bool {
-        false
+        shouldUseDirectCompletion(for: modelRef)
     }
 
     private func shouldUseDirectCompletion(for modelRef: String) -> Bool {
-        false
+        let normalizedModelRef = OpenClawLLMConfiguration.migratedModelRef(modelRef)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !normalizedModelRef.isEmpty else {
+            return false
+        }
+
+        let directModeEnabled = (try? configurationStore.loadOrCreate().llm.directLocalModeEnabled) ?? true
+        guard directModeEnabled else {
+            return false
+        }
+
+        return OpenClawLLMConfiguration.provider(forModelRef: normalizedModelRef) != nil
     }
 
     private func currentPrimaryModelRef() -> String {
@@ -3791,7 +3587,7 @@ final class OpenClawLocalController: NSObject, ObservableObject {
     }
 
     private func qdrantClient() -> OpenClawQdrantClient? {
-        let environment = (try? openClawEnvironment()) ?? ProcessInfo.processInfo.environment
+        let environment = (try? openClawEnvironment()) ?? [:]
         return OpenClawQdrantClient.make(environment: environment)
     }
 
@@ -3873,21 +3669,14 @@ final class OpenClawLocalController: NSObject, ObservableObject {
     }
 
     private func qdrantExecutableURL(environment: [String: String]) -> URL? {
-        let explicitCandidates = [
-            environment["GRACULA_QDRANT_BIN"],
-            environment["OPENCLAW_QDRANT_BIN"],
-            environment["QDRANT_BIN"]
-        ]
+        let explicitCandidates = [environment["GRACULA_QDRANT_BIN"]]
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .map(URL.init(fileURLWithPath:))
 
         let bundledCandidates = [
             Bundle.main.url(forResource: "qdrant", withExtension: nil),
-            configDirectory.appendingPathComponent("bin/qdrant"),
-            repositoryDirectory.appendingPathComponent(".openclaw/bin/qdrant"),
-            URL(fileURLWithPath: "/opt/homebrew/bin/qdrant"),
-            URL(fileURLWithPath: "/usr/local/bin/qdrant")
+            runtimeLayout.qdrantBinaryURL
         ].compactMap { $0 }
 
         return (explicitCandidates + bundledCandidates).first { url in
@@ -3896,17 +3685,13 @@ final class OpenClawLocalController: NSObject, ObservableObject {
     }
 
     private func qdrantStorageDirectory(environment: [String: String]) -> URL {
-        let rawPath = [
-            environment["GRACULA_QDRANT_STORAGE_DIR"],
-            environment["OPENCLAW_QDRANT_STORAGE_DIR"],
-            environment["QDRANT_STORAGE_DIR"]
-        ]
+        let rawPath = [environment["GRACULA_QDRANT_STORAGE_DIR"]]
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .first { !$0.isEmpty }
         if let rawPath {
             return URL(fileURLWithPath: rawPath)
         }
-        return configDirectory.appendingPathComponent("qdrant/storage", isDirectory: true)
+        return runtimeLayout.qdrantStorageDirectoryURL
     }
 
     private func storeNotificationCache(inputPrompt: String, spokenText: String) async {
@@ -4000,7 +3785,7 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         sampling: DirectModelSamplingOptions,
         configurationEntries: [OpenClawEditableSetting]
     ) async throws -> DirectModelChatResult {
-        let resolvedEnvironment = environment ?? (try? openClawEnvironment()) ?? ProcessInfo.processInfo.environment
+        let resolvedEnvironment = environment ?? (try? openClawEnvironment()) ?? [:]
         guard let baseURL = openAIProviderBaseURL(in: configurationEntries) else {
             throw OpenClawLocalControllerError.agentFailed("OpenAI provider is not configured.")
         }
@@ -4018,7 +3803,7 @@ final class OpenClawLocalController: NSObject, ObservableObject {
                     "content": prompt
                 ]
             ],
-            "max_tokens": maxTokens,
+            "max_completion_tokens": maxTokens,
             "temperature": sampling.temperature,
             "top_p": sampling.topP,
             "stream": false
@@ -4169,19 +3954,7 @@ final class OpenClawLocalController: NSObject, ObservableObject {
            !value.isEmpty {
             return value
         }
-
-        let configURL = environment["OPENCLAW_CONFIG_PATH"].map(URL.init(fileURLWithPath:))
-            ?? configDirectory.appendingPathComponent("openclaw.json")
-        guard let data = try? Data(contentsOf: configURL),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let models = object["models"] as? [String: Any],
-              let providers = models["providers"] as? [String: Any],
-              let openAI = providers["openai"] as? [String: Any],
-              let apiKey = openAI["apiKey"] as? String else {
-            return ""
-        }
-
-        return apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (try? configurationStore.loadOrCreate().apiKeys.openAI.trimmingCharacters(in: .whitespacesAndNewlines)) ?? ""
     }
 
     private func directModelMaxTokens(
@@ -4920,568 +4693,6 @@ struct OpenClawWorkspaceFile: Identifiable, Equatable {
         self.byteCount = byteCount
         self.contents = contents
     }
-}
-
-enum OpenClawSettingsApplyError: LocalizedError {
-    case invalidJSONValue(String)
-    case invalidJSONObject
-
-    var errorDescription: String? {
-        switch self {
-        case let .invalidJSONValue(key):
-            return "Invalid JSON value for \(key)."
-        case .invalidJSONObject:
-            return "openclaw.json must contain a JSON object."
-        }
-    }
-}
-
-struct OpenClawSettingsReader {
-    private static let customSettingsPrefixes = [
-        "agents.defaults.localPrompt",
-        "integrations"
-    ]
-
-    private let repositoryDirectory = resolveOpenClawRepositoryDirectory()
-    private let configDirectory = OpenClawRuntimePaths.configDirectory
-    private let workspaceDirectory = OpenClawRuntimePaths.workspaceDirectory
-    private let nodeURL = resolveNodeExecutableURL()
-    private let gatewayHost = "127.0.0.1"
-    private let fallbackGatewayPort = "18789"
-    private let streamBridgePort = "7071"
-    private let environment: [String: String]
-
-    init(environment: [String: String]? = nil) {
-        var mergedEnvironment = ProcessInfo.processInfo.environment
-        OpenClawLLMConfiguration.mergeEnvironmentSources(
-            repositoryEnvURL: repositoryDirectory.appendingPathComponent(".env"),
-            configEnvURL: configDirectory.appendingPathComponent(".env"),
-            configURL: configDirectory.appendingPathComponent("openclaw.json"),
-            overrideConfigURL: OpenClawRuntimePaths.graculaExampleSettingsURL,
-            into: &mergedEnvironment
-        )
-        if let environment {
-            mergedEnvironment.merge(environment) { _, newValue in newValue }
-        }
-        self.environment = mergedEnvironment
-    }
-
-    func snapshot() -> OpenClawSettingsSnapshot {
-        let gatewayPort = configuredGatewayPort(from: environment)
-        let runtimeRows = [
-            row("Repository", repositoryDirectory.path),
-            row("Node runtime", nodeURL.path),
-            row("Gateway script", repositoryDirectory.appendingPathComponent("dist/index.js").path),
-            row("Gateway URL", "http://\(gatewayHost):\(gatewayPort)/"),
-            row("Gateway health", "http://\(gatewayHost):\(gatewayPort)/healthz"),
-            row("Stream bridge health", "http://\(gatewayHost):\(streamBridgePort)/health"),
-            row("Config file", configDirectory.appendingPathComponent("openclaw.json").path),
-            row("Example overrides", OpenClawRuntimePaths.graculaExampleSettingsURL.path),
-            row("Repo .env", repositoryDirectory.appendingPathComponent(".env").path),
-            row("User .env", configDirectory.appendingPathComponent(".env").path)
-        ]
-
-        let permissionRows = [
-            row("Gateway bind", environment["OPENCLAW_GATEWAY_BIND"] ?? "loopback"),
-            row("Config directory", configDirectory.path),
-            row("Workspace directory", workspaceDirectory.path),
-            row("Canvas directory", configDirectory.appendingPathComponent("canvas", isDirectory: true).path),
-            row("Cron directory", configDirectory.appendingPathComponent("cron", isDirectory: true).path),
-            row("Browser launch", environment["BROWSER"] ?? "echo"),
-            row("Track only groups", environment["OPENCLAW_TRACK_ONLY_GROUPS"] ?? "1"),
-            row("Track auto links", environment["OPENCLAW_TRACK_AUTO_LINKS"] ?? "1")
-        ]
-
-        let environmentKeys = environment.keys
-            .filter { key in
-                key.hasPrefix("OPENCLAW_")
-                    || key.hasPrefix("GRACULA_")
-                    || key.hasPrefix("TELEGRAM_")
-                    || key.hasPrefix("GRACULA_")
-                    || key.hasPrefix("QDRANT_")
-                    || key.hasPrefix("ONLYFANS_")
-                    || key == "BROWSER"
-            }
-            .sorted()
-        let environmentRows = environmentKeys.map { key in
-            row(key, redacted(environment[key] ?? "", forKey: key))
-        }
-        let environmentEntries = environmentKeys.map { key in
-            OpenClawEditableSetting(
-                key: key,
-                source: .environment,
-                kind: .string,
-                isSecret: isSecretKey(key),
-                value: environment[key] ?? ""
-            )
-        }
-        let jsonEntries = flattenJSONSettings()
-        let workspaceFiles = readWorkspaceFiles()
-        let configuredToolRows = jsonEntries
-            .filter { entry in
-                entry.key.hasPrefix("tools.")
-                    || entry.key.hasPrefix("plugins.")
-                    || entry.key.hasPrefix("hooks.")
-                    || entry.key.hasPrefix("skills.")
-            }
-            .map { entry in
-                row(entry.key, entry.isSecret ? "[redacted]" : entry.value)
-            }
-        let toolRows = configuredToolRows
-
-        return OpenClawSettingsSnapshot(
-            runtimeRows: runtimeRows,
-            permissionRows: permissionRows,
-            environmentRows: environmentRows,
-            toolRows: toolRows,
-            environmentEntries: environmentEntries,
-            jsonEntries: jsonEntries,
-            workspaceFiles: workspaceFiles
-        )
-    }
-
-    static func writeEnvironment(entries: [OpenClawEditableSetting]) throws {
-        let url = resolveOpenClawRepositoryDirectory().appendingPathComponent(".env")
-        try writeEnvironment(entries: entries, to: url)
-    }
-
-    static func writeEnvironment(entries: [OpenClawEditableSetting], to url: URL) throws {
-        let fileManager = FileManager.default
-        try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if fileManager.fileExists(atPath: url.path) {
-            let backupURL = url.deletingLastPathComponent()
-                .appendingPathComponent(".env.bak.\(backupTimestamp())")
-            try? fileManager.copyItem(at: url, to: backupURL)
-        }
-
-        let lines = entries
-            .sorted { $0.key < $1.key }
-            .map { "\($0.key)=\(escapedEnvValue($0.value))" }
-        try (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
-    }
-
-    static func writeJSON(entries: [OpenClawEditableSetting]) throws {
-        try writeJSON(entries: entries, to: OpenClawRuntimePaths.configURL)
-    }
-
-    static func writeJSON(entries: [OpenClawEditableSetting], to url: URL) throws {
-        let normalizedEntries = OpenClawLLMConfiguration.entriesWithProviderDefaults(entries)
-        let primaryEntries = normalizedEntries.filter { !Self.isCustomSettingsKey($0.key) }
-        let customEntries = normalizedEntries.filter { Self.isCustomSettingsKey($0.key) }
-
-        try Self.writeJSONEntries(primaryEntries, to: url, removingPaths: Self.customSettingsPrefixes)
-
-        let customURL = Self.customSettingsURL(for: url)
-        if customEntries.isEmpty {
-            try? FileManager.default.removeItem(at: customURL)
-        } else {
-            try writeJSONEntries(customEntries, to: customURL, removingPaths: [])
-        }
-    }
-
-    private static func writeJSONEntries(
-        _ entries: [OpenClawEditableSetting],
-        to url: URL,
-        removingPaths: [String]
-    ) throws {
-        let fileManager = FileManager.default
-        try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if fileManager.fileExists(atPath: url.path) {
-            let backupURL = url.deletingLastPathComponent()
-                .appendingPathComponent("\(url.lastPathComponent).bak.\(backupTimestamp())")
-            try? fileManager.copyItem(at: url, to: backupURL)
-        }
-
-        let rootObject: NSMutableDictionary
-        if let data = try? Data(contentsOf: url),
-           !data.isEmpty,
-           let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            rootObject = NSMutableDictionary(dictionary: object)
-        } else {
-            rootObject = NSMutableDictionary()
-        }
-
-        for path in removingPaths {
-            Self.removeJSONValue(forPath: path, in: rootObject)
-        }
-
-        for entry in entries {
-            guard let value = try jsonValue(from: entry) else {
-                continue
-            }
-            setJSONValue(value, forPath: entry.key, in: rootObject)
-        }
-
-        guard JSONSerialization.isValidJSONObject(rootObject) else {
-            throw OpenClawSettingsApplyError.invalidJSONObject
-        }
-        let data = try JSONSerialization.data(withJSONObject: rootObject, options: [.prettyPrinted, .sortedKeys])
-        try data.write(to: url, options: [.atomic])
-    }
-
-    static func writeWorkspaceFiles(_ files: [OpenClawWorkspaceFile]) throws {
-        try writeWorkspaceFiles(files, to: OpenClawRuntimePaths.workspaceDirectory)
-    }
-
-    static func writeWorkspaceFiles(_ files: [OpenClawWorkspaceFile], to workspaceDirectory: URL) throws {
-        let fileManager = FileManager.default
-        for file in files {
-            guard isEditableWorkspaceFile(file.relativePath) else {
-                continue
-            }
-            let url = workspaceDirectory.appendingPathComponent(file.relativePath)
-            if fileManager.fileExists(atPath: url.path) {
-                let backupURL = url.deletingLastPathComponent()
-                    .appendingPathComponent("\(url.lastPathComponent).bak.\(backupTimestamp())")
-                try? fileManager.copyItem(at: url, to: backupURL)
-            }
-            try file.contents.write(to: url, atomically: true, encoding: .utf8)
-        }
-    }
-
-    private func row(_ name: String, _ value: String) -> OpenClawSettingsRow {
-        OpenClawSettingsRow(id: name, name: name, value: value.isEmpty ? "Not set" : value)
-    }
-
-    private func flattenJSONSettings() -> [OpenClawEditableSetting] {
-        var entriesByKey: [String: OpenClawEditableSetting] = [:]
-        for url in [
-            configDirectory.appendingPathComponent("openclaw.json"),
-            OpenClawRuntimePaths.graculaExampleSettingsURL
-        ] {
-            for entry in flattenedJSONEntries(from: url) {
-                entriesByKey[entry.key] = entry
-            }
-        }
-
-        return entriesByKey.values.sorted { $0.key < $1.key }
-    }
-
-    private func readWorkspaceFiles() -> [OpenClawWorkspaceFile] {
-        let workspaceURL = workspaceDirectory
-        guard let urls = try? FileManager.default.contentsOfDirectory(
-            at: workspaceURL,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        ) else {
-            return []
-        }
-
-        let discoveredNames = urls
-            .map(\.lastPathComponent)
-            .filter(Self.isEditableWorkspaceFile)
-        let names = Set(discoveredNames)
-            .union(Self.coreEditableWorkspaceFileNames)
-            .sorted()
-
-        return names.map { name in
-            let url = workspaceURL.appendingPathComponent(name)
-            let existsOnDisk = FileManager.default.fileExists(atPath: url.path)
-            let contents = (try? String(contentsOf: url)) ?? ""
-            let byteCount = (try? Data(contentsOf: url).count) ?? 0
-            return OpenClawWorkspaceFile(
-                relativePath: name,
-                absolutePath: url.path,
-                existsOnDisk: existsOnDisk,
-                byteCount: byteCount,
-                contents: contents
-            )
-        }
-    }
-
-    private func flattenJSONValue(_ value: Any, prefix: String, into entries: inout [OpenClawEditableSetting]) {
-        if let dictionary = value as? [String: Any], !dictionary.isEmpty {
-            for key in dictionary.keys.sorted() {
-                let nextPrefix = prefix.isEmpty ? key : "\(prefix).\(key)"
-                flattenJSONValue(dictionary[key] as Any, prefix: nextPrefix, into: &entries)
-            }
-            return
-        }
-
-        let kind = valueKind(for: value)
-        entries.append(
-            OpenClawEditableSetting(
-                key: prefix,
-                source: .json,
-                kind: kind,
-                isSecret: isSecretKey(prefix),
-                value: editableString(for: value, kind: kind)
-            )
-        )
-    }
-
-    private func valueKind(for value: Any) -> OpenClawEditableSetting.ValueKind {
-        switch value {
-        case is NSNull:
-            return .null
-        case let number as NSNumber:
-            if CFGetTypeID(number) == CFBooleanGetTypeID() {
-                return .bool
-            }
-            return floor(number.doubleValue) == number.doubleValue ? .int : .double
-        case is String:
-            return .string
-        case is [Any]:
-            return .array
-        case is [String: Any]:
-            return .object
-        default:
-            return .string
-        }
-    }
-
-    private func editableString(for value: Any, kind: OpenClawEditableSetting.ValueKind) -> String {
-        switch kind {
-        case .null:
-            return "null"
-        case .bool, .int, .double:
-            return "\(value)"
-        case .string:
-            return value as? String ?? "\(value)"
-        case .array, .object:
-            guard JSONSerialization.isValidJSONObject(value),
-                  let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
-                  let string = String(data: data, encoding: .utf8) else {
-                return "\(value)"
-            }
-            return string
-        }
-    }
-
-    private func configuredGatewayPort(from environment: [String: String]) -> String {
-        if let port = normalizedPort(environment["OPENCLAW_GATEWAY_PORT"]) {
-            return port
-        }
-        if let port = configuredGatewayPortFromOpenClawJSON() {
-            return port
-        }
-        return fallbackGatewayPort
-    }
-
-    private func configuredGatewayPortFromOpenClawJSON() -> String? {
-        let configURL = configDirectory.appendingPathComponent("openclaw.json")
-        guard let data = try? Data(contentsOf: configURL),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let gateway = object["gateway"] as? [String: Any] else {
-            return nil
-        }
-
-        if let stringPort = gateway["port"] as? String {
-            return normalizedPort(stringPort)
-        }
-        if let numericPort = gateway["port"] as? NSNumber {
-            return normalizedPort(numericPort.stringValue)
-        }
-        return nil
-    }
-
-    private func normalizedPort(_ rawPort: String?) -> String? {
-        guard let rawPort else {
-            return nil
-        }
-        let trimmed = rawPort.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let port = Int(trimmed), (1...65535).contains(port) else {
-            return nil
-        }
-        return String(port)
-    }
-
-    private func redacted(_ value: String, forKey key: String) -> String {
-        guard !value.isEmpty else {
-            return "Not set"
-        }
-        if isSecretKey(key) {
-            return "[redacted]"
-        }
-        if value.count > 80 {
-            return String(value.prefix(77)) + "..."
-        }
-        return value
-    }
-
-    private func isSecretKey(_ key: String) -> Bool {
-        key.range(of: #"(?i)(token|secret|key|cookie|authorization|password|apiKey|api_key)"#, options: .regularExpression) != nil
-    }
-
-    private static func isSecretKey(_ key: String) -> Bool {
-        key.range(of: #"(?i)(token|secret|key|cookie|authorization|password|apiKey|api_key)"#, options: .regularExpression) != nil
-    }
-
-    private static func escapedEnvValue(_ value: String) -> String {
-        if value.rangeOfCharacter(from: .whitespacesAndNewlines) == nil,
-           !value.contains("#"),
-           !value.contains("\""),
-           !value.contains("'") {
-            return value
-        }
-        let escaped = value
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-        return "\"\(escaped)\""
-    }
-
-    private static func backupTimestamp() -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyyMMdd-HHmmss"
-        return formatter.string(from: Date())
-    }
-
-    private static func jsonValue(from entry: OpenClawEditableSetting) throws -> Any? {
-        let trimmed = entry.value.trimmingCharacters(in: .whitespacesAndNewlines)
-        switch entry.kind {
-        case .string:
-            return entry.value
-        case .bool:
-            guard !trimmed.isEmpty else {
-                return nil
-            }
-            if ["true", "1", "yes"].contains(trimmed.lowercased()) {
-                return true
-            }
-            if ["false", "0", "no"].contains(trimmed.lowercased()) {
-                return false
-            }
-            return nil
-        case .int:
-            guard !trimmed.isEmpty else {
-                return nil
-            }
-            guard let value = Int(trimmed) else {
-                return nil
-            }
-            return value
-        case .double:
-            guard !trimmed.isEmpty else {
-                return nil
-            }
-            guard let value = Double(trimmed) else {
-                return nil
-            }
-            return value
-        case .null:
-            return NSNull()
-        case .array, .object:
-            guard !trimmed.isEmpty else {
-                return nil
-            }
-            guard let data = trimmed.data(using: .utf8),
-                  let value = try? JSONSerialization.jsonObject(with: data) else {
-                return nil
-            }
-            return value
-        }
-    }
-
-    private static func setJSONValue(_ value: Any, forPath path: String, in root: NSMutableDictionary) {
-        let components = path.split(separator: ".").map(String.init)
-        guard let last = components.last else {
-            return
-        }
-        var current = root
-        for component in components.dropLast() {
-            if let existing = current[component] as? NSMutableDictionary {
-                current = existing
-            } else if let existing = current[component] as? [String: Any] {
-                let dictionary = NSMutableDictionary(dictionary: existing)
-                current[component] = dictionary
-                current = dictionary
-            } else {
-                let dictionary = NSMutableDictionary()
-                current[component] = dictionary
-                current = dictionary
-            }
-        }
-        current[last] = value
-    }
-
-    private func flattenedJSONEntries(from url: URL) -> [OpenClawEditableSetting] {
-        guard let data = try? Data(contentsOf: url),
-              let object = try? JSONSerialization.jsonObject(with: data) else {
-            return []
-        }
-
-        var entries: [OpenClawEditableSetting] = []
-        flattenJSONValue(object, prefix: "", into: &entries)
-        return entries
-    }
-
-    private static func customSettingsURL(for configURL: URL) -> URL {
-        configURL.deletingLastPathComponent().appendingPathComponent("gracula-example.json")
-    }
-
-    private static func isCustomSettingsKey(_ key: String) -> Bool {
-        customSettingsPrefixes.contains { prefix in
-            key == prefix || key.hasPrefix("\(prefix).")
-        }
-    }
-
-    private static func removeJSONValue(forPath path: String, in rootObject: NSMutableDictionary) {
-        let segments = path.split(separator: ".").map(String.init)
-        guard !segments.isEmpty else {
-            return
-        }
-
-        Self.removeJSONValue(forSegments: segments[...], in: rootObject)
-    }
-
-    private static func removeJSONValue(
-        forSegments segments: ArraySlice<String>,
-        in dictionary: NSMutableDictionary
-    ) {
-        guard let first = segments.first else {
-            return
-        }
-
-        if segments.count == 1 {
-            dictionary.removeObject(forKey: first)
-            return
-        }
-
-        guard let child = dictionary[first] as? NSMutableDictionary else {
-            if let childObject = dictionary[first] as? [String: Any] {
-                let mutableChild = NSMutableDictionary(dictionary: childObject)
-                Self.removeJSONValue(forSegments: segments.dropFirst(), in: mutableChild)
-                if mutableChild.count == 0 {
-                    dictionary.removeObject(forKey: first)
-                } else {
-                    dictionary[first] = mutableChild
-                }
-            }
-            return
-        }
-
-        Self.removeJSONValue(forSegments: segments.dropFirst(), in: child)
-        if child.count == 0 {
-            dictionary.removeObject(forKey: first)
-        }
-    }
-
-    private static func isEditableWorkspaceFile(_ relativePath: String) -> Bool {
-        guard !relativePath.contains("/"),
-              relativePath.hasSuffix(".md") || relativePath.hasSuffix(".txt") else {
-            return false
-        }
-        return coreEditableWorkspaceFileNames.contains(relativePath)
-            || relativePath.hasPrefix("IDENTITY")
-            || relativePath.hasPrefix("SOUL")
-            || relativePath.hasPrefix("AGENT")
-            || relativePath.hasPrefix("TOOL")
-    }
-
-    private static let coreEditableWorkspaceFileNames: Set<String> = [
-            "AGENTS.md",
-            "BOOTSTRAP.md",
-            "HEARTBEAT.md",
-            "IDENTITY.md",
-            "IDENTITY-female.md",
-            "MEMORY.md",
-            "SOUL.md",
-            "TOOLS.md",
-            "USER.md",
-            "memory_summary.md",
-            "persona_compact.md",
-            "rag_excerpts.md"
-        ]
 }
 
 private func resolveOpenClawRepositoryDirectory() -> URL {

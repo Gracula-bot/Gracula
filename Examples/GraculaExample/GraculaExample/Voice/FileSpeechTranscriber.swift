@@ -1,4 +1,5 @@
 import Foundation
+import Persistence
 
 struct LocalSpeechRuntimeConfiguration: Sendable {
     let backend: SpeechRecognitionBackend
@@ -11,6 +12,7 @@ struct LocalSpeechRuntimeConfiguration: Sendable {
     let cpuThreads: Int
     let workerScriptURL: URL
     let ffmpegURL: URL?
+    let environment: [String: String]
 
     func overriding(device newDevice: String) -> LocalSpeechRuntimeConfiguration {
         LocalSpeechRuntimeConfiguration(
@@ -23,7 +25,8 @@ struct LocalSpeechRuntimeConfiguration: Sendable {
             device: newDevice,
             cpuThreads: cpuThreads,
             workerScriptURL: workerScriptURL,
-            ffmpegURL: ffmpegURL
+            ffmpegURL: ffmpegURL,
+            environment: environment
         )
     }
 
@@ -33,29 +36,18 @@ struct LocalSpeechRuntimeConfiguration: Sendable {
         languageCode: String? = nil
     ) throws -> LocalSpeechRuntimeConfiguration {
         let fileManager = FileManager.default
-        let environment = ProcessInfo.processInfo.environment
-
-        let applicationSupportDirectory = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("GraculaExample", isDirectory: true)
-
-        let repositoryCandidates = candidateRepositoryRoots(
-            currentDirectory: URL(fileURLWithPath: fileManager.currentDirectoryPath)
+        let layout = ProjectRuntimeLayout.resolveDefault()
+        let store = AppConfigurationStore(layout: layout)
+        let configuration = try store.loadOrCreate()
+        let baseEnvironment = AppConfigurationEnvironmentBuilder.build(
+            configuration: configuration,
+            layout: layout
         )
 
-        let pythonCandidates: [URL] = ([
-            environment["GRACULA_WHISPER_PYTHON"].map { URL(fileURLWithPath: $0) },
-            applicationSupportDirectory
-                .appendingPathComponent("PythonRuntime", isDirectory: true)
-                .appendingPathComponent("bin", isDirectory: true)
-                .appendingPathComponent("python"),
-            Self.exampleDirectoryPythonURL(
-                in: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-            ),
-        ] + repositoryCandidates.map(Self.examplePythonURL(in:))).compactMap { $0 }
-
-        guard let pythonURL = pythonCandidates.first(where: { fileManager.isExecutableFile(atPath: $0.path) }) else {
+        let pythonURL = URL(fileURLWithPath: configuration.python.executablePath)
+        guard fileManager.isExecutableFile(atPath: pythonURL.path) else {
             throw FileSpeechTranscriberError.runtimeMissing(
-                "Python runtime not found. Expected `GRACULA_WHISPER_PYTHON`, `~/Library/Application Support/GraculaExample/PythonRuntime/bin/python`, or `Examples/GraculaExample/.whisper-venv/bin/python` under the repository checkout."
+                "Project-local Python runtime not found at \(configuration.python.executablePath). Run bootstrap to create `.openclaw/venv`."
             )
         }
 
@@ -64,22 +56,18 @@ struct LocalSpeechRuntimeConfiguration: Sendable {
 
         let (modelDirectoryURL, workerScriptURL) = backend == .whisper
             ? (
-                applicationSupportDirectory.appendingPathComponent("FasterWhisperModels", isDirectory: true),
-                applicationSupportDirectory.appendingPathComponent("faster-whisper-worker.py")
+                URL(fileURLWithPath: configuration.whisper.modelDirectoryPath, isDirectory: true),
+                URL(fileURLWithPath: configuration.whisper.workerScriptPath)
             )
             : (
-                applicationSupportDirectory.appendingPathComponent("ParakeetModels", isDirectory: true),
-                applicationSupportDirectory.appendingPathComponent("parakeet-worker.py")
+                layout.modelsDirectoryURL.appendingPathComponent("parakeet", isDirectory: true),
+                layout.pythonDirectoryURL.appendingPathComponent("parakeet-worker.py")
             )
         try fileManager.createDirectory(at: modelDirectoryURL, withIntermediateDirectories: true)
         try backend.workerScript.writeIfNeeded(to: workerScriptURL)
 
-        let ffmpegCandidates: [URL] = [
-            environment["GRACULA_FFMPEG_PATH"].map { URL(fileURLWithPath: $0) },
-            URL(fileURLWithPath: "/opt/homebrew/bin/ffmpeg"),
-            URL(fileURLWithPath: "/usr/local/bin/ffmpeg"),
-        ].compactMap { $0 }
-        let ffmpegURL = ffmpegCandidates.first(where: { fileManager.isExecutableFile(atPath: $0.path) })
+        let ffmpegURL = URL(fileURLWithPath: configuration.python.ffmpegExecutablePath)
+        let resolvedFFmpegURL = fileManager.isExecutableFile(atPath: ffmpegURL.path) ? ffmpegURL : nil
 
         return LocalSpeechRuntimeConfiguration(
             backend: backend,
@@ -91,7 +79,8 @@ struct LocalSpeechRuntimeConfiguration: Sendable {
             device: backend == .parakeet ? "auto" : "cpu",
             cpuThreads: max(1, ProcessInfo.processInfo.activeProcessorCount),
             workerScriptURL: workerScriptURL,
-            ffmpegURL: ffmpegURL
+            ffmpegURL: resolvedFFmpegURL,
+            environment: baseEnvironment
         )
     }
 
@@ -113,65 +102,6 @@ struct LocalSpeechRuntimeConfiguration: Sendable {
         }
     }
 
-    private static func examplePythonURL(in repositoryRoot: URL) -> URL {
-        repositoryRoot
-            .appendingPathComponent("Examples", isDirectory: true)
-            .appendingPathComponent("GraculaExample", isDirectory: true)
-            .appendingPathComponent(".whisper-venv", isDirectory: true)
-            .appendingPathComponent("bin", isDirectory: true)
-            .appendingPathComponent("python")
-    }
-
-    private static func exampleDirectoryPythonURL(in exampleDirectory: URL) -> URL {
-        exampleDirectory
-            .appendingPathComponent(".whisper-venv", isDirectory: true)
-            .appendingPathComponent("bin", isDirectory: true)
-            .appendingPathComponent("python")
-    }
-
-    private static func candidateRepositoryRoots(currentDirectory: URL) -> [URL] {
-        let fileManager = FileManager.default
-        let environment = ProcessInfo.processInfo.environment
-        var candidates: [URL] = []
-
-        if let override = environment["GRACULA_PROJECT_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !override.isEmpty {
-            candidates.append(URL(fileURLWithPath: override, isDirectory: true))
-        }
-
-        candidates.append(currentDirectory)
-
-        let homeDirectory = fileManager.homeDirectoryForCurrentUser
-        candidates.append(homeDirectory.appendingPathComponent("Documents", isDirectory: true))
-        candidates.append(homeDirectory.appendingPathComponent("Code", isDirectory: true))
-        candidates.append(homeDirectory)
-
-        var resolvedRoots: [URL] = []
-        for candidate in candidates {
-            if let root = locateGraculaProjectRoot(startingAt: candidate),
-               !resolvedRoots.contains(root) {
-                resolvedRoots.append(root)
-            }
-        }
-
-        return resolvedRoots
-    }
-
-    private static func locateGraculaProjectRoot(startingAt url: URL) -> URL? {
-        let fileManager = FileManager.default
-        var candidate = url.standardizedFileURL
-
-        while candidate.path != "/" {
-            if fileManager.fileExists(atPath: candidate.appendingPathComponent("Package.swift").path),
-               fileManager.fileExists(atPath: candidate.appendingPathComponent("Examples", isDirectory: true).path),
-               fileManager.fileExists(atPath: candidate.appendingPathComponent("Examples/GraculaExample", isDirectory: true).path) {
-                return candidate
-            }
-            candidate = candidate.deletingLastPathComponent()
-        }
-
-        return nil
-    }
 }
 
 final class FileSpeechTranscriber: @unchecked Sendable {
@@ -412,7 +342,7 @@ private actor WhisperTranscriptionWorker {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
-        var environment = ProcessInfo.processInfo.environment
+        var environment = runtime.environment
         environment["PYTHONUNBUFFERED"] = "1"
         environment["HF_HOME"] = runtime.modelDirectoryURL.path
         environment["XDG_CACHE_HOME"] = runtime.modelDirectoryURL.deletingLastPathComponent().path

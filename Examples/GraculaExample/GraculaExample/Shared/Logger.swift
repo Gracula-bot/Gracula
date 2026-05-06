@@ -1,4 +1,5 @@
 import Foundation
+import Persistence
 
 let log = Logger.shared
 
@@ -45,8 +46,7 @@ final class Logger: @unchecked Sendable {
     private init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
         self.currentLevel = .debug
-        self.logFileURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("GraculaExample", isDirectory: true)
+        self.logFileURL = ProjectRuntimeLayout.resolveDefault().logsDirectoryURL
             .appendingPathComponent("app-debug.log")
     }
 

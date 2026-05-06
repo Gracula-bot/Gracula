@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>schemaVersion</key>
+	<integer>1</integer>
+	<key>apiKeys</key>
+	<dict>
+		<key>openAI</key>
+		<string></string>
+		<key>brave</key>
+		<string></string>
+		<key>gemini</key>
+		<string></string>
+		<key>xAI</key>
+		<string></string>
+		<key>perplexity</key>
+		<string></string>
+		<key>moonshot</key>
+		<string></string>
+		<key>firecrawl</key>
+		<string></string>
+	</dict>
+	<key>llm</key>
+	<dict>
+		<key>directLocalModeEnabled</key>
+		<true/>
+		<key>primaryModelRef</key>
+		<string>openai/gpt-5.4-mini</string>
+		<key>gatewayEnabled</key>
+		<false/>
+	</dict>
+	<key>voice</key>
+	<dict>
+		<key>speechRecognitionBackend</key>
+		<string>whisper</string>
+		<key>speechSynthesisBackend</key>
+		<string>appleSystem</string>
+		<key>speakRecognizedText</key>
+		<true/>
+		<key>whisperModelName</key>
+		<string>large-v3-turbo</string>
+		<key>whisperLanguageCode</key>
+		<string>ru</string>
+	</dict>
+</dict>
+</plist>

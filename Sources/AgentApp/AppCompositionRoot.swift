@@ -11,6 +11,7 @@ import Voice
 
 struct AppCompositionRoot {
     private let llmMetricsStore = LLMRequestMetricsStore()
+    private let runtimeLayout = ProjectRuntimeLayout.resolveDefault()
 
     @MainActor
     func makeAgentView() -> AgentView {
@@ -79,7 +80,10 @@ struct AppCompositionRoot {
     }
 
     private func makePlanner(availableTools: [ToolDescriptor]) -> any Planning {
-        let environment = Self.resolvedConfigurationEnvironment()
+        let environment = AppConfigurationEnvironmentBuilder.build(
+            configuration: canonicalConfiguration(),
+            layout: runtimeLayout
+        )
         let openAIKey = Self.preferredOpenAIAPIKey(from: environment)
         let openAIModel = Self.preferredOpenAIModel(from: environment)
         let temperature = Self.preferredLLMTemperature(from: environment)
@@ -131,7 +135,9 @@ struct AppCompositionRoot {
     }
 
     private static func makeTelegramService() -> any TelegramService {
-        let environment = resolvedConfigurationEnvironment()
+        let layout = ProjectRuntimeLayout.resolveDefault()
+        let configuration = (try? AppConfigurationStore(layout: layout).loadOrCreate()) ?? AppConfigurationDefaults.make(layout: layout)
+        let environment = AppConfigurationEnvironmentBuilder.build(configuration: configuration, layout: layout)
         let automationService = TelegramMacAppAutomationService()
         let userSettings = TelegramUserSettings.make(
             environment: environment,
@@ -158,7 +164,9 @@ struct AppCompositionRoot {
         reversibleAllowlistedTools: Set<String>,
         approvedDirectories: [URL]
     ) -> BotSettingsSnapshot {
-        let environment = resolvedConfigurationEnvironment()
+        let layout = ProjectRuntimeLayout.resolveDefault()
+        let configuration = (try? AppConfigurationStore(layout: layout).loadOrCreate()) ?? AppConfigurationDefaults.make(layout: layout)
+        let environment = AppConfigurationEnvironmentBuilder.build(configuration: configuration, layout: layout)
         let openAIKey = preferredOpenAIAPIKey(from: environment)
         let openAIModel = preferredOpenAIModel(from: environment)
         let temperature = preferredLLMTemperature(from: environment)
@@ -207,10 +215,6 @@ struct AppCompositionRoot {
     }
 
     private static func preferredOpenAIModel(from environment: [String: String]) -> String {
-        if let configuredModel = configuredOpenAIModelFromJSONSettings() {
-            return configuredModel
-        }
-
         let candidates = [
             environment["OPENAI_MODEL"],
             environment["GRACULA_LLM_MODEL"]
@@ -231,14 +235,10 @@ struct AppCompositionRoot {
            !value.isEmpty {
             return value
         }
-        return configuredOpenAIAPIKeyFromJSONSettings() ?? ""
+        return ""
     }
 
     private static func preferredLLMTemperature(from environment: [String: String]) -> Double {
-        if let value = configuredLLMTemperatureFromJSONSettings() {
-            return value
-        }
-
         let candidates = [
             environment["OPENAI_TEMPERATURE"],
             environment["GRACULA_LLM_TEMPERATURE"]
@@ -257,168 +257,8 @@ struct AppCompositionRoot {
         return 0.0
     }
 
-    private static func configuredLLMTemperatureFromJSONSettings() -> Double? {
-        let settingPath = "agents.defaults.localPrompt.openAIChat.temperature"
-        var resolvedValue: Double?
-        if let rawValue = mergedOpenClawJSONObject().flatMap({ jsonValue(forPath: settingPath, in: $0) }) {
-            if let stringValue = rawValue as? String,
-               let value = Double(stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                resolvedValue = value
-            } else if let numberValue = rawValue as? NSNumber {
-                resolvedValue = numberValue.doubleValue
-            }
-        }
-
-        return resolvedValue.map { min(max($0, 0.0), 2.0) }
-    }
-
-    private static func configuredOpenAIModelFromJSONSettings() -> String? {
-        guard let rawValue = mergedOpenClawJSONObject().flatMap({
-            jsonValue(forPath: "agents.defaults.model.primary", in: $0)
-                ?? jsonValue(forPath: "agents.defaults.model", in: $0)
-        }) as? String else {
-            return nil
-        }
-
-        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.lowercased().hasPrefix("openai/") else {
-            return nil
-        }
-        return String(trimmed.dropFirst("openai/".count))
-    }
-
-    private static func configuredOpenAIAPIKeyFromJSONSettings() -> String? {
-        guard let rawValue = mergedOpenClawJSONObject().flatMap({
-            jsonValue(forPath: "models.providers.openai.apiKey", in: $0)
-        }) as? String else {
-            return nil
-        }
-
-        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
-    }
-
-    private static func resolvedConfigurationEnvironment() -> [String: String] {
-        var environment = ProcessInfo.processInfo.environment
-        mergeEnvFile(projectRootDirectory().appendingPathComponent(".env"), into: &environment)
-        mergeEnvFile(openClawConfigDirectory().appendingPathComponent(".env"), into: &environment)
-        if let jsonObject = mergedOpenClawJSONObject() {
-            mergeEnvironmentVariables(from: jsonObject, into: &environment)
-        }
-        return environment
-    }
-
-    private static func mergedOpenClawJSONObject() -> [String: Any]? {
-        let configDirectory = openClawConfigDirectory()
-        let baseObject = jsonObject(at: configDirectory.appendingPathComponent("openclaw.json"))
-        let overrideObject = jsonObject(at: configDirectory.appendingPathComponent("gracula-example.json"))
-
-        switch (baseObject, overrideObject) {
-        case let (base?, override?):
-            var merged = base
-            deepMergeJSONObject(override, into: &merged)
-            return merged
-        case let (base?, nil):
-            return base
-        case let (nil, override?):
-            return override
-        case (nil, nil):
-            return nil
-        }
-    }
-
-    private static func openClawConfigDirectory() -> URL {
-        projectRootDirectory().appendingPathComponent(".openclaw", isDirectory: true)
-    }
-
-    private static func jsonObject(at url: URL) -> [String: Any]? {
-        guard let data = try? Data(contentsOf: url),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
-        }
-        return object
-    }
-
-    private static func jsonValue(forPath path: String, in object: [String: Any]) -> Any? {
-        let components = path.split(separator: ".").map(String.init)
-        guard !components.isEmpty else {
-            return nil
-        }
-
-        var current: Any = object
-        for component in components {
-            guard let dictionary = current as? [String: Any],
-                  let next = dictionary[component] else {
-                return nil
-            }
-            current = next
-        }
-
-        return current
-    }
-
-    private static func projectRootDirectory() -> URL {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-    }
-
-    private static func mergeEnvFile(_ url: URL, into environment: inout [String: String]) {
-        guard let contents = try? String(contentsOf: url) else {
-            return
-        }
-
-        for rawLine in contents.components(separatedBy: .newlines) {
-            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !line.isEmpty, !line.hasPrefix("#"),
-                  let separatorIndex = line.firstIndex(of: "=") else {
-                continue
-            }
-
-            let key = String(line[..<separatorIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
-            var value = String(line[line.index(after: separatorIndex)...])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !key.isEmpty else {
-                continue
-            }
-
-            if value.hasPrefix("\""), value.hasSuffix("\""), value.count >= 2 {
-                value = String(value.dropFirst().dropLast())
-                    .replacingOccurrences(of: "\\\"", with: "\"")
-                    .replacingOccurrences(of: "\\\\", with: "\\")
-            }
-
-            environment[key] = value
-        }
-    }
-
-    private static func mergeEnvironmentVariables(from rootObject: [String: Any], into environment: inout [String: String]) {
-        guard let envObject = rootObject["env"] as? [String: Any],
-              let vars = envObject["vars"] as? [String: Any] else {
-            return
-        }
-
-        for (key, rawValue) in vars {
-            if let value = rawValue as? String {
-                environment[key] = value
-            } else if let value = rawValue as? NSNumber {
-                environment[key] = value.stringValue
-            }
-        }
-    }
-
-    private static func deepMergeJSONObject(_ override: [String: Any], into base: inout [String: Any]) {
-        for (key, overrideValue) in override {
-            if let overrideDictionary = overrideValue as? [String: Any],
-               let baseDictionary = base[key] as? [String: Any] {
-                var mergedChild = baseDictionary
-                deepMergeJSONObject(overrideDictionary, into: &mergedChild)
-                base[key] = mergedChild
-            } else {
-                base[key] = overrideValue
-            }
-        }
+    private func canonicalConfiguration() -> AppConfiguration {
+        (try? AppConfigurationStore(layout: runtimeLayout).loadOrCreate()) ?? AppConfigurationDefaults.make(layout: runtimeLayout)
     }
 }
 

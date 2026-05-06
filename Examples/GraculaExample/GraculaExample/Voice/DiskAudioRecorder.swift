@@ -2,6 +2,7 @@
 import AudioToolbox
 import CoreAudio
 import Foundation
+import Persistence
 
 struct AudioInputDevice: Identifiable, Hashable {
     let id: String
@@ -212,9 +213,8 @@ final class DiskAudioRecorder {
     }
 
     private func recordingsDirectory() throws -> URL {
-        let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("GraculaExample", isDirectory: true)
-            .appendingPathComponent("Recordings", isDirectory: true)
+        let directory = ProjectRuntimeLayout.resolveDefault().runtimeDirectoryURL
+            .appendingPathComponent("recordings", isDirectory: true)
 
         try FileManager.default.createDirectory(
             at: directory,

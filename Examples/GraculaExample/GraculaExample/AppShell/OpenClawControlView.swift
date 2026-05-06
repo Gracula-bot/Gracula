@@ -1,36 +1,62 @@
+import Persistence
 import SwiftUI
 
 struct OpenClawControlView: View {
     @ObservedObject var controller: OpenClawLocalController
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("OpenClaw Bot")
-                    .font(.headline)
-                Text(controller.statusText)
-                    .foregroundStyle(controller.isRunning ? .green : .secondary)
-            }
-
-            Spacer()
-
-            Button {
-                if controller.isRunning {
-                    controller.stop()
-                } else {
-                    controller.start()
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("OpenClaw Bot")
+                        .font(.headline)
+                    Text(controller.statusText)
+                        .foregroundStyle(controller.isRunning ? .green : .secondary)
+                    Text(controller.bootstrapStatusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-            } label: {
-                Label(
-                    controller.isRunning
-                        ? (controller.isSendingChat ? "Chat Running" : "Stop Bot")
-                        : "Start Bot",
-                    systemImage: controller.isRunning ? "stop.fill" : "play.fill"
-                )
-                .frame(minWidth: 110)
+
+                Spacer()
+
+                Button {
+                    if controller.isRunning {
+                        controller.stop()
+                    } else {
+                        controller.start()
+                    }
+                } label: {
+                    Label(
+                        controller.isRunning
+                            ? (controller.isSendingChat ? "Chat Running" : "Stop Bot")
+                            : "Start Bot",
+                        systemImage: controller.isRunning ? "stop.fill" : "play.fill"
+                    )
+                    .frame(minWidth: 110)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(controller.isSendingChat)
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(controller.isSendingChat)
+
+            if !controller.bootstrapDependencyItems.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(controller.bootstrapDependencyItems.enumerated()), id: \.offset) { _, item in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(item.name)
+                                .font(.caption.monospaced())
+                            Text(item.status)
+                                .font(.caption)
+                                .foregroundStyle(item.available ? .green : .secondary)
+                            if !item.detail.isEmpty {
+                                Text(item.detail)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -97,7 +123,9 @@ struct OpenClawSettingsView: View {
             BrainSettingsSection(
                 snapshot: snapshot,
                 environmentEntries: $environmentEntries,
-                jsonEntries: $jsonEntries
+                jsonEntries: $jsonEntries,
+                canonicalPlistPath: ProjectRuntimeLayout.resolveDefault().configurationFileURL.path,
+                applyDraftSettings: applyCurrentDraftSettings
             )
 
             telegramUserAPIControls
@@ -123,12 +151,12 @@ struct OpenClawSettingsView: View {
             }
             .disclosureGroupStyle(.automatic)
 
-            DisclosureGroup("Environment .env", isExpanded: $isEnvironmentExpanded) {
+            DisclosureGroup("Canonical Environment", isExpanded: $isEnvironmentExpanded) {
                 editableSettingsList($environmentEntries)
             }
             .disclosureGroupStyle(.automatic)
 
-            DisclosureGroup("openclaw.json", isExpanded: $isJSONExpanded) {
+            DisclosureGroup("Canonical Settings", isExpanded: $isJSONExpanded) {
                 editableSettingsList($jsonEntries)
             }
             .disclosureGroupStyle(.automatic)
@@ -218,6 +246,16 @@ struct OpenClawSettingsView: View {
             }
         }
         .padding(.vertical, 6)
+    }
+
+    private func applyCurrentDraftSettings() -> String {
+        controller.applySettings(
+            environmentEntries: environmentEntries,
+            jsonEntries: jsonEntries,
+            workspaceFiles: workspaceFiles
+        )
+        loadEditableEntries()
+        return controller.settingsStatusText
     }
 
     private func settingsRows(_ rows: [OpenClawSettingsRow]) -> some View {

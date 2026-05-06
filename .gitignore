@@ -6,13 +6,18 @@
 xcuserdata/
 .DS_Store
 
-# OpenClaw workspace is versioned for Gracula persona/runtime snapshots.
-# Credentials and auth state must be removed before committing snapshots.
-.openclaw/tools/
-.openclaw/bin/
-.openclaw/qdrant/
-.openclaw/workspace/node_modules/
-.openclaw/workspace/venv/
+# Gracula / OpenClaw local runtime
+.openclaw/
+.openclaw.legacy.backup/
+ConfigFiles/AppConfiguration.plist
+Examples/GraculaExample/GraculaExample/AppConfiguration.plist
+*.bak
+*.bak.*
+*.bak-*
+*.tmp
+*.temp
+*.log
+*.pid
 
 ## Obj-C/Swift specific
 *.hmap
@@ -70,8 +75,21 @@ fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
 
-# Local GraculaExample runtime state
-Examples/GraculaExample/openclaw/
-Examples/GraculaExample/.whisper-venv.broken-python313-*/
-Examples/GraculaExample/.whisper-venv/bin/__pycache__/
-Examples/GraculaExample/openclaw/.env.bak.*
+# Local Python/runtime artifacts
+.venv/
+venv/
+__pycache__/
+*.pyc
+.python-version
+Library/*
+
+# Local model/cache artifacts
+models/
+.cache/
+downloads/
+
+# Local service/runtime data
+qdrant_storage/
+ollama/
+rapid-mlx/
+Examples/GraculaExample/.whisper-venv*/

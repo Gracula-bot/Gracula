@@ -1,4 +1,5 @@
 import AppKit
+import Persistence
 import SwiftUI
 
 struct AudioRecorderExampleView: View {
@@ -393,6 +394,8 @@ struct BrainSettingsSection: View {
     let snapshot: OpenClawSettingsSnapshot
     @Binding var environmentEntries: [OpenClawEditableSetting]
     @Binding var jsonEntries: [OpenClawEditableSetting]
+    let canonicalPlistPath: String
+    let applyDraftSettings: () -> String
     @State private var selectedPreset: BrainPreset = .openAIGPT54Mini
     @State private var customModelRef = ""
     @State private var openAIApiKey = ""
@@ -434,17 +437,22 @@ struct BrainSettingsSection: View {
     @State private var deepContextTokens = 16384
     @State private var deepOutputTokens = 2048
     @State private var deepReserveTokens = 4096
+    @State private var openAIApplyStatus = ""
     @State private var isSyncing = false
     @State private var didSeedProviderDefaults = false
 
     init(
         snapshot: OpenClawSettingsSnapshot,
         environmentEntries: Binding<[OpenClawEditableSetting]>,
-        jsonEntries: Binding<[OpenClawEditableSetting]>
+        jsonEntries: Binding<[OpenClawEditableSetting]>,
+        canonicalPlistPath: String,
+        applyDraftSettings: @escaping () -> String
     ) {
         self.snapshot = snapshot
         self._environmentEntries = environmentEntries
         self._jsonEntries = jsonEntries
+        self.canonicalPlistPath = canonicalPlistPath
+        self.applyDraftSettings = applyDraftSettings
     }
 
     var body: some View {
@@ -512,7 +520,7 @@ struct BrainSettingsSection: View {
 
             openAIRequestControls
 
-            Text("Apply saves these keys into the project OpenClaw setup. Runtime reads them from the project `.env` and, for OpenAI, also from `openclaw.json`.")
+            Text("Push-safe template: `ConfigFiles/AppConfiguration.example.plist`. Local runtime config: `ConfigFiles/AppConfiguration.plist`.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
@@ -621,11 +629,12 @@ struct BrainSettingsSection: View {
             default: 4096,
             range: 1024...8192
         )
+        let runtimeLayout = ProjectRuntimeLayout.resolveDefault()
         qdrantURL = environmentValue(for: "GRACULA_QDRANT_URL") ?? "http://127.0.0.1:6333"
         qdrantBinaryPath = environmentValue(for: "GRACULA_QDRANT_BIN")
-            ?? OpenClawRuntimePaths.configDirectory.appendingPathComponent("bin/qdrant").path
+            ?? runtimeLayout.qdrantBinaryURL.path
         qdrantStoragePath = environmentValue(for: "GRACULA_QDRANT_STORAGE_DIR")
-            ?? OpenClawRuntimePaths.configDirectory.appendingPathComponent("qdrant/storage").path
+            ?? runtimeLayout.qdrantStorageDirectoryURL.path
         telegramBusinessEnabled = boolValue(
             for: "integrations.telegram.business.enabled",
             default: false
@@ -668,13 +677,13 @@ struct BrainSettingsSection: View {
             ?? ""
         telegramUserTDLibPath = value(for: "integrations.telegram.user.tdjsonLibraryPath")
             ?? environmentValue(for: "GRACULA_TDLIB_JSON_LIBRARY")
-            ?? "/opt/homebrew/lib/libtdjson.dylib"
+            ?? runtimeLayout.binDirectoryURL.appendingPathComponent("libtdjson.dylib").path
         telegramUserDatabaseDirectory = value(for: "integrations.telegram.user.databaseDirectory")
             ?? environmentValue(for: "GRACULA_TELEGRAM_USER_DATABASE_DIR")
-            ?? OpenClawRuntimePaths.configDirectory.appendingPathComponent("telegram-user/database").path
+            ?? runtimeLayout.runtimeDirectoryURL.appendingPathComponent("telegram-user/database").path
         telegramUserFilesDirectory = value(for: "integrations.telegram.user.filesDirectory")
             ?? environmentValue(for: "GRACULA_TELEGRAM_USER_FILES_DIR")
-            ?? OpenClawRuntimePaths.configDirectory.appendingPathComponent("telegram-user/files").path
+            ?? runtimeLayout.runtimeDirectoryURL.appendingPathComponent("telegram-user/files").path
         telegramUserEncryptionKey = value(for: "integrations.telegram.user.encryptionKey")
             ?? environmentValue(for: "GRACULA_TELEGRAM_USER_ENCRYPTION_KEY")
             ?? ""
@@ -701,13 +710,36 @@ struct BrainSettingsSection: View {
         VStack(alignment: .leading, spacing: 8) {
             sectionHeader("API Keys", systemImage: "key")
 
-            SecureField("OpenAI API key", text: $openAIApiKey)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.caption, design: .monospaced))
-                .onChange(of: openAIApiKey) { _, newValue in
-                    guard !isSyncing else { return }
-                    upsertAPIKey(for: "openai", value: newValue)
+            HStack(alignment: .center, spacing: 8) {
+                SecureField("OpenAI API key", text: $openAIApiKey)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.caption, design: .monospaced))
+                    .onChange(of: openAIApiKey) { _, newValue in
+                        guard !isSyncing else { return }
+                        upsertAPIKey(for: "openai", value: newValue)
+                    }
+
+                Button {
+                    let persistedKey = openAIApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let status = applyDraftSettings()
+                    if status.lowercased().contains("failed") {
+                        openAIApplyStatus = status
+                    } else if persistedKey.isEmpty {
+                        openAIApplyStatus = "OpenAI API key cleared in \(canonicalPlistPath)."
+                    } else {
+                        openAIApplyStatus = "OpenAI API key recorded in \(canonicalPlistPath)."
+                    }
+                } label: {
+                    Label("Apply", systemImage: "checkmark.circle")
                 }
+                .buttonStyle(.borderedProminent)
+            }
+
+            if !openAIApplyStatus.isEmpty {
+                Text(openAIApplyStatus)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
 
             SecureField("Brave Search API key (optional)", text: $braveAPIKey)
                 .textFieldStyle(.roundedBorder)
