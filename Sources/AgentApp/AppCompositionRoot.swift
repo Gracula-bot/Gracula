@@ -10,6 +10,8 @@ import Tools
 import Voice
 
 struct AppCompositionRoot {
+    private let llmMetricsStore = LLMRequestMetricsStore()
+
     @MainActor
     func makeAgentView() -> AgentView {
         let auditLog = InMemoryAuditLog()
@@ -57,7 +59,7 @@ struct AppCompositionRoot {
         )
         let voiceCommandRouter = OpenClawVoiceCommandRouter(telegramHandler: telegramHandler)
         let orchestrator = AgentOrchestrator(
-            planner: Self.makePlanner(availableTools: descriptors),
+            planner: makePlanner(availableTools: descriptors),
             policyChecker: DefaultPolicyGate(reversibleAllowlistedTools: reversibleAllowlistedTools),
             toolExecutor: executor,
             memory: ConversationMemory(),
@@ -70,13 +72,32 @@ struct AppCompositionRoot {
                 toolExecutor: executor,
                 auditLog: auditLog,
                 speechSynthesizer: AppleSpeechSynthesizer(),
-                botSettings: botSettings
+                botSettings: botSettings,
+                llmMetricsStore: llmMetricsStore
             )
         )
     }
 
-    private static func makePlanner(availableTools: [ToolDescriptor]) -> any Planning {
+    private func makePlanner(availableTools: [ToolDescriptor]) -> any Planning {
         let environment = ProcessInfo.processInfo.environment
+        let openAIKey = environment["OPENAI_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let openAIModel = Self.preferredOpenAIModel(from: environment)
+
+        if !openAIKey.isEmpty {
+            return LLMPlanningAdapter(
+                client: OpenAIChatCompletionsLLMClient(
+                    apiKey: openAIKey,
+                    defaultModel: openAIModel
+                ),
+                promptCompiler: PromptCompiler(
+                    availableTools: availableTools,
+                    model: openAIModel
+                ),
+                parser: AgentPlanParser(availableTools: availableTools),
+                metricsStore: llmMetricsStore
+            )
+        }
+
         guard let endpointString = environment["GRACULA_LLM_ENDPOINT"],
               let endpoint = URL(string: endpointString) else {
             return DemoPlanner()
@@ -88,7 +109,8 @@ struct AppCompositionRoot {
                 availableTools: availableTools,
                 model: environment["GRACULA_LLM_MODEL"]
             ),
-            parser: AgentPlanParser(availableTools: availableTools)
+            parser: AgentPlanParser(availableTools: availableTools),
+            metricsStore: llmMetricsStore
         )
     }
 
@@ -133,13 +155,30 @@ struct AppCompositionRoot {
         approvedDirectories: [URL]
     ) -> BotSettingsSnapshot {
         let environment = ProcessInfo.processInfo.environment
+        let openAIKey = environment["OPENAI_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let openAIModel = preferredOpenAIModel(from: environment)
         let endpoint = environment["GRACULA_LLM_ENDPOINT"]
         let model = environment["GRACULA_LLM_MODEL"]
+
+        if !openAIKey.isEmpty {
+            return BotSettingsSnapshot(
+                plannerMode: "OpenAI Chat Completions",
+                llmEndpoint: "Configured",
+                llmModel: openAIModel,
+                llmEndpointEnvironmentKey: "OPENAI_API_KEY",
+                llmModelEnvironmentKey: "OPENAI_MODEL",
+                llmTemperature: 0.0,
+                reversibleAllowlistedTools: Array(reversibleAllowlistedTools),
+                approvedDirectories: approvedDirectories,
+                tools: descriptors
+            )
+        }
 
         return BotSettingsSnapshot(
             plannerMode: endpoint.flatMap(URL.init(string:)) == nil ? "Demo planner" : "OpenAI-compatible local HTTP planner",
             llmEndpoint: endpoint ?? "Not set",
             llmModel: model ?? "Not set",
+            llmTemperature: 0.0,
             reversibleAllowlistedTools: Array(reversibleAllowlistedTools),
             approvedDirectories: approvedDirectories,
             tools: descriptors
@@ -160,6 +199,22 @@ struct AppCompositionRoot {
     private static func applicationSupportDirectory() -> URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Gracula", isDirectory: true)
+    }
+
+    private static func preferredOpenAIModel(from environment: [String: String]) -> String {
+        let candidates = [
+            environment["OPENAI_MODEL"],
+            environment["GRACULA_LLM_MODEL"]
+        ]
+
+        for candidate in candidates {
+            let trimmed = candidate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !trimmed.isEmpty {
+                return trimmed
+            }
+        }
+
+        return "gpt-5.5"
     }
 }
 

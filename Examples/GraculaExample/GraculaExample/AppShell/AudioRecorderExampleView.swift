@@ -394,11 +394,9 @@ struct BrainSettingsSection: View {
     let snapshot: OpenClawSettingsSnapshot
     @Binding var environmentEntries: [OpenClawEditableSetting]
     @Binding var jsonEntries: [OpenClawEditableSetting]
-    @State private var selectedPreset: BrainPreset = .localQwen
+    @State private var selectedPreset: BrainPreset = .openAIGPT54Mini
     @State private var customModelRef = ""
-    @State private var googleApiKey = ""
-    @State private var openRouterApiKey = ""
-    @State private var kiloCodeApiKey = ""
+    @State private var openAIApiKey = ""
     @State private var qdrantURL = ""
     @State private var qdrantBinaryPath = ""
     @State private var qdrantStoragePath = ""
@@ -502,31 +500,15 @@ struct BrainSettingsSection: View {
 
             promptTokenControls
 
-            SecureField("Google Gemini API key", text: $googleApiKey)
+            SecureField("OpenAI API key", text: $openAIApiKey)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(.caption, design: .monospaced))
-                .onChange(of: googleApiKey) { _, newValue in
+                .onChange(of: openAIApiKey) { _, newValue in
                     guard !isSyncing else { return }
-                    upsertAPIKey(for: "google", value: newValue)
+                    upsertAPIKey(for: "openai", value: newValue)
                 }
 
-            SecureField("OpenRouter API key", text: $openRouterApiKey)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.caption, design: .monospaced))
-                .onChange(of: openRouterApiKey) { _, newValue in
-                    guard !isSyncing else { return }
-                    upsertAPIKey(for: "openrouter", value: newValue)
-                }
-
-            SecureField("KiloCode API key", text: $kiloCodeApiKey)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.caption, design: .monospaced))
-                .onChange(of: kiloCodeApiKey) { _, newValue in
-                    guard !isSyncing else { return }
-                    upsertAPIKey(for: "kilocode", value: newValue)
-                }
-
-            Text("API keys are stored in the OpenClaw provider config and exported to provider environment variables when OpenClaw runs.")
+            Text("GraculaExample accepts only OpenAI models and uses only the OpenAI API key.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
@@ -559,16 +541,14 @@ struct BrainSettingsSection: View {
         defer { isSyncing = false }
 
         let currentModel = currentPrimaryModelRef()
-        if currentModel.isEmpty {
-            selectedPreset = .localQwenMLX
+        if currentModel.isEmpty || OpenClawLLMConfiguration.isLegacyLocalDefault(currentModel) {
+            selectedPreset = .openAIGPT54Mini
             customModelRef = selectedPreset.modelRef
         } else {
             selectedPreset = BrainPreset.allCases.first(where: { $0.modelRef == currentModel }) ?? .custom
             customModelRef = currentModel
         }
-        googleApiKey = apiKey(for: "google")
-        openRouterApiKey = apiKey(for: "openrouter")
-        kiloCodeApiKey = apiKey(for: "kilocode")
+        openAIApiKey = apiKey(for: "openai")
         selectedPersonaMode = BrainPersonaMode(rawValue: value(for: "agents.defaults.localPrompt.mode") ?? "") ?? .deepPersona
         selectedReasoningMode = BrainReasoningMode(rawValue: value(for: "agents.defaults.localPrompt.reasoning") ?? "") ?? .on
         notificationContextTokens = intValue(
@@ -683,6 +663,7 @@ struct BrainSettingsSection: View {
             return
         }
         didSeedProviderDefaults = true
+        migrateLegacyLocalDefaultIfNeeded()
         guard value(for: "agents.defaults.model.primary") == nil,
               value(for: "agents.defaults.model") == nil else {
             return
@@ -994,13 +975,14 @@ struct BrainSettingsSection: View {
     }
 
     private func applyPreset(_ preset: BrainPreset) {
+        let modelRef = sanitizedModelRef(preset.modelRef)
         isSyncing = true
         defer { isSyncing = false }
 
-        customModelRef = preset.modelRef
+        customModelRef = modelRef
         upsertJSONSetting(
             key: primaryModelKey(),
-            value: preset.modelRef,
+            value: modelRef,
             isSecret: false
         )
         clearModelFallbacks()
@@ -1008,13 +990,14 @@ struct BrainSettingsSection: View {
     }
 
     private func applyCustomModelRef(_ value: String) {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = sanitizedModelRef(value)
         let resolvedPreset = BrainPreset.allCases.first(where: { $0.modelRef == trimmed }) ?? .custom
 
         isSyncing = true
         defer { isSyncing = false }
 
         selectedPreset = resolvedPreset
+        customModelRef = trimmed
         upsertJSONSetting(
             key: primaryModelKey(),
             value: trimmed,
@@ -1025,13 +1008,9 @@ struct BrainSettingsSection: View {
     }
 
     private func applyRuntimeDefaults(for preset: BrainPreset) {
-        let modelRef = preset == .custom ? customModelRef : preset.modelRef
+        let modelRef = sanitizedModelRef(preset == .custom ? customModelRef : preset.modelRef)
         if let provider = OpenClawLLMConfiguration.provider(forModelRef: modelRef) {
-            if provider.name == "ollama" {
-                ensureOllamaProviderDefaults()
-            } else {
-                ensureProviderDefaults(provider)
-            }
+            ensureProviderDefaults(provider)
         } else {
             ensureProviderDefaults()
         }
@@ -1040,12 +1019,12 @@ struct BrainSettingsSection: View {
 
     private func currentPrimaryModelRef() -> String {
         if let value = value(for: "agents.defaults.model.primary") {
-            return OpenClawLLMConfiguration.migratedModelRef(value)
+            return sanitizedModelRef(OpenClawLLMConfiguration.migratedModelRef(value))
         }
         if let value = value(for: "agents.defaults.model") {
-            return OpenClawLLMConfiguration.migratedModelRef(value)
+            return sanitizedModelRef(OpenClawLLMConfiguration.migratedModelRef(value))
         }
-        return OpenClawLLMConfiguration.defaultLocalModelRef
+        return OpenClawLLMConfiguration.defaultModelRef
     }
 
     private func primaryModelKey() -> String {
@@ -1110,6 +1089,9 @@ struct BrainSettingsSection: View {
             value: value,
             isSecret: true
         )
+        if providerName == "openai" {
+            upsertEnvironmentSetting(key: "OPENAI_API_KEY", value: value, isSecret: true)
+        }
     }
 
     private func upsertJSONSetting(
@@ -1177,7 +1159,7 @@ struct BrainSettingsSection: View {
     private func ensureCommonBrainDefaults() {
         ensureJSONSetting(
             key: "agents.defaults.model.primary",
-            value: OpenClawLLMConfiguration.defaultLocalModelRef,
+            value: OpenClawLLMConfiguration.defaultModelRef,
             isSecret: false
         )
         ensureJSONSetting(
@@ -1224,19 +1206,38 @@ struct BrainSettingsSection: View {
             isSecret: false,
             kind: .array
         )
+        if let auth = provider.auth {
+            ensureJSONSetting(
+                key: provider.authPath,
+                value: auth,
+                isSecret: false
+            )
+        }
+        if let authHeader = provider.authHeader {
+            ensureJSONSetting(
+                key: provider.authHeaderPath,
+                value: authHeader ? "true" : "false",
+                isSecret: false,
+                kind: .bool
+            )
+        }
     }
 
-    private func ensureOllamaProviderDefaults() {
-        guard let provider = OpenClawLLMConfiguration.provider(named: "ollama") else {
+    private func migrateLegacyLocalDefaultIfNeeded() {
+        let currentModel = currentPrimaryModelRef()
+        guard OpenClawLLMConfiguration.isLegacyLocalDefault(currentModel) else {
             return
         }
-        ensureProviderDefaults(provider)
-        ensureJSONSetting(
-            key: "\(provider.providerPrefix).authHeader",
-            value: "false",
-            isSecret: false,
-            kind: .bool
+
+        if let provider = OpenClawLLMConfiguration.provider(forModelRef: OpenClawLLMConfiguration.defaultModelRef) {
+            ensureProviderDefaults(provider)
+        }
+        upsertJSONSetting(
+            key: primaryModelKey(),
+            value: OpenClawLLMConfiguration.defaultModelRef,
+            isSecret: false
         )
+        clearModelFallbacks()
     }
 
     private func ensureJSONSetting(
@@ -1252,24 +1253,29 @@ struct BrainSettingsSection: View {
         upsertJSONSetting(key: key, value: settingValue, isSecret: isSecret, kind: kind)
     }
 
+    private func sanitizedModelRef(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return OpenClawLLMConfiguration.defaultModelRef
+        }
+        if trimmed.lowercased().hasPrefix("openai/") {
+            return trimmed
+        }
+        return OpenClawLLMConfiguration.defaultModelRef
+    }
+
 }
 
 enum BrainPreset: String, CaseIterable, Identifiable {
-    case localQwen = "ollama/qwen3:30b"
-    case localQwenMLX = "mlx/qwen3-14b-4bit"
-    case mlxNemotronNano30B = "mlx/nemotron-nano"
+    case openAIGPT54Mini = "openai/gpt-5.4-mini"
     case custom
 
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
-        case .localQwen:
-            return "Local Qwen3 30B"
-        case .localQwenMLX:
-            return "Local Qwen3 14B MLX 4-bit"
-        case .mlxNemotronNano30B:
-            return "Nemotron Nano 30B MLX 4-bit"
+        case .openAIGPT54Mini:
+            return "OpenAI GPT-5.4 Mini"
         case .custom:
             return "Custom"
         }
@@ -1277,12 +1283,8 @@ enum BrainPreset: String, CaseIterable, Identifiable {
 
     var modelRef: String {
         switch self {
-        case .localQwen:
-            return OpenClawLLMConfiguration.localQwenModelRef
-        case .localQwenMLX:
-            return OpenClawLLMConfiguration.localQwenMLXModelRef
-        case .mlxNemotronNano30B:
-            return OpenClawLLMConfiguration.localNemotronNanoModelRef
+        case .openAIGPT54Mini:
+            return OpenClawLLMConfiguration.openAIModelRef
         case .custom:
             return ""
         }

@@ -66,6 +66,12 @@ Use Clean Architecture / Hexagonal Architecture:
 - No hidden side effects in initializers.
 - No business logic in SwiftUI views.
 
+### Failure handling
+
+- When changing code, do not add fallback paths, backup providers, degraded modes or silent recovery unless a developer instruction explicitly requires them.
+- If a required service or dependency is unavailable or returns invalid data, prefer an explicit error over a fallback implementation.
+- Do not mask infrastructure, integration or configuration failures behind substitute behavior.
+
 ## 2. Repository structure
 
 Create this structure:

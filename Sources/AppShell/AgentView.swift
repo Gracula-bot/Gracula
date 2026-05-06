@@ -1,4 +1,5 @@
 import Application
+import LLM
 import SwiftUI
 
 public struct AgentView: View {
@@ -80,7 +81,7 @@ public struct AgentView: View {
                 }
 
                 if let botSettings = viewModel.botSettings {
-                    BotSettingsView(settings: botSettings)
+                    BotSettingsView(settings: botSettings, llmMetrics: viewModel.llmMetrics)
                 }
 
                 AuditLogPreviewView(entries: viewModel.auditEntries)
@@ -155,6 +156,7 @@ private struct TelegramReplyPanel: View {
 
 private struct BotSettingsView: View {
     let settings: BotSettingsSnapshot
+    let llmMetrics: LLMRequestMetrics?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -162,6 +164,7 @@ private struct BotSettingsView: View {
                 .font(.headline)
 
             settingsGrid
+            llmRequest
             permissions
             tools
         }
@@ -173,8 +176,32 @@ private struct BotSettingsView: View {
             settingsRow("Planner", settings.plannerMode)
             settingsRow(settings.llmEndpointEnvironmentKey, settings.llmEndpoint)
             settingsRow(settings.llmModelEnvironmentKey, settings.llmModel)
+            settingsRow("Temperature", String(settings.llmTemperature))
         }
         .font(.callout)
+    }
+
+    private var llmRequest: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Last LLM Request")
+                .font(.subheadline.weight(.semibold))
+
+            if let llmMetrics {
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
+                    settingsRow("Provider", llmMetrics.provider)
+                    settingsRow("Resolved model", llmMetrics.model)
+                    settingsRow("Temperature", String(llmMetrics.temperature))
+                    settingsRow("Prompt tokens", tokenValue(llmMetrics.promptTokens))
+                    settingsRow("Completion tokens", tokenValue(llmMetrics.completionTokens))
+                    settingsRow("Total tokens", tokenValue(llmMetrics.totalTokens))
+                }
+                .font(.callout)
+            } else {
+                Text("No LLM request has been recorded yet.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     private var permissions: some View {
@@ -230,5 +257,9 @@ private struct BotSettingsView: View {
             }
         }
         .font(.callout)
+    }
+
+    private func tokenValue(_ value: Int?) -> String {
+        value.map(String.init) ?? "Not available"
     }
 }

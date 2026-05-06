@@ -17,7 +17,14 @@ public struct LocalHTTPLLMClient: LLMClient {
 
         let (data, _) = try await urlSession.data(for: urlRequest)
         let response = try JSONDecoder().decode(LocalHTTPResponse.self, from: data)
-        return LLMResponse(text: response.text)
+        return LLMResponse(
+            text: response.text,
+            metrics: LLMRequestMetrics(
+                provider: "Local HTTP planner",
+                model: request.model ?? "Not set",
+                temperature: request.temperature
+            )
+        )
     }
 
     public func stream(_ request: LLMRequest) async throws -> AsyncThrowingStream<LLMToken, any Error> {
@@ -86,4 +93,3 @@ private struct LocalHTTPResponse: Decodable {
         throw LLMError.invalidPlannerOutput("Unsupported local LLM response shape")
     }
 }
-

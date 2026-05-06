@@ -21,9 +21,11 @@ public struct LLMRequest: Codable, Sendable, Equatable {
 
 public struct LLMResponse: Codable, Sendable, Equatable {
     public let text: String
+    public let metrics: LLMRequestMetrics?
 
-    public init(text: String) {
+    public init(text: String, metrics: LLMRequestMetrics? = nil) {
         self.text = text
+        self.metrics = metrics
     }
 }
 
@@ -34,4 +36,3 @@ public struct LLMToken: Codable, Sendable, Equatable {
         self.text = text
     }
 }
-

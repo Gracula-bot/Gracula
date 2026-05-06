@@ -1,6 +1,7 @@
 import Application
 import Domain
 import Foundation
+import LLM
 import Voice
 
 @MainActor
@@ -13,12 +14,14 @@ public final class AgentViewModel: ObservableObject {
     @Published public private(set) var pendingTelegramReply: PendingTelegramReply?
     @Published public private(set) var auditEntries: [String]
     @Published public private(set) var botSettings: BotSettingsSnapshot?
+    @Published public private(set) var llmMetrics: LLMRequestMetrics?
 
     private let orchestrator: AgentOrchestrator?
     private let voiceCommandRouter: OpenClawVoiceCommandRouter?
     private let toolExecutor: (any ToolExecuting)?
     private let auditLog: InMemoryAuditLog?
     private let speechSynthesizer: (any SpeechSynthesizing)?
+    private let llmMetricsStore: LLMRequestMetricsStore?
     private var pendingPlan: AgentPlan?
 
     public init(
@@ -28,6 +31,7 @@ public final class AgentViewModel: ObservableObject {
         auditLog: InMemoryAuditLog? = nil,
         speechSynthesizer: (any SpeechSynthesizing)? = nil,
         botSettings: BotSettingsSnapshot? = nil,
+        llmMetricsStore: LLMRequestMetricsStore? = nil,
         statusText: String = "Ready"
     ) {
         self.orchestrator = orchestrator
@@ -35,6 +39,7 @@ public final class AgentViewModel: ObservableObject {
         self.toolExecutor = toolExecutor
         self.auditLog = auditLog
         self.speechSynthesizer = speechSynthesizer
+        self.llmMetricsStore = llmMetricsStore
         self.inputText = ""
         self.confirmationText = ""
         self.statusText = statusText
@@ -43,6 +48,7 @@ public final class AgentViewModel: ObservableObject {
         self.pendingTelegramReply = nil
         self.auditEntries = []
         self.botSettings = botSettings
+        self.llmMetrics = nil
     }
 
     public var canRun: Bool {
@@ -84,6 +90,7 @@ public final class AgentViewModel: ObservableObject {
             resultText = String(describing: error)
         }
 
+        await refreshLLMMetrics()
         await refreshAuditEntries()
     }
 
@@ -120,6 +127,7 @@ public final class AgentViewModel: ObservableObject {
             resultText = String(describing: error)
         }
 
+        await refreshLLMMetrics()
         await refreshAuditEntries()
     }
 
@@ -159,6 +167,7 @@ public final class AgentViewModel: ObservableObject {
         let result = await voiceCommandRouter.route(text: "отправь")
         _ = applyTelegramResult(result)
         await speakCurrentResultIfNeeded()
+        await refreshLLMMetrics()
         await refreshAuditEntries()
     }
 
@@ -169,6 +178,7 @@ public final class AgentViewModel: ObservableObject {
         let result = await voiceCommandRouter.route(text: "отмени")
         _ = applyTelegramResult(result)
         await speakCurrentResultIfNeeded()
+        await refreshLLMMetrics()
         await refreshAuditEntries()
     }
 
@@ -213,6 +223,10 @@ public final class AgentViewModel: ObservableObject {
         auditEntries = await auditLog.events.map { event in
             "\(event.kind.rawValue): \(event.summary)"
         }
+    }
+
+    private func refreshLLMMetrics() async {
+        llmMetrics = await llmMetricsStore?.latest()
     }
 
     private func speakCurrentResultIfNeeded() async {

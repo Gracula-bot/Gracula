@@ -152,15 +152,15 @@ swift test --filter LLMTests
 
 Expected result: prompt compiler, strict JSON parser, invalid-output handling, unknown-tool rejection, risk-level validation, and adapter integration tests pass.
 
-Manual local LLM check:
+Manual OpenAI planner check:
 
 ```bash
-GRACULA_LLM_ENDPOINT="http://localhost:11434/v1/chat/completions" \
-GRACULA_LLM_MODEL="your-local-model" \
+OPENAI_API_KEY="your-openai-api-key" \
+OPENAI_MODEL="gpt-5.5" \
 swift run Gracula
 ```
 
-Expected result: when the endpoint is reachable and returns OpenAI/Ollama-compatible JSON, Gracula uses `LLMPlanningAdapter`. Without `GRACULA_LLM_ENDPOINT`, it uses the built-in demo planner.
+Expected result: when `OPENAI_API_KEY` is set, Gracula uses `LLMPlanningAdapter` with OpenAI Chat Completions. If `OPENAI_API_KEY` is missing but `GRACULA_LLM_ENDPOINT` is set, Gracula uses the existing local HTTP planner. Without either setting, it uses the built-in demo planner.
 
 ## Milestone 9 — Safe Tools
 

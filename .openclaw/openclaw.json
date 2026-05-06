@@ -16,31 +16,12 @@
         "target" : "telegram",
         "to" : "@psy_na_ebanaya"
       },
-      "localPrompt" : {
-        "deepPersona" : {
-          "maxOutputTokens" : 2048,
-          "reserveTokens" : 4096,
-          "runtimeContextWindow" : 10880
-        },
-        "mode" : "deep_persona",
-        "notificationSpeech" : {
-          "maxOutputTokens" : 128,
-          "reserveTokens" : 512,
-          "runtimeContextWindow" : 4096
-        },
-        "reasoning" : "on",
-        "simpleChat" : {
-          "maxOutputTokens" : 512,
-          "reserveTokens" : 1024,
-          "runtimeContextWindow" : 8192
-        }
-      },
       "maxConcurrent" : 4,
       "model" : {
         "fallbacks" : [
 
         ],
-        "primary" : "mlx\/qwen3-14b-4bit"
+        "primary" : "openai\/gpt-5.4-mini"
       },
       "models" : {
         "kilocode\/kilo\/auto" : {
@@ -169,18 +150,6 @@
           "source" : "path",
           "sourcePath" : "\/app\/tools\/telegram-obs-stream\/hooks\/telegram-obs-voice"
         }
-      }
-    }
-  },
-  "integrations" : {
-    "telegram" : {
-      "business" : {
-        "autoReplyEnabled" : true,
-        "botToken" : "8769076389:AAE3OYCYD-nAYeMrrYrwbdlxz5SE9a3AF0w",
-        "businessConnectionId" : "",
-        "enabled" : true,
-        "markReadEnabled" : true,
-        "pollIntervalSeconds" : 2
       }
     }
   },
@@ -329,6 +298,36 @@
             ],
             "maxTokens" : 4096,
             "name" : "Qwen\/Qwen3-30B-A3B-MLX-4bit",
+            "reasoning" : true
+          }
+        ]
+      },
+      "openai" : {
+        "api" : "openai-completions",
+        "apiKey" : "",
+        "auth" : "api-key",
+        "authHeader" : true,
+        "baseUrl" : "https:\/\/api.openai.com\/v1",
+        "models" : [
+          {
+            "api" : "openai-completions",
+            "compat" : {
+              "supportsTools" : true
+            },
+            "contextWindow" : 400000,
+            "cost" : {
+              "cacheRead" : 0,
+              "cacheWrite" : 0,
+              "input" : 0,
+              "output" : 0
+            },
+            "id" : "gpt-5.4-mini",
+            "input" : [
+              "text",
+              "image"
+            ],
+            "maxTokens" : 128000,
+            "name" : "GPT-5.4 Mini",
             "reasoning" : true
           }
         ]

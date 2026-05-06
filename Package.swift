@@ -39,7 +39,7 @@ let package = Package(
         ),
         .target(
             name: "AppShell",
-            dependencies: ["Application", "Domain", "Shared", "Voice"],
+            dependencies: ["Application", "Domain", "LLM", "Shared", "Voice"],
             swiftSettings: swiftSettings
         ),
         .target(

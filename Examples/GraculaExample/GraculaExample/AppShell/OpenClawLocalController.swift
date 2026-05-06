@@ -17,6 +17,10 @@ enum OpenClawRuntimePaths {
     static var configURL: URL {
         configDirectory.appendingPathComponent("openclaw.json")
     }
+
+    static var graculaExampleSettingsURL: URL {
+        configDirectory.appendingPathComponent("gracula-example.json")
+    }
 }
 
 struct OpenClawLLMProviderConfiguration {
@@ -25,6 +29,8 @@ struct OpenClawLLMProviderConfiguration {
     let environmentKeys: [String]
     let baseURL: String
     let api: String
+    let auth: String?
+    let authHeader: Bool?
     let modelsJSON: String
 
     var providerPrefix: String {
@@ -41,6 +47,14 @@ struct OpenClawLLMProviderConfiguration {
 
     var modelsPath: String {
         "\(providerPrefix).models"
+    }
+
+    var authPath: String {
+        "\(providerPrefix).auth"
+    }
+
+    var authHeaderPath: String {
+        "\(providerPrefix).authHeader"
     }
 }
 
@@ -157,11 +171,12 @@ private struct ManagedLocalModelProcessRecord: Codable {
 }
 
 enum OpenClawLLMConfiguration {
+    static let openAIModelRef = "openai/gpt-5.4-mini"
     static let localQwenModelRef = "ollama/qwen3:30b"
     static let localQwenMLXModelRef = "mlx/qwen3-14b-4bit"
     static let localNemotronNanoModelRef = "mlx/nemotron-nano"
     static let deprecatedQwen30BMLXModelRef = "mlx/Qwen/Qwen3-30B-A3B-MLX-4bit"
-    static let defaultLocalModelRef = localQwenMLXModelRef
+    static let defaultModelRef = openAIModelRef
 
     static let localMLXModels: [OpenClawLocalMLXModelConfiguration] = [
         OpenClawLocalMLXModelConfiguration(
@@ -190,35 +205,25 @@ enum OpenClawLLMConfiguration {
 
     static let providers: [OpenClawLLMProviderConfiguration] = [
         OpenClawLLMProviderConfiguration(
-            name: "ollama",
-            modelPrefixes: ["ollama/"],
-            environmentKeys: [],
-            baseURL: "http://127.0.0.1:11434",
-            api: "ollama",
+            name: "openai",
+            modelPrefixes: ["openai/"],
+            environmentKeys: ["OPENAI_API_KEY"],
+            baseURL: "https://api.openai.com/v1",
+            api: "openai-completions",
+            auth: "api-key",
+            authHeader: true,
             modelsJSON: OpenClawLLMModelConfiguration.jsonArray([
                 OpenClawLLMModelConfiguration(
-                    id: "qwen3:30b",
-                    name: "Qwen3 30B (local Ollama)",
-                    api: "ollama",
-                    reasoning: false,
-                    contextWindow: 65_536,
-                    maxTokens: 8_192,
-                    params: [
-                        "think": false,
-                        "keep_alive": "30m",
-                        "num_ctx": 65_536
-                    ],
-                    compat: ["supportsTools": false]
+                    id: "gpt-5.4-mini",
+                    name: "GPT-5.4 Mini",
+                    api: "openai-completions",
+                    reasoning: true,
+                    input: ["text", "image"],
+                    contextWindow: 400000,
+                    maxTokens: 128000,
+                    compat: ["supportsTools": true]
                 )
             ])
-        ),
-        OpenClawLLMProviderConfiguration(
-            name: "mlx",
-            modelPrefixes: ["mlx/"],
-            environmentKeys: [],
-            baseURL: "http://127.0.0.1:8080/v1",
-            api: "openai-completions",
-            modelsJSON: OpenClawLLMModelConfiguration.jsonArray(localMLXModels.map(\.providerModel))
         )
     ]
 
@@ -238,9 +243,17 @@ enum OpenClawLLMConfiguration {
         let normalized = trimmed.lowercased()
         if normalized == deprecatedQwen30BMLXModelRef.lowercased()
             || normalized == localNemotronNanoModelRef.lowercased() {
-            return localQwenMLXModelRef
+            return defaultModelRef
         }
         return trimmed
+    }
+
+    static func isLegacyLocalDefault(_ modelRef: String) -> Bool {
+        let normalized = modelRef.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized == localQwenModelRef.lowercased()
+            || normalized == localQwenMLXModelRef.lowercased()
+            || normalized == localNemotronNanoModelRef.lowercased()
+            || normalized == deprecatedQwen30BMLXModelRef.lowercased()
     }
 
     static func mergeOpenClawJSONEnvironment(from configURL: URL, into environment: inout [String: String]) {
@@ -277,8 +290,11 @@ enum OpenClawLLMConfiguration {
             ensureEntry(key: provider.baseURLPath, value: provider.baseURL, in: &normalized)
             ensureEntry(key: provider.apiPath, value: provider.api, in: &normalized)
             ensureEntry(key: provider.modelsPath, value: provider.modelsJSON, kind: .array, in: &normalized)
-            if provider.name == "ollama" {
-                ensureEntry(key: "\(provider.providerPrefix).authHeader", value: "false", kind: .bool, in: &normalized)
+            if let auth = provider.auth {
+                ensureEntry(key: provider.authPath, value: auth, in: &normalized)
+            }
+            if let authHeader = provider.authHeader {
+                ensureEntry(key: provider.authHeaderPath, value: authHeader ? "true" : "false", kind: .bool, in: &normalized)
             }
         }
         return normalized
@@ -3361,48 +3377,39 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         let providerModelID = String(provider[1])
         let effectiveMaxTokens = directModelMaxTokens(for: trimmedRef, requestedMaxTokens: maxTokens)
         let effectiveSampling = sampling ?? DirectModelSamplingOptions.standard(for: effectiveMaxTokens)
-        if providerName == "ollama" {
-            try await ensureDirectModelRuntimeReady(for: trimmedRef)
-            return try await runDirectOllamaChat(
+        if providerName == "openai" {
+            return try await runDirectOpenAIChat(
                 modelID: providerModelID,
                 prompt: prompt,
                 maxTokens: effectiveMaxTokens,
-                startedAt: startedAt,
-                assistantMessageID: assistantMessageID,
-                sampling: effectiveSampling
-            )
-        }
-        if providerName == "mlx" {
-            return try await runDirectMLXChat(
-                modelID: providerModelID,
-                prompt: prompt,
-                maxTokens: effectiveMaxTokens,
-                startedAt: startedAt,
+                environment: environment,
                 sampling: effectiveSampling
             )
         }
         throw OpenClawLocalControllerError.agentFailed(
-            "Unsupported local model provider: \(providerName). Use `ollama/...` or `mlx/...`."
+            "Unsupported model provider: \(providerName). GraculaExample supports only `openai/...` with OpenAI API key."
         )
     }
 
     private func currentPrimaryModelRef(in jsonEntries: [OpenClawEditableSetting]) -> String {
         if let value = jsonEntries.first(where: { $0.key == "agents.defaults.model.primary" })?.value
             ?? jsonEntries.first(where: { $0.key == "agents.defaults.model" })?.value {
-            return OpenClawLLMConfiguration.migratedModelRef(value)
+            let migrated = OpenClawLLMConfiguration.migratedModelRef(value)
+            let normalized = migrated.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if normalized.hasPrefix("openai/") {
+                return migrated
+            }
+            return OpenClawLLMConfiguration.defaultModelRef
         }
-        return OpenClawLLMConfiguration.defaultLocalModelRef
+        return OpenClawLLMConfiguration.defaultModelRef
     }
 
     private func shouldUseDirectModelSmokeTest(for modelRef: String) -> Bool {
-        let normalized = modelRef.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return normalized.hasPrefix("ollama/")
-            || normalized.hasPrefix("mlx/")
-            || isLocalQwenModel(modelRef)
+        false
     }
 
     private func shouldUseDirectCompletion(for modelRef: String) -> Bool {
-        shouldUseDirectModelSmokeTest(for: modelRef)
+        false
     }
 
     private func currentPrimaryModelRef() -> String {
@@ -4498,6 +4505,80 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         return DirectModelChatResult(text: reply, metrics: nil)
     }
 
+    private func runDirectOpenAIChat(
+        modelID: String,
+        prompt: String,
+        maxTokens: Int,
+        environment: [String: String]?,
+        sampling: DirectModelSamplingOptions
+    ) async throws -> DirectModelChatResult {
+        let resolvedEnvironment = environment ?? (try? openClawEnvironment()) ?? ProcessInfo.processInfo.environment
+        guard let provider = OpenClawLLMConfiguration.provider(named: "openai"),
+              let baseURL = URL(string: provider.baseURL) else {
+            throw OpenClawLocalControllerError.agentFailed("OpenAI provider is not configured.")
+        }
+        let apiKey = openAIAPIKey(from: resolvedEnvironment)
+        guard !apiKey.isEmpty else {
+            throw OpenClawLocalControllerError.agentFailed("OpenAI API key is not configured.")
+        }
+
+        let url = baseURL.appendingPathComponent("chat/completions")
+        let body: [String: Any] = [
+            "model": modelID,
+            "messages": [
+                [
+                    "role": "user",
+                    "content": prompt
+                ]
+            ],
+            "max_tokens": maxTokens,
+            "temperature": sampling.temperature,
+            "top_p": sampling.topP,
+            "stream": false
+        ]
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = directModelTimeoutSeconds
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw OpenClawLocalControllerError.agentFailed("OpenAI returned a non-HTTP response.")
+        }
+        let responseText = String(decoding: data, as: UTF8.self)
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw OpenClawLocalControllerError.agentFailed(
+                responseText.isEmpty ? "OpenAI HTTP \(httpResponse.statusCode)." : "OpenAI HTTP \(httpResponse.statusCode): \(responseText)"
+            )
+        }
+
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = object["choices"] as? [[String: Any]],
+              let message = choices.first?["message"] as? [String: Any],
+              let content = message["content"] as? String else {
+            throw OpenClawLocalControllerError.agentFailed("OpenAI returned an invalid chat completion response.")
+        }
+
+        let reply = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !reply.isEmpty else {
+            throw OpenClawLocalControllerError.agentFailed("OpenAI returned an empty reply.")
+        }
+
+        let usage = object["usage"] as? [String: Any]
+        let metrics = DirectModelMetrics(
+            providerLabel: "openai",
+            promptTokens: usage?["prompt_tokens"] as? Int ?? (usage?["prompt_tokens"] as? NSNumber)?.intValue,
+            promptTokensPerSecond: nil,
+            generationTokens: usage?["completion_tokens"] as? Int ?? (usage?["completion_tokens"] as? NSNumber)?.intValue,
+            generationTokensPerSecond: nil,
+            peakMemoryGB: nil
+        )
+        return DirectModelChatResult(text: reply, metrics: metrics)
+    }
+
     private func limitedHistory(maxMessages: Int) -> String {
         chatMessages
             .suffix(maxMessages)
@@ -4594,6 +4675,26 @@ final class OpenClawLocalController: NSObject, ObservableObject {
 
     private func tokenCount(_ text: String) -> Int {
         text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : estimatedTokens(text)
+    }
+
+    private func openAIAPIKey(from environment: [String: String]) -> String {
+        if let value = environment["OPENAI_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !value.isEmpty {
+            return value
+        }
+
+        let configURL = environment["OPENCLAW_CONFIG_PATH"].map(URL.init(fileURLWithPath:))
+            ?? configDirectory.appendingPathComponent("openclaw.json")
+        guard let data = try? Data(contentsOf: configURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let models = object["models"] as? [String: Any],
+              let providers = models["providers"] as? [String: Any],
+              let openAI = providers["openai"] as? [String: Any],
+              let apiKey = openAI["apiKey"] as? String else {
+            return ""
+        }
+
+        return apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func isLocalQwenModel(_ modelRef: String) -> Bool {
@@ -6049,6 +6150,11 @@ enum OpenClawSettingsApplyError: LocalizedError {
 }
 
 struct OpenClawSettingsReader {
+    private static let customSettingsPrefixes = [
+        "agents.defaults.localPrompt",
+        "integrations"
+    ]
+
     private let repositoryDirectory = resolveOpenClawRepositoryDirectory()
     private let configDirectory = OpenClawRuntimePaths.configDirectory
     private let workspaceDirectory = OpenClawRuntimePaths.workspaceDirectory
@@ -6082,6 +6188,7 @@ struct OpenClawSettingsReader {
             row("Gateway health", "http://\(gatewayHost):\(gatewayPort)/healthz"),
             row("Stream bridge health", "http://\(gatewayHost):\(streamBridgePort)/health"),
             row("Config file", configDirectory.appendingPathComponent("openclaw.json").path),
+            row("Example overrides", OpenClawRuntimePaths.graculaExampleSettingsURL.path),
             row("Repo .env", repositoryDirectory.appendingPathComponent(".env").path),
             row("User .env", configDirectory.appendingPathComponent(".env").path)
         ]
@@ -6179,15 +6286,33 @@ struct OpenClawSettingsReader {
     }
 
     static func writeJSON(entries: [OpenClawEditableSetting], to url: URL) throws {
+        let normalizedEntries = OpenClawLLMConfiguration.entriesWithProviderDefaults(entries)
+        let primaryEntries = normalizedEntries.filter { !Self.isCustomSettingsKey($0.key) }
+        let customEntries = normalizedEntries.filter { Self.isCustomSettingsKey($0.key) }
+
+        try Self.writeJSONEntries(primaryEntries, to: url, removingPaths: Self.customSettingsPrefixes)
+
+        let customURL = Self.customSettingsURL(for: url)
+        if customEntries.isEmpty {
+            try? FileManager.default.removeItem(at: customURL)
+        } else {
+            try writeJSONEntries(customEntries, to: customURL, removingPaths: [])
+        }
+    }
+
+    private static func writeJSONEntries(
+        _ entries: [OpenClawEditableSetting],
+        to url: URL,
+        removingPaths: [String]
+    ) throws {
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         if fileManager.fileExists(atPath: url.path) {
             let backupURL = url.deletingLastPathComponent()
-                .appendingPathComponent("openclaw.json.bak.\(backupTimestamp())")
+                .appendingPathComponent("\(url.lastPathComponent).bak.\(backupTimestamp())")
             try? fileManager.copyItem(at: url, to: backupURL)
         }
 
-        let normalizedEntries = OpenClawLLMConfiguration.entriesWithProviderDefaults(entries)
         let rootObject: NSMutableDictionary
         if let data = try? Data(contentsOf: url),
            !data.isEmpty,
@@ -6197,7 +6322,11 @@ struct OpenClawSettingsReader {
             rootObject = NSMutableDictionary()
         }
 
-        for entry in normalizedEntries {
+        for path in removingPaths {
+            Self.removeJSONValue(forPath: path, in: rootObject)
+        }
+
+        for entry in entries {
             guard let value = try jsonValue(from: entry) else {
                 continue
             }
@@ -6236,15 +6365,17 @@ struct OpenClawSettingsReader {
     }
 
     private func flattenJSONSettings() -> [OpenClawEditableSetting] {
-        let configURL = configDirectory.appendingPathComponent("openclaw.json")
-        guard let data = try? Data(contentsOf: configURL),
-              let object = try? JSONSerialization.jsonObject(with: data) else {
-            return []
+        var entriesByKey: [String: OpenClawEditableSetting] = [:]
+        for url in [
+            configDirectory.appendingPathComponent("openclaw.json"),
+            OpenClawRuntimePaths.graculaExampleSettingsURL
+        ] {
+            for entry in flattenedJSONEntries(from: url) {
+                entriesByKey[entry.key] = entry
+            }
         }
 
-        var entries: [OpenClawEditableSetting] = []
-        flattenJSONValue(object, prefix: "", into: &entries)
-        return entries.sorted { $0.key < $1.key }
+        return entriesByKey.values.sorted { $0.key < $1.key }
     }
 
     private func readWorkspaceFiles() -> [OpenClawWorkspaceFile] {
@@ -6482,6 +6613,68 @@ struct OpenClawSettingsReader {
             }
         }
         current[last] = value
+    }
+
+    private func flattenedJSONEntries(from url: URL) -> [OpenClawEditableSetting] {
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) else {
+            return []
+        }
+
+        var entries: [OpenClawEditableSetting] = []
+        flattenJSONValue(object, prefix: "", into: &entries)
+        return entries
+    }
+
+    private static func customSettingsURL(for configURL: URL) -> URL {
+        configURL.deletingLastPathComponent().appendingPathComponent("gracula-example.json")
+    }
+
+    private static func isCustomSettingsKey(_ key: String) -> Bool {
+        customSettingsPrefixes.contains { prefix in
+            key == prefix || key.hasPrefix("\(prefix).")
+        }
+    }
+
+    private static func removeJSONValue(forPath path: String, in rootObject: NSMutableDictionary) {
+        let segments = path.split(separator: ".").map(String.init)
+        guard !segments.isEmpty else {
+            return
+        }
+
+        Self.removeJSONValue(forSegments: segments[...], in: rootObject)
+    }
+
+    private static func removeJSONValue(
+        forSegments segments: ArraySlice<String>,
+        in dictionary: NSMutableDictionary
+    ) {
+        guard let first = segments.first else {
+            return
+        }
+
+        if segments.count == 1 {
+            dictionary.removeObject(forKey: first)
+            return
+        }
+
+        guard let child = dictionary[first] as? NSMutableDictionary else {
+            if let childObject = dictionary[first] as? [String: Any] {
+                let mutableChild = NSMutableDictionary(dictionary: childObject)
+                Self.removeJSONValue(forSegments: segments.dropFirst(), in: mutableChild)
+                if mutableChild.count == 0 {
+                    dictionary.removeObject(forKey: first)
+                } else {
+                    dictionary[first] = mutableChild
+                }
+            }
+            return
+        }
+
+        Self.removeJSONValue(forSegments: segments.dropFirst(), in: child)
+        if child.count == 0 {
+            dictionary.removeObject(forKey: first)
+        }
     }
 
     private static func isEditableWorkspaceFile(_ relativePath: String) -> Bool {
