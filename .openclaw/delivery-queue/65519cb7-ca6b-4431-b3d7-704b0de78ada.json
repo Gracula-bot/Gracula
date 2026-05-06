@@ -13,7 +13,7 @@
     "key": "cron:b2f8958b-070c-4ee5-827b-03c8902a3d78:failure",
     "agentId": "main"
   },
-  "retryCount": 1,
-  "lastAttemptAt": 1778066417152,
+  "retryCount": 2,
+  "lastAttemptAt": 1778073151288,
   "lastError": "Telegram bot token missing for account \"default\" (set channels.telegram.accounts.default.botToken/tokenFile or TELEGRAM_BOT_TOKEN for default)."
 }

@@ -224,13 +224,7 @@ struct VoicePipelineSettings: Codable, Sendable {
               let backend = SpeechRecognitionBackend(rawValue: rawValue) else {
             return .whisper
         }
-
-        switch backend {
-        case .whisper:
-            return .whisper
-        case .parakeet:
-            return .whisper
-        }
+        return backend
     }
 
     private static func normalizedSpeechSynthesisBackend(_ rawValue: String?) -> SpeechSynthesisBackend {

@@ -274,6 +274,10 @@
           },
           "contextWindow": 400000,
           "maxTokens": 128000,
+          "params": {
+            "temperature": 0.75,
+            "top_p": 0.85
+          },
           "compat": {
             "supportsTools": true
           }

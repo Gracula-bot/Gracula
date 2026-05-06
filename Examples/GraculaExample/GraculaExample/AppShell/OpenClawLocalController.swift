@@ -1545,53 +1545,33 @@ final class OpenClawLocalController: NSObject, ObservableObject {
                 return
             }
 
-            do {
-                gatewayProcess = try launchProcess(
-                    name: "gateway",
-                    arguments: [
-                        repositoryDirectory.appendingPathComponent("dist/index.js").path,
-                        "gateway",
-                        "run",
-                        "--allow-unconfigured",
-                        "--bind",
-                        environment["OPENCLAW_GATEWAY_BIND"] ?? "loopback",
-                        "--port",
-                        environment["OPENCLAW_GATEWAY_PORT"] ?? gatewayPort
-                    ],
-                    environment: environment
-                )
-                isRunning = true
-                statusText = "Starting local OpenClaw..."
-                appendLog("Started OpenClaw gateway locally without Docker.")
-                appendLog("Gateway: http://\(gatewayHost):\(environment["OPENCLAW_GATEWAY_PORT"] ?? gatewayPort)/")
-            } catch {
-                let launchErrorMessage = error.localizedDescription
-                let normalizedLaunchError = launchErrorMessage.lowercased()
-                let gatewayAlreadyRunning = normalizedLaunchError.contains("already running")
-                    || normalizedLaunchError.contains("port 18789 is already in use")
-                    || normalizedLaunchError.contains("lock timeout")
-
-                if gatewayAlreadyRunning {
-                    let existingGatewayURL = URL(
-                        string: "http://\(gatewayHost):\(environment["OPENCLAW_GATEWAY_PORT"] ?? gatewayPort)/healthz"
-                    )!
-                    let existingGatewayStatus = await checkHealth(url: existingGatewayURL)
-                    guard existingGatewayStatus == "healthy" else {
-                        gatewayProcess = nil
-                        isRunning = false
-                        gatewayStatus = existingGatewayStatus
-                        throw OpenClawLocalControllerError.gatewayUnavailable(
-                            "An existing OpenClaw gateway is occupying http://\(gatewayHost):\(environment["OPENCLAW_GATEWAY_PORT"] ?? gatewayPort)/, but /healthz is \(existingGatewayStatus). Stop that stale process and start OpenClaw again."
-                        )
-                    }
-
-                    gatewayProcess = nil
+            let configuredGatewayPort = environment["OPENCLAW_GATEWAY_PORT"] ?? gatewayPort
+            if await attachToExistingGatewayIfHealthy(port: configuredGatewayPort) {
+                appendLog("Attached to existing OpenClaw gateway before launching a new process.")
+            } else {
+                do {
+                    gatewayProcess = try launchGatewayProcess(environment: environment)
                     isRunning = true
-                    statusText = "Using existing OpenClaw gateway..."
-                    gatewayStatus = "healthy"
-                    appendLog("OpenClaw gateway is already running outside the app and passed health check; attaching to http://\(gatewayHost):\(environment["OPENCLAW_GATEWAY_PORT"] ?? gatewayPort)/")
-                } else {
-                    throw error
+                    statusText = "Starting local OpenClaw..."
+                    appendLog("Started OpenClaw gateway locally without Docker.")
+                    appendLog("Gateway: http://\(gatewayHost):\(configuredGatewayPort)/")
+                } catch {
+                    switch await recoverGatewayLaunchConflict(
+                        error: error,
+                        environment: environment,
+                        port: configuredGatewayPort
+                    ) {
+                    case .attached:
+                        break
+                    case .retryLaunch:
+                        gatewayProcess = try launchGatewayProcess(environment: environment)
+                        isRunning = true
+                        statusText = "Starting local OpenClaw..."
+                        appendLog("Restarted OpenClaw gateway locally after clearing a stale instance.")
+                        appendLog("Gateway: http://\(gatewayHost):\(configuredGatewayPort)/")
+                    case .unhandled:
+                        throw error
+                    }
                 }
             }
 
@@ -1624,6 +1604,101 @@ final class OpenClawLocalController: NSObject, ObservableObject {
             appendLog("Start failed: \(error.localizedDescription)")
             appendChatMessage(.error(error.localizedDescription))
         }
+    }
+
+    private func launchGatewayProcess(environment: [String: String]) throws -> Process {
+        try launchProcess(
+            name: "gateway",
+            arguments: [
+                repositoryDirectory.appendingPathComponent("dist/index.js").path,
+                "gateway",
+                "run",
+                "--allow-unconfigured",
+                "--bind",
+                environment["OPENCLAW_GATEWAY_BIND"] ?? "loopback",
+                "--port",
+                environment["OPENCLAW_GATEWAY_PORT"] ?? gatewayPort
+            ],
+            environment: environment
+        )
+    }
+
+    private func attachToExistingGatewayIfHealthy(port: String) async -> Bool {
+        let existingGatewayURL = URL(string: "http://\(gatewayHost):\(port)/healthz")!
+        let existingGatewayStatus = await checkHealth(url: existingGatewayURL)
+        guard existingGatewayStatus == "healthy" else {
+            return false
+        }
+
+        gatewayProcess = nil
+        isRunning = true
+        statusText = "Using existing OpenClaw gateway..."
+        gatewayStatus = "healthy"
+        appendLog("OpenClaw gateway is already running outside the app and passed health check; attaching to http://\(gatewayHost):\(port)/")
+        return true
+    }
+
+    private func recoverGatewayLaunchConflict(
+        error: Error,
+        environment: [String: String],
+        port: String
+    ) async -> GatewayLaunchRecovery {
+        let launchErrorMessage = error.localizedDescription
+        let normalizedLaunchError = launchErrorMessage.lowercased()
+        let gatewayAlreadyRunning = normalizedLaunchError.contains("already running")
+            || normalizedLaunchError.contains("port \(port) is already in use")
+            || normalizedLaunchError.contains("lock timeout")
+            || normalizedLaunchError.contains("use a different port")
+
+        guard gatewayAlreadyRunning else {
+            return .unhandled
+        }
+
+        if await attachToExistingGatewayIfHealthy(port: port) {
+            return .attached
+        }
+
+        appendLog("Gateway launch conflicted on port \(port); attempting to stop a stale OpenClaw gateway and retry once.")
+        do {
+            let stopOutput = try runCommand(
+                executableURL: nodeURL,
+                arguments: [
+                    repositoryDirectory.appendingPathComponent("dist/index.js").path,
+                    "gateway",
+                    "stop",
+                    "--port",
+                    port,
+                    "--force",
+                    "--json"
+                ],
+                currentDirectoryURL: projectDirectory,
+                environment: environment
+            )
+            let stopSummary = stopOutput.stderr.isEmpty ? stopOutput.stdout : stopOutput.stderr
+            if !stopSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                appendLog(stopSummary, prefix: "gateway-stop")
+            }
+        } catch {
+            appendLog("Automatic gateway stop failed: \(error.localizedDescription)")
+        }
+
+        for _ in 0..<5 {
+            let status = await checkHealth(url: URL(string: "http://\(gatewayHost):\(port)/healthz")!)
+            if status == "offline" {
+                return .retryLaunch
+            }
+            if status == "healthy" {
+                return .attached
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+
+        gatewayProcess = nil
+        isRunning = false
+        gatewayStatus = "conflict"
+        statusText = "Stopped"
+        appendLog("Gateway port \(port) is still occupied after automatic recovery attempt.")
+        return .unhandled
     }
 
     func stop() {
@@ -4750,9 +4825,12 @@ final class OpenClawLocalController: NSObject, ObservableObject {
     }
 
     nonisolated private static func shouldSuppressObservedProcessLog(_ text: String, processName: String) -> Bool {
-        _ = text
-        _ = processName
-        return false
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard processName == "gateway" else {
+            return false
+        }
+        return normalized.contains("gateway already running locally")
+            || normalized.contains("stop it (openclaw gateway stop) or use a different port")
     }
 
     private func redacted(_ line: String) -> String {
@@ -5808,6 +5886,12 @@ private struct ProcessOutput {
     let stdout: String
     let stderr: String
     let exitCode: Int32
+}
+
+private enum GatewayLaunchRecovery {
+    case attached
+    case retryLaunch
+    case unhandled
 }
 
 private extension OpenClawAgentTurnResponse {

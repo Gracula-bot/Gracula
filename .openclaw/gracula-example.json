@@ -15,8 +15,8 @@
         },
         "openAIChat" : {
           "maxTokens" : 512,
-          "temperature" : 0.35,
-          "topP" : 0.85
+          "temperature" : 1.05,
+          "topP" : 0.84999999999999998
         },
         "reasoning" : "on",
         "simpleChat" : {

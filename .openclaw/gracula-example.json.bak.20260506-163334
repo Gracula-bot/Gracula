@@ -1,0 +1,42 @@
+{
+  "agents" : {
+    "defaults" : {
+      "localPrompt" : {
+        "deepPersona" : {
+          "maxOutputTokens" : 2048,
+          "reserveTokens" : 4096,
+          "runtimeContextWindow" : 10880
+        },
+        "mode" : "deep_persona",
+        "notificationSpeech" : {
+          "maxOutputTokens" : 128,
+          "reserveTokens" : 512,
+          "runtimeContextWindow" : 4096
+        },
+        "openAIChat" : {
+          "maxTokens" : 512,
+          "temperature" : 0.75,
+          "topP" : 0.84999999999999998
+        },
+        "reasoning" : "on",
+        "simpleChat" : {
+          "maxOutputTokens" : 512,
+          "reserveTokens" : 1024,
+          "runtimeContextWindow" : 8192
+        }
+      }
+    }
+  },
+  "integrations" : {
+    "telegram" : {
+      "business" : {
+        "autoReplyEnabled" : true,
+        "botToken" : "",
+        "businessConnectionId" : "",
+        "enabled" : true,
+        "markReadEnabled" : true,
+        "pollIntervalSeconds" : 2
+      }
+    }
+  }
+}

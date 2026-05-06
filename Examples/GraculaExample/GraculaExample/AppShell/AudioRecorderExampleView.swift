@@ -396,6 +396,12 @@ struct BrainSettingsSection: View {
     @State private var selectedPreset: BrainPreset = .openAIGPT54Mini
     @State private var customModelRef = ""
     @State private var openAIApiKey = ""
+    @State private var braveAPIKey = ""
+    @State private var geminiAPIKey = ""
+    @State private var xaiAPIKey = ""
+    @State private var perplexityAPIKey = ""
+    @State private var moonshotAPIKey = ""
+    @State private var firecrawlAPIKey = ""
     @State private var openAITemperature = 0.35
     @State private var openAITopP = 0.85
     @State private var openAIMaxTokens = 512
@@ -502,17 +508,11 @@ struct BrainSettingsSection: View {
 
             promptTokenControls
 
-            SecureField("OpenAI API key", text: $openAIApiKey)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.caption, design: .monospaced))
-                .onChange(of: openAIApiKey) { _, newValue in
-                    guard !isSyncing else { return }
-                    upsertAPIKey(for: "openai", value: newValue)
-                }
+            apiKeyControls
 
             openAIRequestControls
 
-            Text("GraculaExample accepts only OpenAI models and uses only the OpenAI API key.")
+            Text("Apply saves these keys into the project OpenClaw setup. Runtime reads them from the project `.env` and, for OpenAI, also from `openclaw.json`.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
@@ -553,6 +553,12 @@ struct BrainSettingsSection: View {
             customModelRef = currentModel
         }
         openAIApiKey = apiKey(for: "openai")
+        braveAPIKey = environmentValue(forAny: ["BRAVE_API_KEY"]) ?? ""
+        geminiAPIKey = environmentValue(forAny: ["GEMINI_API_KEY"]) ?? ""
+        xaiAPIKey = environmentValue(forAny: ["XAI_API_KEY"]) ?? ""
+        perplexityAPIKey = environmentValue(forAny: ["PERPLEXITY_API_KEY"]) ?? ""
+        moonshotAPIKey = environmentValue(forAny: ["KIMI_API_KEY", "MOONSHOT_API_KEY"]) ?? ""
+        firecrawlAPIKey = environmentValue(forAny: ["FIRECRAWL_API_KEY"]) ?? ""
         openAITemperature = doubleValue(
             for: "agents.defaults.localPrompt.openAIChat.temperature",
             default: 0.35,
@@ -689,6 +695,72 @@ struct BrainSettingsSection: View {
         }
         ensureProviderDefaults()
         syncDraftFromSnapshot()
+    }
+
+    private var apiKeyControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionHeader("API Keys", systemImage: "key")
+
+            SecureField("OpenAI API key", text: $openAIApiKey)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .onChange(of: openAIApiKey) { _, newValue in
+                    guard !isSyncing else { return }
+                    upsertAPIKey(for: "openai", value: newValue)
+                }
+
+            SecureField("Brave Search API key (optional)", text: $braveAPIKey)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .onChange(of: braveAPIKey) { _, newValue in
+                    guard !isSyncing else { return }
+                    upsertEnvironmentAliases(keys: ["BRAVE_API_KEY"], value: newValue)
+                }
+
+            SecureField("Gemini API key", text: $geminiAPIKey)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .onChange(of: geminiAPIKey) { _, newValue in
+                    guard !isSyncing else { return }
+                    upsertEnvironmentAliases(keys: ["GEMINI_API_KEY"], value: newValue)
+                }
+
+            SecureField("xAI API key", text: $xaiAPIKey)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .onChange(of: xaiAPIKey) { _, newValue in
+                    guard !isSyncing else { return }
+                    upsertEnvironmentAliases(keys: ["XAI_API_KEY"], value: newValue)
+                }
+
+            SecureField("Perplexity API key", text: $perplexityAPIKey)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .onChange(of: perplexityAPIKey) { _, newValue in
+                    guard !isSyncing else { return }
+                    upsertEnvironmentAliases(keys: ["PERPLEXITY_API_KEY"], value: newValue)
+                }
+
+            SecureField("Moonshot / Kimi API key", text: $moonshotAPIKey)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .onChange(of: moonshotAPIKey) { _, newValue in
+                    guard !isSyncing else { return }
+                    upsertEnvironmentAliases(keys: ["KIMI_API_KEY", "MOONSHOT_API_KEY"], value: newValue)
+                }
+
+            SecureField("Firecrawl API key", text: $firecrawlAPIKey)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .onChange(of: firecrawlAPIKey) { _, newValue in
+                    guard !isSyncing else { return }
+                    upsertEnvironmentAliases(keys: ["FIRECRAWL_API_KEY"], value: newValue)
+                }
+
+            Text("These fields update the draft settings immediately and are written into the project when you press Apply.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
     }
 
     private var qdrantControls: some View {
@@ -1170,6 +1242,13 @@ struct BrainSettingsSection: View {
             ?? snapshot.environmentEntries.first(where: { $0.key == key })?.value
     }
 
+    private func environmentValue(forAny keys: [String]) -> String? {
+        keys.lazy
+            .compactMap(environmentValue(for:))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+    }
+
     private func providerAPIKeyPath(for providerName: String) -> String {
         "models.providers.\(providerName).apiKey"
     }
@@ -1186,6 +1265,12 @@ struct BrainSettingsSection: View {
         )
         if providerName == "openai" {
             upsertEnvironmentSetting(key: "OPENAI_API_KEY", value: value, isSecret: true)
+        }
+    }
+
+    private func upsertEnvironmentAliases(keys: [String], value: String, isSecret: Bool = true) {
+        for key in keys {
+            upsertEnvironmentSetting(key: key, value: value, isSecret: isSecret)
         }
     }
 
@@ -1651,7 +1736,6 @@ private struct VoicePipelineSettingsEditorView: View {
 
     private func reloadDraft() {
         draft = viewModel.currentVoiceSettings()
-        draft.speechRecognitionBackend = .whisper
         if draft.whisperLanguageCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             draft.whisperLanguageCode = "ru"
         }

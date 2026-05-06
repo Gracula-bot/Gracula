@@ -2,35 +2,35 @@
   "entries": {
     "/Users/gg/Gracula/.openclaw/openclaw.json": {
       "lastKnownGood": {
-        "hash": "3fb97e74d1ce16521f4acb40c04a5c25f95f77c5da7477a76089a2c875d03510",
-        "bytes": 25347,
-        "mtimeMs": 1778070814165.4211,
-        "ctimeMs": 1778070814165.4211,
+        "hash": "87f7186c1f1423a8634659e930bbcf08afd320be1b7dd12181a6db7cf36f59d0",
+        "bytes": 26092,
+        "mtimeMs": 1778080532677.454,
+        "ctimeMs": 1778080532677.5955,
         "dev": "16777232",
-        "ino": "138376567",
+        "ino": "138565068",
         "mode": 384,
         "nlink": 1,
         "uid": 501,
         "gid": 20,
         "hasMeta": true,
         "gatewayMode": "local",
-        "observedAt": "2026-05-06T12:33:35.431Z"
+        "observedAt": "2026-05-06T15:15:37.108Z"
       },
       "lastObservedSuspiciousSignature": null,
       "lastPromotedGood": {
-        "hash": "691ee189dcf1a16055eaa5a0fbf23b4641c850adb19e9b20e0275026400313fe",
-        "bytes": 29400,
-        "mtimeMs": 1778066278834.7468,
-        "ctimeMs": 1778066278835.5688,
+        "hash": "d21de5ae3de1748dadcd1a4983db9871e491747bd5d5095892008b7a49158588",
+        "bytes": 26123,
+        "mtimeMs": 1778071718364.778,
+        "ctimeMs": 1778071718364.778,
         "dev": "16777232",
-        "ino": "138376567",
+        "ino": "138495411",
         "mode": 33152,
         "nlink": 1,
         "uid": 501,
         "gid": 20,
         "hasMeta": true,
         "gatewayMode": "local",
-        "observedAt": "2026-05-06T11:18:03.175Z"
+        "observedAt": "2026-05-06T13:13:16.688Z"
       }
     }
   }
