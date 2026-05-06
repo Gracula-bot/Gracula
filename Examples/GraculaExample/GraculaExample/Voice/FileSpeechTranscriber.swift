@@ -42,7 +42,7 @@ struct LocalSpeechRuntimeConfiguration: Sendable {
             currentDirectory: URL(fileURLWithPath: fileManager.currentDirectoryPath)
         )
 
-        let pythonCandidates: [URL] = [
+        let pythonCandidates: [URL] = ([
             environment["GRACULA_WHISPER_PYTHON"].map { URL(fileURLWithPath: $0) },
             applicationSupportDirectory
                 .appendingPathComponent("PythonRuntime", isDirectory: true)
@@ -51,7 +51,7 @@ struct LocalSpeechRuntimeConfiguration: Sendable {
             Self.exampleDirectoryPythonURL(
                 in: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             ),
-        ] + repositoryCandidates.map(Self.examplePythonURL(in:))
+        ] + repositoryCandidates.map(Self.examplePythonURL(in:))).compactMap { $0 }
 
         guard let pythonURL = pythonCandidates.first(where: { fileManager.isExecutableFile(atPath: $0.path) }) else {
             throw FileSpeechTranscriberError.runtimeMissing(
@@ -74,12 +74,11 @@ struct LocalSpeechRuntimeConfiguration: Sendable {
         try fileManager.createDirectory(at: modelDirectoryURL, withIntermediateDirectories: true)
         try backend.workerScript.writeIfNeeded(to: workerScriptURL)
 
-        let ffmpegCandidates = [
+        let ffmpegCandidates: [URL] = [
             environment["GRACULA_FFMPEG_PATH"].map { URL(fileURLWithPath: $0) },
             URL(fileURLWithPath: "/opt/homebrew/bin/ffmpeg"),
-            URL(fileURLWithPath: "/usr/local/bin/ffmpeg")
-        ]
-        .compactMap { $0 }
+            URL(fileURLWithPath: "/usr/local/bin/ffmpeg"),
+        ].compactMap { $0 }
         let ffmpegURL = ffmpegCandidates.first(where: { fileManager.isExecutableFile(atPath: $0.path) })
 
         return LocalSpeechRuntimeConfiguration(
@@ -365,14 +364,14 @@ private actor WhisperTranscriptionWorker {
     }
 
     private func beginOperation() async {
-        guard operationInProgress else {
-            operationInProgress = true
+        guard !operationInProgress else {
+            await withCheckedContinuation { continuation in
+                pendingOperationContinuations.append(continuation)
+            }
             return
         }
 
-        await withCheckedContinuation { continuation in
-            pendingOperationContinuations.append(continuation)
-        }
+        operationInProgress = true
     }
 
     private func endOperation() {
