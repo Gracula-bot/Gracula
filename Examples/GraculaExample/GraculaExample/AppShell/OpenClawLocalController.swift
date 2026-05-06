@@ -2525,20 +2525,7 @@ final class OpenClawLocalController: NSObject, ObservableObject {
             return false
         }
 
-        let normalizedReply = normalizedCommandText(lastReply)
-        let staleReplyMarkers = [
-            "Жду инструкций",
-            "Waiting for your instructions",
-            "Continue where I left off",
-            "Continue where you left off",
-            "fill SOUL.md",
-            "SOUL.md",
-            "What rules should I apply",
-            "Can you clarify",
-        ]
-        return staleReplyMarkers
-            .map(normalizedCommandText)
-            .contains(where: { normalizedReply.contains($0) })
+        return isSessionReplyIncompatibleWithCurrentRuntime(lastReply)
     }
 
     private func shouldResetCurrentSessionOnLaunch() -> Bool {
@@ -2550,6 +2537,10 @@ final class OpenClawLocalController: NSObject, ObservableObject {
     }
 
     private func looksLikeStaleAssistantReply(_ reply: String) -> Bool {
+        isSessionReplyIncompatibleWithCurrentRuntime(reply)
+    }
+
+    private func isSessionReplyIncompatibleWithCurrentRuntime(_ reply: String) -> Bool {
         let normalizedReply = normalizedCommandText(reply)
         let staleReplyMarkers = [
             "Жду инструкций",
@@ -2560,6 +2551,16 @@ final class OpenClawLocalController: NSObject, ObservableObject {
             "SOUL.md",
             "What rules should I apply",
             "Can you clarify",
+            "не могу честно проверить в интернете",
+            "не могу проверить в интернете",
+            "проверить билеты в интернете из этого запуска",
+            "из этого запуска",
+            "открои нормальныи интерактивныи run",
+            "доступом к web/поиску",
+            "веб-доступом",
+            "with web access",
+            "open another run",
+            "normal interactive run",
         ]
         return staleReplyMarkers
             .map(normalizedCommandText)

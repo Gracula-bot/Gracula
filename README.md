@@ -11,6 +11,24 @@ swift test
 
 Manual milestone checks are documented in [manualtesting.md](manualtesting.md).
 
+## OpenClaw Internet Tools
+
+The bundled Gracula OpenClaw workspace is now configured to expose the internet-facing tool set:
+
+- `web_search` for live discovery
+- `web_fetch` for direct page reads
+- `browser` for interactive or JS-heavy sites
+
+The checked-in [`.openclaw/openclaw.json`](/Users/gg/Gracula/.openclaw/openclaw.json) keeps the regular `messaging` profile and uses `tools.alsoAllow` to add `group:web` and `browser` on top of it. This is required because `tools.allow` only narrows the active profile and cannot re-enable tools that the `messaging` profile already excluded.
+
+Notes:
+
+- `web_fetch` works without extra setup for normal pages.
+- `browser` works without extra API credentials once browser support is enabled in OpenClaw.
+- `web_search` is enabled as a callable tool, but in this OpenClaw build it needs a supported provider key to return live search results.
+- `web_search` is left without a pinned provider. If provider credentials exist, OpenClaw can use them; otherwise the agent should fall back to `web_fetch` and `browser` instead of failing the request.
+- The browser plugin must stay allowed in `plugins.allow`, and the `browser` plugin entry must remain enabled.
+
 ## Telegram Reply Integration
 
 Gracula now has a local Telegram voice-command route for OpenClaw. A recognized reply command sends the message automatically without calling the LLM/OpenClaw planner.
