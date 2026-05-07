@@ -228,6 +228,28 @@ public struct AppConfiguration: Codable, Sendable, Equatable {
         }
     }
 
+    public struct Tracing: Codable, Sendable, Equatable {
+        public var enabled: Bool
+        public var logFullContext: Bool
+        public var logResponseBodies: Bool
+        public var redactSensitiveData: Bool
+        public var logLevel: String
+
+        public init(
+            enabled: Bool,
+            logFullContext: Bool,
+            logResponseBodies: Bool,
+            redactSensitiveData: Bool,
+            logLevel: String
+        ) {
+            self.enabled = enabled
+            self.logFullContext = logFullContext
+            self.logResponseBodies = logResponseBodies
+            self.redactSensitiveData = redactSensitiveData
+            self.logLevel = logLevel
+        }
+    }
+
     public struct Telegram: Codable, Sendable, Equatable {
         public var businessEnabled: Bool
         public var businessBotToken: String
@@ -349,6 +371,7 @@ public struct AppConfiguration: Codable, Sendable, Equatable {
     public var whisper: Whisper
     public var qdrant: Qdrant
     public var gateway: Gateway
+    public var tracing: Tracing
     public var telegram: Telegram
     public var voice: Voice
     public var toolRuntimeFlags: ToolRuntimeFlags
@@ -420,6 +443,13 @@ public enum AppConfigurationDefaults {
                 enabled: false,
                 repositoryPath: layout.openClawGatewayRootURL.path,
                 entrypointPath: layout.openClawGatewayEntrypointURL.path
+            ),
+            tracing: .init(
+                enabled: true,
+                logFullContext: false,
+                logResponseBodies: false,
+                redactSensitiveData: true,
+                logLevel: "info"
             ),
             telegram: .init(
                 businessEnabled: false,

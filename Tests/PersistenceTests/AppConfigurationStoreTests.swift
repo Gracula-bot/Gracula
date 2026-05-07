@@ -54,6 +54,11 @@ func environmentBuilderUsesCanonicalConfigurationValues() throws {
         configuration.apiKeys.openAI = "test-openai-key"
         configuration.llm.primaryModelRef = "openai/gpt-5.4-mini"
         configuration.qdrant.baseURL = "http://127.0.0.1:9999"
+        configuration.tracing.enabled = true
+        configuration.tracing.logFullContext = false
+        configuration.tracing.logResponseBodies = true
+        configuration.tracing.redactSensitiveData = true
+        configuration.tracing.logLevel = "debug"
     }
 
     let environment = AppConfigurationEnvironmentBuilder.build(configuration: configuration, layout: layout)
@@ -61,6 +66,12 @@ func environmentBuilderUsesCanonicalConfigurationValues() throws {
     #expect(environment["OPENAI_API_KEY"] == "test-openai-key")
     #expect(environment["GRACULA_QDRANT_URL"] == "http://127.0.0.1:9999")
     #expect(environment["GRACULA_CANONICAL_CONFIG_PLIST"] == layout.configurationFileURL.path)
+    #expect(environment["GRACULA_TRACE_LOGGING_ENABLED"] == "1")
+    #expect(environment["GRACULA_TRACE_LOG_FULL_CONTEXT"] == "0")
+    #expect(environment["GRACULA_TRACE_LOG_RESPONSE_BODY"] == "1")
+    #expect(environment["GRACULA_TRACE_REDACT_SENSITIVE_DATA"] == "1")
+    #expect(environment["GRACULA_TRACE_LOG_LEVEL"] == "debug")
+    #expect(environment["GRACULA_TRACE_LOG_PATH"] == layout.logsDirectoryURL.appendingPathComponent("request-trace.jsonl").path)
 }
 
 @Test

@@ -14,14 +14,27 @@ public enum AppConfigurationEnvironmentBuilder {
             }
         }
 
-        environment["PATH"] = [
+        let inheritedPathEntries = (processEnvironment["PATH"] ?? "")
+            .split(separator: ":")
+            .map(String.init)
+            .filter { !$0.isEmpty }
+
+        var pathEntries = [
             layout.binDirectoryURL.path,
             layout.venvDirectoryURL.appendingPathComponent("bin", isDirectory: true).path,
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
             "/usr/bin",
             "/bin",
             "/usr/sbin",
             "/sbin"
-        ].joined(separator: ":")
+        ]
+        pathEntries.append(contentsOf: inheritedPathEntries)
+
+        var seenPathEntries = Set<String>()
+        environment["PATH"] = pathEntries
+            .filter { seenPathEntries.insert($0).inserted }
+            .joined(separator: ":")
 
         environment["GRACULA_PROJECT_DIR"] = configuration.runtimePaths.projectRootPath
         environment["GRACULA_RUNTIME_ROOT"] = configuration.runtimePaths.runtimeRootPath
@@ -38,8 +51,9 @@ public enum AppConfigurationEnvironmentBuilder {
         environment["GRACULA_WHISPER_PYTHON"] = configuration.python.executablePath
         environment["GRACULA_FFMPEG_PATH"] = configuration.python.ffmpegExecutablePath
         environment["OPENCLAW_WORKSPACE_DIR"] = configuration.runtimePaths.workspacePath
-        environment["OPENCLAW_CONFIG_DIR"] = layout.runtimeDirectoryURL.path
-        environment["OPENCLAW_STATE_DIR"] = layout.runtimeDirectoryURL.path
+        environment["OPENCLAW_CONFIG_DIR"] = layout.runtimeRootURL.path
+        environment["OPENCLAW_STATE_DIR"] = layout.runtimeRootURL.path
+        environment["OPENCLAW_CONFIG_PATH"] = layout.openClawConfigFileURL.path
         environment["OPENCLAW_GATEWAY_BIND"] = "loopback"
         environment["OPENCLAW_GATEWAY_PORT"] = String(configuration.llm.gatewayPort)
         environment["OPENCLAW_GATEWAY_URL"] = "ws://127.0.0.1:\(configuration.llm.gatewayPort)"
@@ -50,6 +64,12 @@ public enum AppConfigurationEnvironmentBuilder {
         environment["OPENCLAW_TRACK_BRIDGE_URL"] = "http://127.0.0.1:\(configuration.llm.streamBridgePort)/track"
         environment["OPENCLAW_TRACK_ONLY_GROUPS"] = configuration.toolRuntimeFlags.trackOnlyGroups ? "1" : "0"
         environment["OPENCLAW_TRACK_AUTO_LINKS"] = configuration.toolRuntimeFlags.trackAutoLinks ? "1" : "0"
+        environment["GRACULA_TRACE_LOGGING_ENABLED"] = configuration.tracing.enabled ? "1" : "0"
+        environment["GRACULA_TRACE_LOG_FULL_CONTEXT"] = configuration.tracing.logFullContext ? "1" : "0"
+        environment["GRACULA_TRACE_LOG_RESPONSE_BODY"] = configuration.tracing.logResponseBodies ? "1" : "0"
+        environment["GRACULA_TRACE_REDACT_SENSITIVE_DATA"] = configuration.tracing.redactSensitiveData ? "1" : "0"
+        environment["GRACULA_TRACE_LOG_LEVEL"] = configuration.tracing.logLevel
+        environment["GRACULA_TRACE_LOG_PATH"] = layout.logsDirectoryURL.appendingPathComponent("request-trace.jsonl").path
         environment["BROWSER"] = configuration.toolRuntimeFlags.browserCommand
         environment["GRACULA_TELEGRAM_BOT_TOKEN"] = configuration.telegram.businessBotToken
         environment["GRACULA_TELEGRAM_BUSINESS_CONNECTION_ID"] = configuration.telegram.businessConnectionID

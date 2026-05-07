@@ -132,6 +132,10 @@ public struct ProjectRuntimeLayout: Sendable, Equatable {
         pythonDirectoryURL.appendingPathComponent("requirements-speech.txt")
     }
 
+    public var openClawConfigFileURL: URL {
+        runtimeRootURL.appendingPathComponent("openclaw.json")
+    }
+
     public var openClawGatewayRootURL: URL {
         runtimeDirectoryURL.appendingPathComponent("openclaw-gateway", isDirectory: true)
     }

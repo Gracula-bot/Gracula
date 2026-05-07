@@ -95,7 +95,12 @@ let package = Package(
         ),
         .testTarget(
             name: "ApplicationTests",
-            dependencies: ["Application", "Domain"],
+            dependencies: ["Application", "Domain", "Shared"],
+            swiftSettings: swiftSettings
+        ),
+        .testTarget(
+            name: "AppShellTests",
+            dependencies: ["AppShell", "Application", "Domain", "LLM", "Shared"],
             swiftSettings: swiftSettings
         ),
         .testTarget(
@@ -105,7 +110,7 @@ let package = Package(
         ),
         .testTarget(
             name: "LLMTests",
-            dependencies: ["LLM"],
+            dependencies: ["LLM", "Shared"],
             swiftSettings: swiftSettings
         ),
         .testTarget(
@@ -121,6 +126,11 @@ let package = Package(
         .testTarget(
             name: "PersistenceTests",
             dependencies: ["Persistence"],
+            swiftSettings: swiftSettings
+        ),
+        .testTarget(
+            name: "SharedTests",
+            dependencies: ["Shared"],
             swiftSettings: swiftSettings
         )
     ]

@@ -67,6 +67,9 @@ func llmPlanningAdapterStoresRequestLog() async throws {
             requestLog: LoggedLLMRequest(
                 provider: "Fake",
                 endpoint: "https://example.com/v1/chat/completions",
+                model: "fake",
+                purpose: "tool_planning",
+                parameters: [:],
                 body: "{\"model\":\"fake\"}"
             )
         )

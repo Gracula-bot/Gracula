@@ -6,6 +6,7 @@ import Domain
 import Foundation
 import LLM
 import Persistence
+import Shared
 import Tools
 import Voice
 
@@ -16,6 +17,8 @@ struct AppCompositionRoot {
     @MainActor
     func makeAgentView() -> AgentView {
         let auditLog = InMemoryAuditLog()
+        let configuration = canonicalConfiguration()
+        let traceLogger = makeTraceLogger(configuration: configuration)
         let workspaceOpening = WorkspaceOpeningClient()
         let fileSystem = LocalFileSystemClient()
         let notesDirectory = Self.notesDirectory()
@@ -48,7 +51,7 @@ struct AppCompositionRoot {
             ]
         )
         let registry = ToolRegistry(tools: tools)
-        let executor = ToolExecutor(registry: registry, auditLog: auditLog)
+        let executor = ToolExecutor(registry: registry, auditLog: auditLog, traceLogger: traceLogger)
         let telegramService = Self.makeTelegramService()
         let telegramHandler = TelegramCommandHandler(
             service: telegramService,
@@ -60,11 +63,12 @@ struct AppCompositionRoot {
         )
         let voiceCommandRouter = OpenClawVoiceCommandRouter(telegramHandler: telegramHandler)
         let orchestrator = AgentOrchestrator(
-            planner: makePlanner(availableTools: descriptors),
+            planner: makePlanner(availableTools: descriptors, configuration: configuration, traceLogger: traceLogger),
             policyChecker: DefaultPolicyGate(reversibleAllowlistedTools: reversibleAllowlistedTools),
             toolExecutor: executor,
             memory: ConversationMemory(),
-            auditLog: auditLog
+            auditLog: auditLog,
+            traceLogger: traceLogger
         )
         return AgentView(
             viewModel: AgentViewModel(
@@ -74,34 +78,45 @@ struct AppCompositionRoot {
                 auditLog: auditLog,
                 speechSynthesizer: AppleSpeechSynthesizer(),
                 botSettings: botSettings,
-                llmMetricsStore: llmMetricsStore
+                llmMetricsStore: llmMetricsStore,
+                traceLogger: traceLogger
             )
         )
     }
 
-    private func makePlanner(availableTools: [ToolDescriptor]) -> any Planning {
+    private func makePlanner(
+        availableTools: [ToolDescriptor],
+        configuration: AppConfiguration,
+        traceLogger: TraceLogger
+    ) -> any Planning {
         let environment = AppConfigurationEnvironmentBuilder.build(
-            configuration: canonicalConfiguration(),
+            configuration: configuration,
             layout: runtimeLayout
         )
         let openAIKey = Self.preferredOpenAIAPIKey(from: environment)
         let openAIModel = Self.preferredOpenAIModel(from: environment)
         let temperature = Self.preferredLLMTemperature(from: environment)
+        let topP = configuration.llm.openAITopP
+        let maxTokens = configuration.llm.openAIMaxTokens
 
         if !openAIKey.isEmpty {
             return LLMPlanningAdapter(
                 client: OpenAIChatCompletionsLLMClient(
                     apiKey: openAIKey,
                     defaultModel: openAIModel,
-                    requestStore: llmMetricsStore
+                    requestStore: llmMetricsStore,
+                    traceLogger: traceLogger
                 ),
                 promptCompiler: PromptCompiler(
                     availableTools: availableTools,
                     model: openAIModel,
-                    temperature: temperature
+                    temperature: temperature,
+                    topP: topP,
+                    maxTokens: maxTokens
                 ),
                 parser: AgentPlanParser(availableTools: availableTools),
-                metricsStore: llmMetricsStore
+                metricsStore: llmMetricsStore,
+                traceLogger: traceLogger
             )
         }
 
@@ -111,14 +126,17 @@ struct AppCompositionRoot {
         }
 
         return LLMPlanningAdapter(
-            client: LocalHTTPLLMClient(endpoint: endpoint, requestStore: llmMetricsStore),
+            client: LocalHTTPLLMClient(endpoint: endpoint, requestStore: llmMetricsStore, traceLogger: traceLogger),
             promptCompiler: PromptCompiler(
                 availableTools: availableTools,
                 model: environment["GRACULA_LLM_MODEL"],
-                temperature: temperature
+                temperature: temperature,
+                topP: topP,
+                maxTokens: maxTokens
             ),
             parser: AgentPlanParser(availableTools: availableTools),
-            metricsStore: llmMetricsStore
+            metricsStore: llmMetricsStore,
+            traceLogger: traceLogger
         )
     }
 
@@ -259,6 +277,19 @@ struct AppCompositionRoot {
 
     private func canonicalConfiguration() -> AppConfiguration {
         (try? AppConfigurationStore(layout: runtimeLayout).loadOrCreate()) ?? AppConfigurationDefaults.make(layout: runtimeLayout)
+    }
+
+    private func makeTraceLogger(configuration: AppConfiguration) -> TraceLogger {
+        TraceLogger(
+            configuration: TraceLoggingConfiguration(
+                enabled: configuration.tracing.enabled,
+                includeFullContext: configuration.tracing.logFullContext,
+                includeResponseBodies: configuration.tracing.logResponseBodies,
+                redactSensitiveData: configuration.tracing.redactSensitiveData,
+                minimumLevel: TraceLoggingConfiguration.LogLevel(rawValue: configuration.tracing.logLevel.lowercased()) ?? .info
+            ),
+            logFileURL: runtimeLayout.logsDirectoryURL.appendingPathComponent("request-trace.jsonl")
+        )
     }
 }
 

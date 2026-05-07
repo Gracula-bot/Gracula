@@ -556,12 +556,25 @@ print("whisper-model-ok")
                 message: "Gateway source exists, but Node or package-manager tooling was not found. Gateway mode remains disabled."
             )
         }
+        let commandEnvironment: [String: String]
+        do {
+            commandEnvironment = try prepareGatewayBuildEnvironment(
+                baseEnvironment: environment,
+                tools: tools
+            )
+        } catch {
+            log.error("Gateway build environment preparation failed. \(error.localizedDescription)")
+            return BootstrapDiagnostic(
+                level: .warning,
+                message: "Gateway build environment preparation failed. \(error.localizedDescription)"
+            )
+        }
 
         log.debug("Building gateway with \(tools.displayName) in \(repositoryURL.path).")
         let installResult = runProcess(
             executableURL: tools.executableURL,
             arguments: tools.installArguments,
-            environment: environment,
+            environment: commandEnvironment,
             currentDirectoryURL: repositoryURL
         )
         if installResult.exitCode != 0 {
@@ -575,7 +588,7 @@ print("whisper-model-ok")
         let buildResult = runProcess(
             executableURL: tools.executableURL,
             arguments: tools.buildArguments,
-            environment: environment,
+            environment: commandEnvironment,
             currentDirectoryURL: repositoryURL
         )
         if buildResult.exitCode != 0 {
@@ -619,6 +632,44 @@ print("speech-stack-ok")
             currentDirectoryURL: layout.projectRootURL
         )
     }
+
+    private func prepareGatewayBuildEnvironment(
+        baseEnvironment: [String: String],
+        tools: GatewayBuildTools
+    ) throws -> [String: String] {
+        guard tools.requiresPnpmShim else {
+            return baseEnvironment
+        }
+
+        try fileManager.createDirectory(at: layout.binDirectoryURL, withIntermediateDirectories: true)
+        let enableResult = runProcess(
+            executableURL: tools.executableURL,
+            arguments: ["enable", "--install-directory", layout.binDirectoryURL.path, "pnpm"],
+            environment: baseEnvironment,
+            currentDirectoryURL: layout.projectRootURL
+        )
+        if enableResult.exitCode != 0 {
+            throw NSError(
+                domain: "AppBootstrapper",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: nonEmptyOutput(stdout: enableResult.stdout, stderr: enableResult.stderr)]
+            )
+        }
+
+        var environment = baseEnvironment
+        let existingPathEntries = (environment["PATH"] ?? "")
+            .split(separator: ":")
+            .map(String.init)
+            .filter { !$0.isEmpty }
+        var pathEntries = [layout.binDirectoryURL.path]
+        pathEntries.append(contentsOf: existingPathEntries)
+
+        var seenEntries = Set<String>()
+        environment["PATH"] = pathEntries
+            .filter { seenEntries.insert($0).inserted }
+            .joined(separator: ":")
+        return environment
+    }
 }
 
 public final class AppBootstrapper: @unchecked Sendable {
@@ -652,6 +703,7 @@ public final class AppBootstrapper: @unchecked Sendable {
     public func bootstrapFoundation() throws -> AppConfiguration {
         let configuration = try store.loadOrCreate()
         try store.createManagedDirectoriesIfNeeded()
+        try seedOpenClawConfigIfNeeded()
         try seedWorkspaceTemplatesIfNeeded()
         _ = try installer.ensureProjectLocalVenv(configuration: configuration)
         _ = try installer.ensureSpeechRequirementsTemplate(configuration: try store.loadOrCreate())
@@ -737,6 +789,38 @@ public final class AppBootstrapper: @unchecked Sendable {
             try data.write(to: destinationURL, options: [.atomic])
         }
     }
+
+    private func seedOpenClawConfigIfNeeded() throws {
+        let configURL = layout.openClawConfigFileURL
+        guard !fileManager.fileExists(atPath: configURL.path) else {
+            return
+        }
+
+        let contents = """
+{
+  "gateway": {
+    "mode": "local",
+    "bind": "loopback"
+  },
+  "tools": {
+    "profile": "messaging",
+    "alsoAllow": ["group:web", "browser"]
+  },
+  "browser": {
+    "enabled": true
+  },
+  "plugins": {
+    "entries": {
+      "browser": {
+        "enabled": true
+      }
+    }
+  }
+}
+"""
+        try fileManager.createDirectory(at: configURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(contents.utf8).write(to: configURL, options: [.atomic])
+    }
 }
 
 private struct GatewayBuildTools {
@@ -744,6 +828,7 @@ private struct GatewayBuildTools {
     let displayName: String
     let installArguments: [String]
     let buildArguments: [String]
+    let requiresPnpmShim: Bool
 }
 
 private func verifyWhisperModelPresence(
@@ -845,7 +930,8 @@ private func resolveGatewayBuildTools(environment: [String: String]) -> GatewayB
                 executableURL: url,
                 displayName: "pnpm",
                 installArguments: ["install", "--frozen-lockfile"],
-                buildArguments: ["build"]
+                buildArguments: ["build"],
+                requiresPnpmShim: false
             )
         }
     }
@@ -862,7 +948,8 @@ private func resolveGatewayBuildTools(environment: [String: String]) -> GatewayB
                 executableURL: url,
                 displayName: "corepack pnpm",
                 installArguments: ["pnpm", "install", "--frozen-lockfile"],
-                buildArguments: ["pnpm", "build"]
+                buildArguments: ["pnpm", "build"],
+                requiresPnpmShim: true
             )
         }
     }

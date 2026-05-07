@@ -111,6 +111,9 @@ public final class AppConfigurationStore: @unchecked Sendable {
         if normalized.llm.openAIBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             normalized.llm.openAIBaseURL = AppConfigurationDefaults.make(layout: layout).llm.openAIBaseURL
         }
+        if normalized.tracing.logLevel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            normalized.tracing.logLevel = AppConfigurationDefaults.make(layout: layout).tracing.logLevel
+        }
         return normalized
     }
 

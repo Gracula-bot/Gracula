@@ -2,6 +2,7 @@ import Application
 import Domain
 import Foundation
 import LLM
+import Shared
 import Voice
 
 @MainActor
@@ -16,6 +17,9 @@ public final class AgentViewModel: ObservableObject {
     @Published public private(set) var botSettings: BotSettingsSnapshot?
     @Published public private(set) var llmMetrics: LLMRequestMetrics?
     @Published public private(set) var llmRequestLog: LoggedLLMRequest?
+    @Published public private(set) var llmResponseLog: LoggedLLMResponse?
+    @Published public private(set) var latestTraceID: String?
+    @Published public private(set) var traceEvents: [TraceEvent]
 
     private let orchestrator: AgentOrchestrator?
     private let voiceCommandRouter: OpenClawVoiceCommandRouter?
@@ -23,6 +27,8 @@ public final class AgentViewModel: ObservableObject {
     private let auditLog: InMemoryAuditLog?
     private let speechSynthesizer: (any SpeechSynthesizing)?
     private let llmMetricsStore: LLMRequestMetricsStore?
+    private let traceLogger: TraceLogger?
+    private let sessionID: String
     private var pendingPlan: AgentPlan?
 
     public init(
@@ -33,6 +39,7 @@ public final class AgentViewModel: ObservableObject {
         speechSynthesizer: (any SpeechSynthesizing)? = nil,
         botSettings: BotSettingsSnapshot? = nil,
         llmMetricsStore: LLMRequestMetricsStore? = nil,
+        traceLogger: TraceLogger? = nil,
         statusText: String = "Ready"
     ) {
         self.orchestrator = orchestrator
@@ -41,6 +48,8 @@ public final class AgentViewModel: ObservableObject {
         self.auditLog = auditLog
         self.speechSynthesizer = speechSynthesizer
         self.llmMetricsStore = llmMetricsStore
+        self.traceLogger = traceLogger
+        self.sessionID = UUID().uuidString.lowercased()
         self.inputText = ""
         self.confirmationText = ""
         self.statusText = statusText
@@ -51,6 +60,9 @@ public final class AgentViewModel: ObservableObject {
         self.botSettings = botSettings
         self.llmMetrics = nil
         self.llmRequestLog = nil
+        self.llmResponseLog = nil
+        self.latestTraceID = nil
+        self.traceEvents = []
     }
 
     public var canRun: Bool {
@@ -69,30 +81,65 @@ public final class AgentViewModel: ObservableObject {
             return
         }
 
-        statusText = "Thinking"
-        pendingPlan = nil
-        pendingChallenge = nil
-        confirmationText = ""
+        let trace = RequestTraceContext(
+            sessionID: sessionID,
+            conversationID: sessionID,
+            metadata: [
+                "entry_point": "AgentViewModel.run",
+                "surface": "AppShell"
+            ]
+        )
+        latestTraceID = trace.traceID
 
-        do {
-            if let voiceCommandRouter {
-                let routed = await voiceCommandRouter.route(text: command)
-                if applyTelegramResult(routed) {
-                    await speakCurrentResultIfNeeded()
-                    await refreshAuditEntries()
-                    return
+        await RequestTrace.$current.withValue(trace) {
+            statusText = "Thinking"
+            pendingPlan = nil
+            pendingChallenge = nil
+            confirmationText = ""
+
+            await traceLogger?.record(
+                level: .info,
+                event: "user_request.received",
+                component: "AgentViewModel",
+                payload: [
+                    "text": .string(command),
+                    "input_length": .integer(command.count),
+                    "surface": .string("AppShell"),
+                    "parameters": .object([:]),
+                    "metadata": .object(trace.metadata.mapValues(TraceLogValue.string))
+                ]
+            )
+
+            do {
+                if let voiceCommandRouter {
+                    let routed = await voiceCommandRouter.route(text: command)
+                    if applyTelegramResult(routed) {
+                        await speakCurrentResultIfNeeded()
+                        await emitFinalTrace(status: "telegram_route")
+                        await refreshAuditEntries()
+                        return
+                    }
                 }
-            }
 
-            let outcome = try await orchestrator.handleFinalUserText(command)
-            apply(outcome)
-            await speakCurrentResultIfNeeded()
-        } catch {
-            statusText = "Error"
-            resultText = String(describing: error)
+                let outcome = try await orchestrator.handleFinalUserText(command)
+                apply(outcome)
+                await speakCurrentResultIfNeeded()
+                await emitFinalTrace(status: finalStatus(for: outcome))
+            } catch {
+                statusText = "Error"
+                resultText = String(describing: error)
+                await traceLogger?.record(
+                    level: .error,
+                    event: "user_request.failed",
+                    component: "AgentViewModel",
+                    payload: ["error": .string(String(describing: error))]
+                )
+                await emitFinalTrace(status: "error")
+            }
         }
 
         await refreshLLMState()
+        await refreshTraceState()
         await refreshAuditEntries()
     }
 
@@ -130,6 +177,7 @@ public final class AgentViewModel: ObservableObject {
         }
 
         await refreshLLMState()
+        await refreshTraceState()
         await refreshAuditEntries()
     }
 
@@ -170,6 +218,7 @@ public final class AgentViewModel: ObservableObject {
         _ = applyTelegramResult(result)
         await speakCurrentResultIfNeeded()
         await refreshLLMState()
+        await refreshTraceState()
         await refreshAuditEntries()
     }
 
@@ -181,6 +230,7 @@ public final class AgentViewModel: ObservableObject {
         _ = applyTelegramResult(result)
         await speakCurrentResultIfNeeded()
         await refreshLLMState()
+        await refreshTraceState()
         await refreshAuditEntries()
     }
 
@@ -230,6 +280,21 @@ public final class AgentViewModel: ObservableObject {
     private func refreshLLMState() async {
         llmMetrics = await llmMetricsStore?.latest()
         llmRequestLog = await llmMetricsStore?.latestRequest()
+        llmResponseLog = await llmMetricsStore?.latestResponse()
+    }
+
+    private func refreshTraceState() async {
+        guard let traceLogger else {
+            traceEvents = []
+            return
+        }
+
+        let events = await traceLogger.events()
+        if let latestTraceID {
+            traceEvents = events.filter { $0.traceID == latestTraceID }
+        } else {
+            traceEvents = events
+        }
     }
 
     private func speakCurrentResultIfNeeded() async {
@@ -260,5 +325,37 @@ public final class AgentViewModel: ObservableObject {
             }
         }
         .joined(separator: "\n")
+    }
+
+    private func emitFinalTrace(status: String) async {
+        guard let trace = RequestTrace.current else {
+            return
+        }
+
+        let summary = await traceLogger?.summary(for: trace.traceID)
+        await traceLogger?.record(
+            level: .info,
+            event: "user_response.sent",
+            component: "AgentViewModel",
+            payload: [
+                "status": .string(status),
+                "response_text": .string(resultText),
+                "total_latency_ms": .integer(Int(Date().timeIntervalSince(trace.startedAt) * 1_000)),
+                "total_llm_cost_usd": .number(summary?.cumulativeCostUSD ?? 0),
+                "llm_call_count": .integer(summary?.llmCallCount ?? 0),
+                "tool_call_count": .integer(summary?.toolCallCount ?? 0)
+            ]
+        )
+    }
+
+    private func finalStatus(for outcome: AgentOrchestratorOutcome) -> String {
+        switch outcome {
+        case .executed:
+            return "executed"
+        case .requiresConfirmation:
+            return "requires_confirmation"
+        case .denied:
+            return "denied"
+        }
     }
 }

@@ -1299,6 +1299,8 @@ final class OpenClawLocalController: NSObject, ObservableObject {
     @Published private(set) var settingsStatusText = "Settings loaded."
     @Published private(set) var bootstrapStatusText = "Bootstrap not run."
     @Published private(set) var bootstrapDependencyItems: [DependencyReport.Item] = []
+    @Published private(set) var currentTraceID: String?
+    @Published private(set) var currentTraceLines: [String] = []
 
     let projectDirectory: URL
     let runtimeLayout: ProjectRuntimeLayout
@@ -1312,7 +1314,8 @@ final class OpenClawLocalController: NSObject, ObservableObject {
     private let gatewayHost = "127.0.0.1"
     private let fallbackGatewayPort = "18789"
     private let streamBridgePort = "7071"
-    private let agentTurnTimeoutSeconds: TimeInterval = 180
+    private let mainAgentID = "main"
+    private let agentTurnTimeoutSeconds: TimeInterval = 300
     private let directModelTimeoutSeconds: TimeInterval = 120
     private let directMemoryFileLimit = 2
     private let onlyFansPoster = WorkspaceOpeningClient()
@@ -1430,7 +1433,8 @@ final class OpenClawLocalController: NSObject, ObservableObject {
                 return
             }
 
-            try validateRuntime()
+            statusText = "Preparing local OpenClaw..."
+            try await validateRuntime()
 
             let configuredGatewayPort = environment["OPENCLAW_GATEWAY_PORT"] ?? gatewayPort
             if await attachToExistingGatewayIfHealthy(port: configuredGatewayPort) {
@@ -2393,38 +2397,72 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         guard !message.isEmpty else {
             return nil
         }
+        beginRequestTrace(userMessage: message)
         directModelPrewarmTask?.cancel()
         directModelPrewarmTask = nil
 
         do {
             let primaryModelRef = currentPrimaryModelRef()
-            if !shouldUseDirectCompletion(for: primaryModelRef),
+            let useDirectCompletion = shouldUseDirectCompletion(for: primaryModelRef)
+                && !shouldPreferAgentToolPath(for: message, modelRef: primaryModelRef)
+            appendTrace("routing.selected_model", [
+                "model": primaryModelRef,
+                "use_direct_completion": useDirectCompletion ? "true" : "false"
+            ])
+            if !useDirectCompletion,
                shouldResetChatSessionBeforeSending(message) {
                 appendLog("Resetting stale chat session before send.")
+                appendTrace("session.reset_before_send", ["session_id": chatSessionID])
                 resetChat()
             }
             isSendingChat = true
             chatStatusText = "Sending to OpenClaw..."
             appendChatMessage(.user(message))
             appendLog("[latency] Chat turn started; inputCharacters=\(message.count)")
+            appendTrace("user_request.received", [
+                "input_characters": "\(message.count)",
+                "session_id": chatSessionID
+            ])
 
             let telegramResult = await telegramCommandRouter.route(text: message)
             if applyTelegramCommandResult(telegramResult) {
+                appendTrace("telegram.route_handled", ["status": chatStatusText])
+                finishRequestTrace(status: "telegram_route", reply: chatMessages.last?.text)
                 isSendingChat = false
                 return chatMessages.last?.text
+            }
+
+            if let clarification = clarificationReplyForAmbiguousTravelTicketRequest(message) {
+                appendChatMessage(.assistant(clarification))
+                appendLog("Requested clarification before internet lookup because the ticket request did not specify a transport type.")
+                appendTrace("clarification.required", ["reply": logSnippet(clarification, maxCharacters: 240)])
+                finishRequestTrace(status: "clarification_required", reply: clarification)
+                chatStatusText = "Clarification needed."
+                isSendingChat = false
+                return clarification
             }
 
             if isExplicitOnlyFansPublishRequest(message) {
                 let reply = try await publishOnlyFansPostFromChatCommand(message)
                 appendChatMessage(.assistant(reply))
                 appendLog("[latency] Assistant reply appended to UI after \(PerformanceLog.elapsedDescription(since: turnStartedAt)); replyCharacters=\(reply.count)")
+                appendTrace("tool.publish_onlyfans.completed", [
+                    "latency": PerformanceLog.elapsedDescription(since: turnStartedAt),
+                    "reply_characters": "\(reply.count)"
+                ])
+                finishRequestTrace(status: "executed", reply: reply)
                 chatStatusText = "OnlyFans post published."
                 isSendingChat = false
                 return reply
             }
-            if shouldUseDirectCompletion(for: primaryModelRef) {
+            if useDirectCompletion {
                 appendLog("Selected model uses a tool-free chat path; running direct completion.")
                 appendLog("[latency] Direct model request starting; model=\(primaryModelRef)")
+                appendTrace("llm.request", [
+                    "provider": "direct_local_model",
+                    "model": primaryModelRef,
+                    "purpose": "chat_answer"
+                ])
                 let assistantMessageID = appendChatMessage(.assistant("…"))
                 chatStatusText = "Waiting for local model..."
                 let profile = chatPromptProfile()
@@ -2437,6 +2475,14 @@ final class OpenClawLocalController: NSObject, ObservableObject {
                     retrievalQuery: retrievalQuery(for: profile, message: message)
                 )
                 appendPromptDiagnostics(prompt.breakdown)
+                appendTrace("prompt.compiled", [
+                    "profile": profile.name,
+                    "total_tokens": "\(prompt.breakdown.totalTokens)",
+                    "history_tokens": "\(prompt.breakdown.historyTokens)",
+                    "workspace_tokens": "\(prompt.breakdown.workspaceTokens)",
+                    "memory_tokens": "\(prompt.breakdown.memoryTokens)",
+                    "max_output_tokens": "\(profile.maxOutputTokens)"
+                ])
                 let requestedMaxTokens = profile.maxOutputTokens
                 let result = try await runDirectModelChat(
                     modelRef: primaryModelRef,
@@ -2470,6 +2516,8 @@ final class OpenClawLocalController: NSObject, ObservableObject {
                         appendChatMessage(.error(failure))
                         chatStatusText = "Chat failed."
                         appendLog("\(failure) lastReply=\"\(logSnippet(reply))\"")
+                        appendTrace("llm.failed", ["reason": failure])
+                        finishRequestTrace(status: "failed", reply: failure)
                         isSendingChat = false
                         return nil
                     }
@@ -2484,30 +2532,76 @@ final class OpenClawLocalController: NSObject, ObservableObject {
                 appendLog("Direct model reply received. characters=\(reply.count), text=\"\(logSnippet(reply))\"")
                 if let metrics {
                     appendLog("Direct model performance: \(metrics.logSummary)")
+                    appendTrace("llm.response", [
+                        "provider": metrics.providerLabel,
+                        "reply_characters": "\(reply.count)",
+                        "prompt_tokens": metrics.promptTokens.map(String.init) ?? "n/a",
+                        "generation_tokens": metrics.generationTokens.map(String.init) ?? "n/a",
+                        "generation_tps": metrics.generationTokensPerSecond.map { String(format: "%.2f", $0) } ?? "n/a"
+                    ])
+                } else {
+                    appendTrace("llm.response", [
+                        "provider": "direct_local_model",
+                        "reply_characters": "\(reply.count)"
+                    ])
                 }
+                finishRequestTrace(status: "reply_received", reply: reply)
                 isSendingChat = false
                 return reply
             }
 
-            appendLog("[latency] OpenClaw agent turn starting; session=\(chatSessionID)")
-            let response = try await runAgentTurn(message: message, sessionID: chatSessionID)
-            let reply = response.replyText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if shouldUseDirectCompletion(for: primaryModelRef) {
+                appendLog("Routing this message through the embedded OpenClaw agent path instead of tool-free direct completion because it likely needs tools or fresh external data.")
+            }
+            chatStatusText = "Preparing local OpenClaw..."
+            appendTrace("runtime.preparing", ["session_id": chatSessionID])
+            try await validateRuntime()
+            let runtimeEnvironment = try openClawEnvironment()
+            appendLog("[latency] Embedded OpenClaw agent turn starting; session=\(chatSessionID)")
+            appendTrace("agent.request", [
+                "provider": "openclaw_agent",
+                "session_id": chatSessionID,
+                "path": "embedded_local_agent"
+            ])
+            let executionMessage = agentExecutionMessage(for: message)
+            let response = try await runAgentTurn(
+                message: executionMessage,
+                sessionID: chatSessionID,
+                environment: runtimeEnvironment
+            )
+            appendTrace("agent.response.received", [
+                "status": response.status ?? "unknown",
+                "session_id": chatSessionID
+            ])
+            let reply = finalizedEmbeddedAgentReply(from: response, originalUserMessage: message)
             if looksLikeStaleAssistantReply(reply) {
-                appendLog("OpenClaw returned a stale reply; resetting chat and retrying once.")
+                appendLog("Embedded OpenClaw agent returned a stale reply; resetting chat and retrying once.")
+                appendTrace("agent.retry_stale_reply", ["session_id": chatSessionID])
                 resetChat()
                 appendChatMessage(.user(message))
-                let retryResponse = try await runAgentTurn(message: message, sessionID: chatSessionID)
-                let retryReply = retryResponse.replyText.trimmingCharacters(in: .whitespacesAndNewlines)
+                let retryResponse = try await runAgentTurn(
+                    message: executionMessage,
+                    sessionID: chatSessionID,
+                    environment: runtimeEnvironment
+                )
+                let retryReply = finalizedEmbeddedAgentReply(from: retryResponse, originalUserMessage: message)
                 guard !retryReply.isEmpty, !looksLikeStaleAssistantReply(retryReply) else {
-                    let failure = "OpenClaw returned a stale reply for this turn."
+                    let failure = "Embedded OpenClaw agent returned a stale reply for this turn."
                     appendChatMessage(.error(failure))
                     chatStatusText = "Chat failed."
                     appendLog(failure)
+                    appendTrace("agent.failed", ["reason": failure])
+                    finishRequestTrace(status: "failed", reply: failure)
                     isSendingChat = false
                     return nil
                 }
                 appendChatMessage(.assistant(retryReply))
                 appendLog("[latency] Assistant retry reply appended to UI after \(PerformanceLog.elapsedDescription(since: turnStartedAt)); replyCharacters=\(retryReply.count)")
+                appendTrace("agent.reply_recovered", [
+                    "latency": PerformanceLog.elapsedDescription(since: turnStartedAt),
+                    "reply_characters": "\(retryReply.count)"
+                ])
+                finishRequestTrace(status: "reply_received", reply: retryReply)
                 chatStatusText = "Reply received."
                 isSendingChat = false
                 return retryReply
@@ -2517,12 +2611,19 @@ final class OpenClawLocalController: NSObject, ObservableObject {
                 appendChatMessage(.error(failure))
                 chatStatusText = "Chat failed."
                 appendLog(failure)
+                appendTrace("agent.failed", ["reason": failure])
+                finishRequestTrace(status: "failed", reply: failure)
                 isSendingChat = false
                 return nil
             }
-            appendLog("[latency] OpenClaw agent answer returned after \(PerformanceLog.elapsedDescription(since: turnStartedAt)); replyCharacters=\(reply.count)")
+            appendLog("[latency] Embedded OpenClaw agent answer returned after \(PerformanceLog.elapsedDescription(since: turnStartedAt)); replyCharacters=\(reply.count)")
             appendChatMessage(.assistant(reply))
             appendLog("[latency] Assistant reply appended to UI after \(PerformanceLog.elapsedDescription(since: turnStartedAt)); replyCharacters=\(reply.count)")
+            appendTrace("agent.reply_received", [
+                "latency": PerformanceLog.elapsedDescription(since: turnStartedAt),
+                "reply_characters": "\(reply.count)"
+            ])
+            finishRequestTrace(status: "reply_received", reply: reply)
             chatStatusText = "Reply received."
             isSendingChat = false
             return reply
@@ -2531,9 +2632,54 @@ final class OpenClawLocalController: NSObject, ObservableObject {
             appendChatMessage(.error(error.localizedDescription))
             chatStatusText = "Chat failed."
             appendLog("Chat failed: \(error.localizedDescription)")
+            appendTrace("request.failed", ["error": error.localizedDescription])
+            finishRequestTrace(status: "error", reply: error.localizedDescription)
             isSendingChat = false
             return nil
         }
+    }
+
+    private func shouldPreferAgentToolPath(for message: String, modelRef: String) -> Bool {
+        guard shouldUseDirectCompletion(for: modelRef) else {
+            return false
+        }
+        return isInternetLookupRequest(message)
+    }
+
+    private func isInternetLookupRequest(_ message: String) -> Bool {
+        let normalized = normalizedCommandText(message)
+        let internetMarkers = [
+            "в интернете",
+            "в интернет",
+            "в сети",
+            "онлайн",
+            "online",
+            "internet",
+            "web",
+            "веб",
+            "найди",
+            "поищи",
+            "погугли",
+            "загугли",
+            "look up",
+            "search",
+            "browse",
+            "latest",
+            "свеж",
+            "актуаль",
+            "последн",
+            "текущ",
+            "сегодня",
+            "сейчас",
+            "новост",
+            "прогноз",
+            "погод",
+            "курс",
+            "цена",
+            "котиров",
+            "сколько стоит"
+        ]
+        return internetMarkers.contains { normalized.contains($0) }
     }
 
     @discardableResult
@@ -2670,112 +2816,21 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         """
     }
 
-    private func validateRuntime() throws {
-        let fileManager = FileManager.default
-        guard fileManager.isExecutableFile(atPath: nodeURL.path) else {
-            throw OpenClawLocalControllerError.missingRuntime("Node runtime not found. Install Node.js 22+ or set GRACULA_NODE_EXECUTABLE.")
-        }
-        try bootstrapOpenClawCheckoutIfNeeded()
-        let distIndexURL = repositoryDirectory.appendingPathComponent("dist/index.js")
-        if !fileManager.fileExists(atPath: distIndexURL.path) {
-            appendLog("OpenClaw dist/index.js is missing; attempting to build the checkout at \(repositoryDirectory.path).")
-            try buildOpenClawCheckout()
-            if !fileManager.fileExists(atPath: distIndexURL.path) {
-                throw OpenClawLocalControllerError.missingRuntime(
-                    "OpenClaw dist/index.js not found after attempting a build. Install dependencies in \(repositoryDirectory.path) and run `pnpm build`, or point GRACULA_OPENCLAW_REPOSITORY_DIR at a built checkout."
-                )
-            }
-        }
-    }
-
-    private func bootstrapOpenClawCheckoutIfNeeded() throws {
-        let fileManager = FileManager.default
-        let packageURL = repositoryDirectory.appendingPathComponent("package.json")
-        if fileManager.fileExists(atPath: packageURL.path) {
-            return
-        }
-
-        let parentDirectory = repositoryDirectory.deletingLastPathComponent()
-        try fileManager.createDirectory(at: parentDirectory, withIntermediateDirectories: true)
-        appendLog("OpenClaw checkout not found at \(repositoryDirectory.path); cloning it now.")
-
-        let cloneOutput = try runCommand(
-            executableURL: URL(filePath: "/usr/bin/git"),
-            arguments: [
-                "clone",
-                "--depth",
-                "1",
-                "https://github.com/openclaw/openclaw.git",
-                repositoryDirectory.path
-            ],
-            currentDirectoryURL: parentDirectory,
-            environment: (try? openClawEnvironment()) ?? [:]
-        )
-
-        if cloneOutput.exitCode != 0 {
-            throw OpenClawLocalControllerError.missingRuntime(
-                cloneOutput.stderr.isEmpty ? cloneOutput.stdout : cloneOutput.stderr
-            )
-        }
-
-        if !cloneOutput.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            appendLog(cloneOutput.stdout, prefix: "git")
-        }
-        if !cloneOutput.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            appendLog(cloneOutput.stderr, prefix: "git")
-        }
-    }
-
-    private func buildOpenClawCheckout() throws {
-        let fileManager = FileManager.default
+    private func validateRuntime() async throws {
         let environment = try openClawEnvironment()
-        guard let command = resolvePackageManagerCommand() else {
-            throw OpenClawLocalControllerError.missingRuntime(
-                "Could not find pnpm or corepack to build OpenClaw automatically."
+        let nodeURL = self.nodeURL
+        let repositoryDirectory = self.repositoryDirectory
+        let shimDirectoryURL = self.runtimeLayout.binDirectoryURL
+        let result = try await Task.detached(priority: .userInitiated) {
+            try BackgroundRuntimePreparer.prepare(
+                nodeURL: nodeURL,
+                repositoryDirectory: repositoryDirectory,
+                shimDirectoryURL: shimDirectoryURL,
+                environment: environment
             )
-        }
-
-        appendLog("Building OpenClaw checkout with \(command.displayName).")
-        let installOutput = try runCommand(
-            executableURL: command.executableURL,
-            arguments: command.installArguments,
-            currentDirectoryURL: repositoryDirectory,
-            environment: environment
-        )
-        if installOutput.exitCode != 0 {
-            throw OpenClawLocalControllerError.missingRuntime(
-                installOutput.stderr.isEmpty ? installOutput.stdout : installOutput.stderr
-            )
-        }
-        if !installOutput.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            appendLog(installOutput.stdout, prefix: command.displayName)
-        }
-        if !installOutput.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            appendLog(installOutput.stderr, prefix: command.displayName)
-        }
-
-        let buildOutput = try runCommand(
-            executableURL: command.executableURL,
-            arguments: command.buildArguments,
-            currentDirectoryURL: repositoryDirectory,
-            environment: environment
-        )
-        if buildOutput.exitCode != 0 {
-            throw OpenClawLocalControllerError.missingRuntime(
-                buildOutput.stderr.isEmpty ? buildOutput.stdout : buildOutput.stderr
-            )
-        }
-        if !buildOutput.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            appendLog(buildOutput.stdout, prefix: command.displayName)
-        }
-        if !buildOutput.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            appendLog(buildOutput.stderr, prefix: command.displayName)
-        }
-
-        guard fileManager.fileExists(atPath: repositoryDirectory.appendingPathComponent("dist/index.js").path) else {
-            throw OpenClawLocalControllerError.missingRuntime(
-                "OpenClaw build finished but dist/index.js is still missing."
-            )
+        }.value
+        for entry in result.logEntries {
+            appendLog(entry.text, prefix: entry.prefix)
         }
     }
 
@@ -2839,10 +2894,14 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         if let configPath {
             configuration.runtimePaths.canonicalPlistPath = configPath.path
         }
-        let environment = AppConfigurationEnvironmentBuilder.build(
+        var environment = AppConfigurationEnvironmentBuilder.build(
             configuration: configuration,
             layout: runtimeLayout
         )
+        // GraculaExample uses the embedded PI harness for local agent turns.
+        // Force it here so stale packaged runtime config cannot pin `codex`.
+        environment["OPENCLAW_AGENT_RUNTIME"] = "pi"
+        environment["OPENCLAW_AGENT_HARNESS_FALLBACK"] = "pi"
         return environment
     }
 
@@ -3054,6 +3113,31 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         throw OpenClawLocalControllerError.gatewayUnavailable("OpenClaw gateway did not become healthy at http://\(gatewayHost):\(gatewayPort)/healthz")
     }
 
+    private func ensureGatewayReadyForAgentTurns(environment: [String: String]) async throws {
+        let configuredGatewayPort = environment["OPENCLAW_GATEWAY_PORT"] ?? gatewayPort
+
+        if await attachToExistingGatewayIfHealthy(port: configuredGatewayPort) {
+            appendLog("Using an existing OpenClaw gateway for the tool-backed chat turn.")
+            return
+        }
+
+        if gatewayProcess?.isRunning == true {
+            appendLog("Waiting for the already launched OpenClaw gateway before running a tool-backed chat turn.")
+            try await waitForGatewayReady()
+            isRunning = true
+            statusText = "Gateway ready"
+            return
+        }
+
+        appendLog("Launching OpenClaw gateway on demand for a tool-backed chat turn.")
+        gatewayProcess = try launchGatewayProcess(environment: environment)
+        isRunning = true
+        statusText = "Starting OpenClaw gateway..."
+        try await waitForGatewayReady()
+        statusText = "Gateway ready"
+        appendLog("OpenClaw gateway is ready for tool-backed chat turns.")
+    }
+
     private func runAgentTurn(
         message: String,
         sessionID: String,
@@ -3064,10 +3148,14 @@ final class OpenClawLocalController: NSObject, ObservableObject {
                 repositoryDirectory.appendingPathComponent("dist/index.js").path,
                 "agent",
                 "--local",
+                "--agent",
+                mainAgentID,
                 "--session-id",
                 sessionID,
                 "--message",
                 message,
+                "--timeout",
+                String(Int(agentTurnTimeoutSeconds)),
                 "--json"
             ],
             environment: environment ?? (try openClawEnvironment()),
@@ -3095,6 +3183,24 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         }
 
         throw OpenClawLocalControllerError.agentFailed("Could not parse OpenClaw JSON response.")
+    }
+
+    private func finalizedEmbeddedAgentReply(
+        from response: OpenClawAgentTurnResponse,
+        originalUserMessage: String
+    ) -> String {
+        let primaryReply = response.replyText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !primaryReply.isEmpty else {
+            appendLog("Embedded OpenClaw agent returned an empty reply; using internet lookup fallback text.")
+            return fallbackReplyForIncompleteInternetLookup(originalUserMessage)
+        }
+
+        guard looksLikeInterimAgentReply(primaryReply) else {
+            return primaryReply
+        }
+
+        appendLog("Embedded OpenClaw agent returned an interim reply instead of a final answer; surfacing the internet lookup fallback text.")
+        return fallbackReplyForIncompleteInternetLookup(originalUserMessage)
     }
 
     private func runDirectModelSmokeTest(
@@ -4279,14 +4385,13 @@ final class OpenClawLocalController: NSObject, ObservableObject {
     }
 
     private func latestAssistantReplyFromSession() -> String? {
-        let sessionURL = configDirectory
-            .appendingPathComponent("agents", isDirectory: true)
-            .appendingPathComponent("main", isDirectory: true)
-            .appendingPathComponent("sessions", isDirectory: true)
-            .appendingPathComponent("\(chatSessionID).jsonl")
+        guard let sessionURL = locateSessionTranscriptURL(sessionID: chatSessionID) else {
+            appendLog("No OpenClaw session transcript found for \(chatSessionID) inside \(runtimeLayout.runtimeRootURL.path).")
+            return nil
+        }
 
         guard let contents = try? String(contentsOf: sessionURL) else {
-            appendLog("No OpenClaw session transcript found at \(sessionURL.path).")
+            appendLog("OpenClaw session transcript exists but could not be read at \(sessionURL.path).")
             return nil
         }
 
@@ -4313,6 +4418,279 @@ final class OpenClawLocalController: NSObject, ObservableObject {
 
         appendLog("OpenClaw session transcript did not contain an assistant reply.")
         return nil
+    }
+
+    private func locateSessionTranscriptURL(sessionID: String) -> URL? {
+        let fileManager = FileManager.default
+        let filename = "\(sessionID).jsonl"
+
+        let directCandidates = [
+            runtimeLayout.runtimeRootURL
+                .appendingPathComponent("agents", isDirectory: true)
+                .appendingPathComponent(mainAgentID, isDirectory: true)
+                .appendingPathComponent("sessions", isDirectory: true)
+                .appendingPathComponent(filename),
+            runtimeLayout.runtimeDirectoryURL
+                .appendingPathComponent("agents", isDirectory: true)
+                .appendingPathComponent(mainAgentID, isDirectory: true)
+                .appendingPathComponent("sessions", isDirectory: true)
+                .appendingPathComponent(filename),
+            runtimeLayout.runtimeRootURL
+                .appendingPathComponent("sessions", isDirectory: true)
+                .appendingPathComponent(filename),
+            runtimeLayout.runtimeDirectoryURL
+                .appendingPathComponent("sessions", isDirectory: true)
+                .appendingPathComponent(filename),
+            workspaceDirectory
+                .appendingPathComponent("sessions", isDirectory: true)
+                .appendingPathComponent(filename)
+        ]
+
+        for candidate in directCandidates where fileManager.fileExists(atPath: candidate.path) {
+            return candidate
+        }
+
+        let searchRoots = [
+            runtimeLayout.runtimeRootURL,
+            runtimeLayout.runtimeDirectoryURL,
+            workspaceDirectory
+        ]
+
+        for root in searchRoots {
+            guard let enumerator = fileManager.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            ) else {
+                continue
+            }
+
+            for case let fileURL as URL in enumerator {
+                guard fileURL.lastPathComponent == filename else {
+                    continue
+                }
+                return fileURL
+            }
+        }
+
+        return nil
+    }
+
+    private func resolvedAgentReply(
+        from response: OpenClawAgentTurnResponse,
+        originalUserMessage: String
+    ) async -> String {
+        let primaryReply = response.replyText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard shouldRecoverAgentReplyFromSession(
+            response: response,
+            primaryReply: primaryReply,
+            originalUserMessage: originalUserMessage
+        ) else {
+            return primaryReply
+        }
+
+        let recoveredReply = await waitForStableAssistantReplyFromSession(
+            primaryReply: primaryReply,
+            timeoutSeconds: 12
+        )
+
+        if let recoveredReply,
+           !recoveredReply.isEmpty {
+            if recoveredReply != primaryReply {
+                appendLog("Using assistant reply recovered from OpenClaw session transcript because the CLI response looked incomplete.")
+            }
+            return recoveredReply
+        }
+
+        if primaryReply.isEmpty || looksLikeInterimAgentReply(primaryReply) {
+            let fallback = fallbackReplyForIncompleteInternetLookup(originalUserMessage)
+            appendLog("OpenClaw did not produce a stable final reply before timeout; returning a clarification/fallback instead.")
+            return fallback
+        }
+
+        return primaryReply
+    }
+
+    private func shouldRecoverAgentReplyFromSession(
+        response: OpenClawAgentTurnResponse,
+        primaryReply: String,
+        originalUserMessage: String
+    ) -> Bool {
+        if primaryReply.isEmpty {
+            return true
+        }
+
+        guard isInternetLookupRequest(originalUserMessage) else {
+            return false
+        }
+
+        let normalizedStatus = response.status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let normalizedStatus,
+           !normalizedStatus.isEmpty,
+           normalizedStatus != "ok" {
+            appendLog("OpenClaw agent response status was \(normalizedStatus); waiting for a stable assistant reply from the session transcript.")
+            return true
+        }
+
+        return looksLikeInterimAgentReply(primaryReply)
+    }
+
+    private func looksLikeInterimAgentReply(_ reply: String) -> Bool {
+        let normalized = normalizedCommandText(reply)
+        guard reply.count <= 180 else {
+            return false
+        }
+
+        let markers = [
+            "сейчас гляну",
+            "сеи час гляну",
+            "сейчас посмотрю",
+            "сеи час посмотрю",
+            "сейчас проверю",
+            "сеи час проверю",
+            "сейчас гляну варианты",
+            "посмотрю варианты",
+            "проверю варианты",
+            "ищу варианты",
+            "смотрю варианты",
+            "как только",
+            "выцеплю",
+            "подожди",
+            "секунду",
+            "одну секунду",
+            "даи минут",
+            "даи секун",
+            "look it up",
+            "let me check",
+            "i will check",
+            "checking now",
+            "checking options"
+        ]
+        return markers.contains { normalized.contains($0) }
+    }
+
+    private func waitForStableAssistantReplyFromSession(
+        primaryReply: String,
+        timeoutSeconds: TimeInterval
+    ) async -> String? {
+        let baseline = primaryReply.trimmingCharacters(in: .whitespacesAndNewlines)
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        var didLogWait = false
+
+        while Date() < deadline {
+            if let candidate = latestAssistantReplyFromSession()?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !candidate.isEmpty,
+               candidate != baseline,
+               !looksLikeInterimAgentReply(candidate) {
+                return candidate
+            }
+
+            if !didLogWait {
+                appendLog("Waiting for a stable assistant reply to appear in the OpenClaw session transcript.")
+                didLogWait = true
+            }
+            try? await Task.sleep(for: .milliseconds(600))
+        }
+
+        if let latest = latestAssistantReplyFromSession()?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !latest.isEmpty,
+           latest != baseline {
+            return latest
+        }
+
+        return nil
+    }
+
+    private func clarificationReplyForAmbiguousTravelTicketRequest(_ message: String) -> String? {
+        let normalized = normalizedCommandText(message)
+        let mentionsTickets = normalized.contains("билет") || normalized.contains("ticket")
+        guard mentionsTickets else {
+            return nil
+        }
+
+        let asksToFind = [
+            "наиди",
+            "поищи",
+            "ищи",
+            "узнаи",
+            "подбери",
+            "покажи",
+            "find",
+            "search",
+            "look up"
+        ].contains { normalized.contains($0) }
+        guard asksToFind else {
+            return nil
+        }
+
+        let transportMarkers = [
+            "самолет", "авиабилет", "авиа", "реис", "перелет",
+            "поезд", "ржд", "электричк",
+            "автобус", "маршрутк",
+            "flight", "plane", "airfare",
+            "train", "rail",
+            "bus"
+        ]
+        guard !transportMarkers.contains(where: { normalized.contains($0) }) else {
+            return nil
+        }
+
+        return "Уточни, пожалуйста, какой билет нужен: самолет, поезд или автобус? Если хочешь, могу сразу искать самый дешевый вариант по конкретному типу транспорта."
+    }
+
+    private func fallbackReplyForIncompleteInternetLookup(_ originalUserMessage: String) -> String {
+        if let clarification = clarificationReplyForAmbiguousTravelTicketRequest(originalUserMessage) {
+            return clarification
+        }
+
+        return "Не получил финальный результат из интернет-поиска. Повтори запрос еще раз или уточни, что именно нужно найти, и я попробую заново."
+    }
+
+    private func agentExecutionMessage(for originalMessage: String) -> String {
+        let trimmed = originalMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isInternetLookupRequest(trimmed) else {
+            return trimmed
+        }
+
+        var instructions: [String] = [
+            "Execution rules for this turn:",
+            "- You must use live web tools before answering.",
+            "- Do not answer with a promise, placeholder, short acknowledgement, or a search link only.",
+            "- Only send the final answer after you have concrete findings from the web, or ask one concise clarification question if a required parameter is truly missing.",
+            "- If the request is about tickets or travel, return concrete options with provider/operator, departure time, arrival time, duration, stops, and current price.",
+            "- If live search fails or the site blocks access, say exactly that instead of pretending the search is still running."
+        ]
+
+        if isFlightSearchRequest(trimmed) {
+            instructions.append("- Treat this as a flight search. If passenger details are missing, assume one-way, 1 adult, economy, no checked baggage.")
+            instructions.append("- If the user mentions Aviasales, inspect the Aviasales results page or equivalent live search results and extract actual flight options with prices.")
+            instructions.append("- Do not stop at a deeplink. Open the results and summarize the actual flight offers.")
+        }
+
+        instructions.append("")
+        instructions.append("User request:")
+        instructions.append(trimmed)
+        return instructions.joined(separator: "\n")
+    }
+
+    private func isFlightSearchRequest(_ message: String) -> Bool {
+        let normalized = normalizedCommandText(message)
+        let flightMarkers = [
+            "авиабилет",
+            "авиа",
+            "самолет",
+            "реис",
+            "перелет",
+            "aviasales",
+            "авиасеилс",
+            "авиасеил",
+            "flight",
+            "airfare",
+            "plane"
+        ]
+        return flightMarkers.contains { normalized.contains($0) }
     }
 
     private func publishOnlyFansPostFromChatCommand(_ message: String) async throws -> String {
@@ -4597,6 +4975,37 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         }
     }
 
+    private func beginRequestTrace(userMessage: String) {
+        currentTraceID = UUID().uuidString.lowercased()
+        currentTraceLines = []
+        appendTrace("trace.started", [
+            "trace_id": currentTraceID ?? "",
+            "user_message": logSnippet(userMessage, maxCharacters: 240)
+        ])
+    }
+
+    private func finishRequestTrace(status: String, reply: String?) {
+        appendTrace("trace.finished", [
+            "status": status,
+            "reply": reply.map { logSnippet($0, maxCharacters: 240) } ?? ""
+        ])
+    }
+
+    private func appendTrace(_ event: String, _ fields: [String: String] = [:]) {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        let timestamp = formatter.string(from: Date())
+        let payload = fields
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key)=\(redacted($0.value))" }
+            .joined(separator: ", ")
+        let line = payload.isEmpty ? "[\(timestamp)] \(event)" : "[\(timestamp)] \(event) | \(payload)"
+        currentTraceLines.append(line)
+        if currentTraceLines.count > 80 {
+            currentTraceLines.removeFirst(currentTraceLines.count - 80)
+        }
+    }
+
     nonisolated private static func shouldSuppressObservedProcessLog(_ text: String, processName: String) -> Bool {
         let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard processName == "gateway" else {
@@ -4825,6 +5234,211 @@ private struct PackageManagerCommand {
     let displayName: String
     let installArguments: [String]
     let buildArguments: [String]
+    let requiresPnpmShim: Bool
+}
+
+private struct RuntimePreparationLogEntry: Sendable {
+    let text: String
+    let prefix: String?
+}
+
+private struct RuntimePreparationResult: Sendable {
+    let logEntries: [RuntimePreparationLogEntry]
+}
+
+private enum BackgroundRuntimePreparer {
+    static func prepare(
+        nodeURL: URL,
+        repositoryDirectory: URL,
+        shimDirectoryURL: URL,
+        environment: [String: String]
+    ) throws -> RuntimePreparationResult {
+        let fileManager = FileManager.default
+        guard fileManager.isExecutableFile(atPath: nodeURL.path) else {
+            throw OpenClawLocalControllerError.missingRuntime(
+                "Node runtime not found. Install Node.js 22+ or set GRACULA_NODE_EXECUTABLE."
+            )
+        }
+
+        var logEntries: [RuntimePreparationLogEntry] = []
+        try bootstrapOpenClawCheckoutIfNeeded(
+            repositoryDirectory: repositoryDirectory,
+            environment: environment,
+            logEntries: &logEntries
+        )
+
+        let distIndexURL = repositoryDirectory.appendingPathComponent("dist/index.js")
+        if !fileManager.fileExists(atPath: distIndexURL.path) {
+            logEntries.append(
+                RuntimePreparationLogEntry(
+                    text: "OpenClaw dist/index.js is missing; attempting to build the checkout at \(repositoryDirectory.path).",
+                    prefix: nil
+                )
+            )
+            try buildOpenClawCheckout(
+                repositoryDirectory: repositoryDirectory,
+                shimDirectoryURL: shimDirectoryURL,
+                environment: environment,
+                logEntries: &logEntries
+            )
+            if !fileManager.fileExists(atPath: distIndexURL.path) {
+                throw OpenClawLocalControllerError.missingRuntime(
+                    "OpenClaw dist/index.js not found after attempting a build. Install dependencies in \(repositoryDirectory.path) and run `pnpm build`, or point GRACULA_OPENCLAW_REPOSITORY_DIR at a built checkout."
+                )
+            }
+        }
+
+        return RuntimePreparationResult(logEntries: logEntries)
+    }
+
+    private static func bootstrapOpenClawCheckoutIfNeeded(
+        repositoryDirectory: URL,
+        environment: [String: String],
+        logEntries: inout [RuntimePreparationLogEntry]
+    ) throws {
+        let fileManager = FileManager.default
+        let packageURL = repositoryDirectory.appendingPathComponent("package.json")
+        if fileManager.fileExists(atPath: packageURL.path) {
+            return
+        }
+
+        let parentDirectory = repositoryDirectory.deletingLastPathComponent()
+        try fileManager.createDirectory(at: parentDirectory, withIntermediateDirectories: true)
+        logEntries.append(
+            RuntimePreparationLogEntry(
+                text: "OpenClaw checkout not found at \(repositoryDirectory.path); cloning it now.",
+                prefix: nil
+            )
+        )
+
+        let cloneOutput = try runCommandForRuntimePreparation(
+            executableURL: URL(filePath: "/usr/bin/git"),
+            arguments: [
+                "clone",
+                "--depth",
+                "1",
+                "https://github.com/openclaw/openclaw.git",
+                repositoryDirectory.path
+            ],
+            currentDirectoryURL: parentDirectory,
+            environment: environment
+        )
+
+        if cloneOutput.exitCode != 0 {
+            throw OpenClawLocalControllerError.missingRuntime(
+                cloneOutput.stderr.isEmpty ? cloneOutput.stdout : cloneOutput.stderr
+            )
+        }
+
+        appendProcessOutput(cloneOutput.stdout, prefix: "git", into: &logEntries)
+        appendProcessOutput(cloneOutput.stderr, prefix: "git", into: &logEntries)
+    }
+
+    private static func buildOpenClawCheckout(
+        repositoryDirectory: URL,
+        shimDirectoryURL: URL,
+        environment: [String: String],
+        logEntries: inout [RuntimePreparationLogEntry]
+    ) throws {
+        let fileManager = FileManager.default
+        guard let command = resolvePackageManagerCommand() else {
+            throw OpenClawLocalControllerError.missingRuntime(
+                "Could not find pnpm or corepack to build OpenClaw automatically."
+            )
+        }
+        let commandEnvironment = try preparePackageManagerEnvironment(
+            baseEnvironment: environment,
+            command: command,
+            fileManager: fileManager,
+            repositoryDirectory: repositoryDirectory,
+            shimDirectoryURL: shimDirectoryURL
+        )
+
+        logEntries.append(
+            RuntimePreparationLogEntry(
+                text: "Building OpenClaw checkout with \(command.displayName).",
+                prefix: nil
+            )
+        )
+        let installOutput = try runCommandForRuntimePreparation(
+            executableURL: command.executableURL,
+            arguments: command.installArguments,
+            currentDirectoryURL: repositoryDirectory,
+            environment: commandEnvironment
+        )
+        if installOutput.exitCode != 0 {
+            throw OpenClawLocalControllerError.missingRuntime(
+                installOutput.stderr.isEmpty ? installOutput.stdout : installOutput.stderr
+            )
+        }
+        appendProcessOutput(installOutput.stdout, prefix: command.displayName, into: &logEntries)
+        appendProcessOutput(installOutput.stderr, prefix: command.displayName, into: &logEntries)
+
+        let buildOutput = try runCommandForRuntimePreparation(
+            executableURL: command.executableURL,
+            arguments: command.buildArguments,
+            currentDirectoryURL: repositoryDirectory,
+            environment: commandEnvironment
+        )
+        if buildOutput.exitCode != 0 {
+            throw OpenClawLocalControllerError.missingRuntime(
+                buildOutput.stderr.isEmpty ? buildOutput.stdout : buildOutput.stderr
+            )
+        }
+        appendProcessOutput(buildOutput.stdout, prefix: command.displayName, into: &logEntries)
+        appendProcessOutput(buildOutput.stderr, prefix: command.displayName, into: &logEntries)
+    }
+
+    private static func preparePackageManagerEnvironment(
+        baseEnvironment: [String: String],
+        command: PackageManagerCommand,
+        fileManager: FileManager,
+        repositoryDirectory: URL,
+        shimDirectoryURL: URL
+    ) throws -> [String: String] {
+        guard command.requiresPnpmShim else {
+            return baseEnvironment
+        }
+
+        try fileManager.createDirectory(at: shimDirectoryURL, withIntermediateDirectories: true)
+        let enableOutput = try runCommandForRuntimePreparation(
+            executableURL: command.executableURL,
+            arguments: ["enable", "--install-directory", shimDirectoryURL.path, "pnpm"],
+            currentDirectoryURL: repositoryDirectory,
+            environment: baseEnvironment
+        )
+        if enableOutput.exitCode != 0 {
+            throw OpenClawLocalControllerError.missingRuntime(
+                enableOutput.stderr.isEmpty ? enableOutput.stdout : enableOutput.stderr
+            )
+        }
+
+        var environment = baseEnvironment
+        let existingPathEntries = (environment["PATH"] ?? "")
+            .split(separator: ":")
+            .map(String.init)
+            .filter { !$0.isEmpty }
+        var pathEntries = [shimDirectoryURL.path]
+        pathEntries.append(contentsOf: existingPathEntries)
+
+        var seenEntries = Set<String>()
+        environment["PATH"] = pathEntries
+            .filter { seenEntries.insert($0).inserted }
+            .joined(separator: ":")
+        return environment
+    }
+
+    private static func appendProcessOutput(
+        _ output: String,
+        prefix: String,
+        into logEntries: inout [RuntimePreparationLogEntry]
+    ) {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return
+        }
+        logEntries.append(RuntimePreparationLogEntry(text: trimmed, prefix: prefix))
+    }
 }
 
 private func resolvePackageManagerCommand() -> PackageManagerCommand? {
@@ -4838,7 +5452,8 @@ private func resolvePackageManagerCommand() -> PackageManagerCommand? {
                 executableURL: url,
                 displayName: url.lastPathComponent,
                 installArguments: ["install", "--frozen-lockfile"],
-                buildArguments: ["build"]
+                buildArguments: ["build"],
+                requiresPnpmShim: false
             )
         }
     }
@@ -4855,7 +5470,8 @@ private func resolvePackageManagerCommand() -> PackageManagerCommand? {
                 executableURL: url,
                 displayName: "pnpm",
                 installArguments: ["install", "--frozen-lockfile"],
-                buildArguments: ["build"]
+                buildArguments: ["build"],
+                requiresPnpmShim: false
             )
         }
     }
@@ -4872,12 +5488,38 @@ private func resolvePackageManagerCommand() -> PackageManagerCommand? {
                 executableURL: url,
                 displayName: "corepack pnpm",
                 installArguments: ["pnpm", "install", "--frozen-lockfile"],
-                buildArguments: ["pnpm", "build"]
+                buildArguments: ["pnpm", "build"],
+                requiresPnpmShim: true
             )
         }
     }
 
     return nil
+}
+
+private func runCommandForRuntimePreparation(
+    executableURL: URL,
+    arguments: [String],
+    currentDirectoryURL: URL,
+    environment: [String: String]
+) throws -> ProcessOutput {
+    let process = Process()
+    process.executableURL = executableURL
+    process.arguments = arguments
+    process.currentDirectoryURL = currentDirectoryURL
+    process.environment = environment
+
+    let stdoutPipe = Pipe()
+    let stderrPipe = Pipe()
+    process.standardOutput = stdoutPipe
+    process.standardError = stderrPipe
+
+    try process.run()
+    process.waitUntilExit()
+
+    let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    return ProcessOutput(stdout: stdout, stderr: stderr, exitCode: process.terminationStatus)
 }
 
 private final class ProcessOutputBuffer: @unchecked Sendable {

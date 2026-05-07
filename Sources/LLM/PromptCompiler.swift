@@ -5,23 +5,32 @@ public struct PromptCompiler: Sendable {
     private let availableTools: [ToolDescriptor]
     private let model: String?
     private let temperature: Double
+    private let topP: Double?
+    private let maxTokens: Int?
 
     public init(
         availableTools: [ToolDescriptor],
         model: String? = nil,
-        temperature: Double = 0.0
+        temperature: Double = 0.0,
+        topP: Double? = nil,
+        maxTokens: Int? = nil
     ) {
         self.availableTools = availableTools.sorted { $0.name < $1.name }
         self.model = model
         self.temperature = temperature
+        self.topP = topP
+        self.maxTokens = maxTokens
     }
 
     public func compile(userText: String, context: ConversationContext) -> LLMRequest {
         LLMRequest(
             systemPrompt: systemPrompt,
             userPrompt: userPrompt(userText: userText, context: context),
+            purpose: "tool_planning",
             model: model,
-            temperature: temperature
+            temperature: temperature,
+            topP: topP,
+            maxTokens: maxTokens
         )
     }
 

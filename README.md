@@ -11,6 +11,62 @@ swift test
 
 Manual milestone checks are documented in [manualtesting.md](manualtesting.md).
 
+## Trace Logging
+
+Gracula now writes structured JSONL request traces to:
+
+- `.runtime/logs/request-trace.jsonl`
+
+Each trace event includes a `traceID` that follows the request through:
+
+- user input reception in `AgentViewModel`
+- conversation context assembly in `AgentOrchestrator`
+- LLM planning prompt compilation and provider requests
+- tool execution
+- final user-visible response
+
+Canonical config flags live in `AppConfiguration.plist` under `tracing`:
+
+- `enabled`: master switch for structured trace logging
+- `logFullContext`: when `true`, emit full prompts, request bodies, and conversation context at `debug`
+- `logResponseBodies`: when `true`, emit raw LLM response bodies at `debug`
+- `redactSensitiveData`: when `true`, redact secrets and obvious sensitive strings before writing logs
+- `logLevel`: minimum level to persist (`debug`, `info`, `warn`, `error`)
+
+The same settings are exported to runtime environment variables:
+
+```bash
+GRACULA_TRACE_LOGGING_ENABLED=1
+GRACULA_TRACE_LOG_FULL_CONTEXT=0
+GRACULA_TRACE_LOG_RESPONSE_BODY=0
+GRACULA_TRACE_REDACT_SENSITIVE_DATA=1
+GRACULA_TRACE_LOG_LEVEL=info
+GRACULA_TRACE_LOG_PATH=/absolute/path/to/.runtime/logs/request-trace.jsonl
+```
+
+What gets logged:
+
+- user text received by the app shell
+- conversation context metadata and, optionally, full recent messages
+- LLM request metadata: provider, model, purpose, parameters, endpoint
+- optional full prompt/request body payloads
+- LLM response metadata: latency, finish reason, usage, pricing source, calculated `cost_usd`
+- tool start/finish/failure events
+- final user response with total latency, total LLM cost, LLM call count, and tool call count
+
+What gets redacted when `redactSensitiveData = true`:
+
+- `password`, `token`, `secret`, `apiKey`, `authorization`, `cookie`, `privateKey`
+- bearer tokens and API-key-like substrings inside free-form text
+- PEM private keys
+- obvious email addresses and phone numbers inside traced payload text
+
+Interpretation notes:
+
+- `cost_usd` is computed from the internal pricing catalog in `Sources/LLM/LLMPricingCatalog.swift`
+- `pricing_source` and `pricing_version` identify which pricing table was used
+- local HTTP planners are logged with `cost_usd = 0` and `pricing_source = local-runtime`
+
 ## OpenClaw Internet Tools
 
 The bundled Gracula OpenClaw workspace is now configured to expose the internet-facing tool set:

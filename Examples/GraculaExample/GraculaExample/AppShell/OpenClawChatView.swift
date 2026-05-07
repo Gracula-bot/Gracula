@@ -96,6 +96,8 @@ struct OpenClawChatView: View {
                     .foregroundStyle(.secondary)
             }
             .font(.caption)
+
+            RequestTraceView(controller: controller)
         }
     }
 
@@ -189,6 +191,61 @@ struct OpenClawChatView: View {
         formatter.dateFormat = "HH:mm"
         return formatter
     }()
+}
+
+private struct RequestTraceView: View {
+    @ObservedObject var controller: OpenClawLocalController
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Request Trace")
+                        .font(.headline)
+                    Text("Latest per-turn trace inside Gracula Example.")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if let traceID = controller.currentTraceID {
+                    Text(traceID)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 6) {
+                        if controller.currentTraceLines.isEmpty {
+                            Text("No trace yet.")
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, minHeight: 96, alignment: .center)
+                        } else {
+                            ForEach(Array(controller.currentTraceLines.enumerated()), id: \.offset) { index, line in
+                                Text(line)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .id(index)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 6)
+                }
+                .frame(minHeight: 140, maxHeight: 240)
+                .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
+                .onChange(of: controller.currentTraceLines.count) { _, _ in
+                    guard let lastIndex = controller.currentTraceLines.indices.last else {
+                        return
+                    }
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        proxy.scrollTo(lastIndex, anchor: .bottom)
+                    }
+                }
+            }
+        }
+    }
 }
 
 private struct TelegramReplyDraftView: View {
