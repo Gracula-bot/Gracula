@@ -129,6 +129,7 @@ struct OpenClawSettingsView: View {
             )
 
             telegramUserAPIControls
+            telegramBusinessAPIControls
 
             DisclosureGroup("Runtime", isExpanded: $isRuntimeExpanded) {
                 settingsRows(snapshot.runtimeRows)
@@ -176,8 +177,14 @@ struct OpenClawSettingsView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Telegram User API")
-                        .font(.headline)
+                    HStack(spacing: 8) {
+                        Text("Telegram User API")
+                            .font(.headline)
+                        ConnectionStatusBadge(
+                            title: controller.isTelegramUserConnected ? "Connected" : "Not connected",
+                            isConnected: controller.isTelegramUserConnected
+                        )
+                    }
                     Text(controller.telegramUserStatusText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -213,7 +220,10 @@ struct OpenClawSettingsView: View {
                         await controller.submitTelegramUserCode(code)
                     }
                 }
-                .disabled(telegramLoginCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(
+                    telegramLoginCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || controller.telegramUserAuthorizationState != .waitingForCode
+                )
             }
 
             HStack(spacing: 8) {
@@ -227,7 +237,10 @@ struct OpenClawSettingsView: View {
                         await controller.submitTelegramUserPassword(password)
                     }
                 }
-                .disabled(telegramPassword.isEmpty)
+                .disabled(
+                    telegramPassword.isEmpty
+                        || controller.telegramUserAuthorizationState != .waitingForPassword
+                )
             }
 
             if !controller.telegramUserDialogs.isEmpty {
@@ -243,6 +256,37 @@ struct OpenClawSettingsView: View {
                     }
                 }
                 .font(.system(.caption, design: .monospaced))
+            }
+        }
+        .padding(.vertical, 6)
+    }
+
+    private var telegramBusinessAPIControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Text("Telegram Business")
+                            .font(.headline)
+                        ConnectionStatusBadge(
+                            title: controller.telegramBusinessConnected ? "Connected" : "Not connected",
+                            isConnected: controller.telegramBusinessConnected
+                        )
+                    }
+                    Text(controller.telegramBusinessStatusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    Task {
+                        await controller.testTelegramBusinessConnection()
+                    }
+                } label: {
+                    Label("Test Business", systemImage: "bolt.horizontal.circle")
+                }
+                .buttonStyle(.bordered)
+                .disabled(controller.isTestingTelegramBusiness)
             }
         }
         .padding(.vertical, 6)
@@ -319,6 +363,21 @@ struct OpenClawSettingsView: View {
         environmentEntries = snapshot.environmentEntries
         jsonEntries = snapshot.jsonEntries
         workspaceFiles = snapshot.workspaceFiles
+    }
+}
+
+private struct ConnectionStatusBadge: View {
+    let title: String
+    let isConnected: Bool
+
+    var body: some View {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(isConnected ? Color.green.opacity(0.18) : Color.secondary.opacity(0.16))
+            .foregroundStyle(isConnected ? Color.green : Color.secondary)
+            .clipShape(Capsule())
     }
 }
 

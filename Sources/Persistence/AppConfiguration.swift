@@ -379,7 +379,8 @@ public struct AppConfiguration: Codable, Sendable, Equatable {
 
 public enum AppConfigurationDefaults {
     public static func make(layout: ProjectRuntimeLayout) -> AppConfiguration {
-        AppConfiguration(
+        let preferredTDLibPath = layout.binDirectoryURL.appendingPathComponent("libtdjson.dylib").path
+        return AppConfiguration(
             schemaVersion: 1,
             runtimePaths: .init(
                 projectRootPath: layout.projectRootURL.path,
@@ -462,7 +463,7 @@ public enum AppConfigurationDefaults {
                 userAPIID: "",
                 userAPIHash: "",
                 userPhone: "",
-                userTDLibPath: layout.binDirectoryURL.appendingPathComponent("libtdjson.dylib").path,
+                userTDLibPath: TDLibLibraryLocator.resolveExistingPath(preferredPath: preferredTDLibPath) ?? preferredTDLibPath,
                 userDatabaseDirectory: layout.runtimeDirectoryURL.appendingPathComponent("telegram-user/database", isDirectory: true).path,
                 userFilesDirectory: layout.runtimeDirectoryURL.appendingPathComponent("telegram-user/files", isDirectory: true).path,
                 userEncryptionKey: "",

@@ -9,6 +9,14 @@ public struct TelegramBusinessBotService: Sendable {
         self.urlSession = urlSession
     }
 
+    public static func isExpectedLongPollTimeout(_ error: Error) -> Bool {
+        if let urlError = error as? URLError {
+            return urlError.code == .timedOut
+        }
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorTimedOut
+    }
+
     public func getUpdates(offset: Int?) async throws -> [TelegramBusinessIncomingMessage] {
         var body: [String: Any] = [
             "timeout": 20,
@@ -22,6 +30,10 @@ public struct TelegramBusinessBotService: Sendable {
             return []
         }
         return result.compactMap(Self.incomingBusinessMessage)
+    }
+
+    public func probeConnection() async throws {
+        _ = try await post(method: "getMe", body: [:])
     }
 
     public func sendMessage(businessConnectionId: String, chatId: Int64, text: String) async throws {
@@ -61,7 +73,8 @@ public struct TelegramBusinessBotService: Sendable {
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 30
+        // Bot API long polling can legally hold the request open for the timeout window.
+        request.timeoutInterval = 65
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 

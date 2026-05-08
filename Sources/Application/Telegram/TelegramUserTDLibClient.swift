@@ -5,15 +5,24 @@ public actor TelegramUserTDLibClient: TelegramUserClienting {
 
     private let settings: TelegramUserSettings
     private let bridgeFactory: @Sendable (String?) throws -> any TDLibJSONBridge
+    private let diagnosticSink: @Sendable (String) -> Void
     private var bridge: (any TDLibJSONBridge)?
     private var clientId: Int32?
+    private var lastAuthorizationStateType: String?
+    private var lastTDLibErrorDescription: String?
+    private var didSubmitTDLibParameters = false
+    private var didSubmitEncryptionKey = false
+    private var didSubmitPhoneNumber = false
+    private var didExtendAuthorizationTimeoutAfterPhoneSubmission = false
 
     public init(
         settings: TelegramUserSettings,
-        bridgeFactory: @escaping @Sendable (String?) throws -> any TDLibJSONBridge = { try DynamicTDLibJSONBridge(libraryPath: $0) }
+        bridgeFactory: @escaping @Sendable (String?) throws -> any TDLibJSONBridge = { try DynamicTDLibJSONBridge(libraryPath: $0) },
+        diagnosticSink: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         self.settings = settings
         self.bridgeFactory = bridgeFactory
+        self.diagnosticSink = diagnosticSink
     }
 
     public func currentAuthorizationState() -> TelegramUserAuthorizationState {
@@ -22,7 +31,21 @@ public actor TelegramUserTDLibClient: TelegramUserClienting {
 
     @discardableResult
     public func start() async -> TelegramUserAuthorizationState {
+        emitDiagnostic(
+            "start requested; api_id=\(settings.apiId); phone=\(Self.maskedPhoneNumber(settings.phoneNumber)); " +
+            "db=\(settings.databaseDirectory); files=\(settings.filesDirectory); " +
+            "tdjson=\(settings.tdjsonLibraryPath ?? "auto"); encryption_key_present=\(!settings.encryptionKey.isEmpty)"
+        )
         if bridge != nil {
+            if case .closed = authorizationState {
+                emitDiagnostic("existing TDLib session is closed; resetting connection state before restart")
+                resetConnectionState()
+            } else {
+                emitDiagnostic("start skipped because TDLib session already exists with state=\(authorizationState.displayText)")
+                return authorizationState
+            }
+        }
+        guard bridge == nil else {
             return authorizationState
         }
         guard settings.enabled else {
@@ -55,15 +78,21 @@ public actor TelegramUserTDLibClient: TelegramUserClienting {
             self.bridge = bridge
             let clientId = bridge.createClientId()
             self.clientId = clientId
+            emitDiagnostic("TDLib bridge loaded successfully; client_id=\(clientId)")
             _ = try bridge.execute([
                 "@type": "setLogVerbosityLevel",
                 "new_verbosity_level": 1
             ])
+            didSubmitTDLibParameters = true
+            emitDiagnostic("bootstrapping TDLib parameters immediately after client creation")
+            try sendTdlibParameters()
             return await pumpAuthorization(timeout: 10)
         } catch TDLibJSONBridgeError.libraryNotFound(let paths) {
+            emitDiagnostic("TDLib library not found. Checked paths: \(paths.joined(separator: ", "))")
             authorizationState = .libraryMissing(paths)
             return authorizationState
         } catch {
+            emitDiagnostic("TDLib start failed: \(error.localizedDescription)")
             authorizationState = .failed(error.localizedDescription)
             return authorizationState
         }
@@ -71,7 +100,13 @@ public actor TelegramUserTDLibClient: TelegramUserClienting {
 
     @discardableResult
     public func submitCode(_ code: String) async -> TelegramUserAuthorizationState {
-        await submitAuthenticationRequest([
+        if case .waitingForPassword = authorizationState {
+            let message = "Telegram is waiting for the 2FA password, not a login code."
+            emitDiagnostic("rejected authentication request: \(message)")
+            authorizationState = .failed(message)
+            return authorizationState
+        }
+        return await submitAuthenticationRequest([
             "@type": "checkAuthenticationCode",
             "code": code.trimmingCharacters(in: .whitespacesAndNewlines)
         ])
@@ -79,7 +114,13 @@ public actor TelegramUserTDLibClient: TelegramUserClienting {
 
     @discardableResult
     public func submitPassword(_ password: String) async -> TelegramUserAuthorizationState {
-        await submitAuthenticationRequest([
+        if case .waitingForCode = authorizationState {
+            let message = "Telegram is waiting for the login code, not the 2FA password."
+            emitDiagnostic("rejected authentication request: \(message)")
+            authorizationState = .failed(message)
+            return authorizationState
+        }
+        return await submitAuthenticationRequest([
             "@type": "checkAuthenticationPassword",
             "password": password
         ])
@@ -226,6 +267,7 @@ public actor TelegramUserTDLibClient: TelegramUserClienting {
             self.clientId = nil
             return
         }
+        emitDiagnostic("closing TDLib session; client_id=\(clientId)")
         try? bridge.send(clientId: clientId, request: ["@type": "close"])
         _ = await pumpAuthorization(timeout: 2)
         authorizationState = .closed
@@ -235,12 +277,15 @@ public actor TelegramUserTDLibClient: TelegramUserClienting {
 
     private func submitAuthenticationRequest(_ request: [String: Any]) async -> TelegramUserAuthorizationState {
         guard let bridge, let clientId else {
+            emitDiagnostic("authentication request received before TDLib start; starting session first")
             return await start()
         }
         do {
+            emitDiagnostic("sending authentication request: \(Self.requestSummary(request))")
             try bridge.send(clientId: clientId, request: request)
             return await pumpAuthorization(timeout: 20)
         } catch {
+            emitDiagnostic("authentication request failed: \(error.localizedDescription)")
             authorizationState = .failed(error.localizedDescription)
             return authorizationState
         }
@@ -249,23 +294,49 @@ public actor TelegramUserTDLibClient: TelegramUserClienting {
     private func pumpAuthorization(timeout: TimeInterval) async -> TelegramUserAuthorizationState {
         guard let bridge else {
             authorizationState = .failed("TDLib is not started.")
+            emitDiagnostic("authorization pump failed because TDLib bridge is not started")
             return authorizationState
         }
-        let deadline = Date().addingTimeInterval(timeout)
+        emitDiagnostic("authorization pump started; timeout=\(Int(timeout))s")
+        var deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             guard let update = bridge.receive(timeout: 0.5) else {
                 continue
             }
+            if shouldIgnore(update: update) {
+                continue
+            }
+            emitDiagnostic("received TDLib update: \(Self.updateSummary(update))")
             if let error = Self.errorDescription(update) {
+                lastTDLibErrorDescription = error
                 if error.contains("Parameters aren't specified") {
+                    let context =
+                        didSubmitTDLibParameters
+                        ? "after TDLib parameters were already submitted"
+                        : "before TDLib parameters are submitted"
+                    emitDiagnostic("ignoring transient TDLib error \(context): \(error)")
                     continue
                 }
+                if error.contains("PASSWORD_HASH_INVALID") {
+                    let message = "Telegram rejected the 2FA password. Enter the correct Telegram password."
+                    emitDiagnostic("authorization pump failed with invalid 2FA password")
+                    authorizationState = .failed(message)
+                    return authorizationState
+                }
+                emitDiagnostic("authorization pump failed with TDLib error: \(error)")
                 authorizationState = .failed(error)
                 return authorizationState
             }
             if update["@type"] as? String == "updateAuthorizationState",
                let state = update["authorization_state"] as? [String: Any] {
                 await handleAuthorizationState(state)
+                if lastAuthorizationStateType == "authorizationStateWaitPhoneNumber",
+                   didSubmitPhoneNumber,
+                   !didExtendAuthorizationTimeoutAfterPhoneSubmission {
+                    didExtendAuthorizationTimeoutAfterPhoneSubmission = true
+                    deadline = max(deadline, Date().addingTimeInterval(60))
+                    emitDiagnostic("phone number accepted locally; extending authorization wait by 60s for Telegram code delivery")
+                }
                 if case .ready = authorizationState {
                     return authorizationState
                 }
@@ -280,8 +351,19 @@ public actor TelegramUserTDLibClient: TelegramUserClienting {
                 }
             } else if let state = update["@type"] as? String, state.hasPrefix("authorizationState") {
                 await handleAuthorizationState(update)
+                if lastAuthorizationStateType == "authorizationStateWaitPhoneNumber",
+                   didSubmitPhoneNumber,
+                   !didExtendAuthorizationTimeoutAfterPhoneSubmission {
+                    didExtendAuthorizationTimeoutAfterPhoneSubmission = true
+                    deadline = max(deadline, Date().addingTimeInterval(60))
+                    emitDiagnostic("phone number accepted locally; extending authorization wait by 60s for Telegram code delivery")
+                }
             }
         }
+        emitDiagnostic(
+            "authorization pump timed out after \(Int(timeout))s; last_state=\(lastAuthorizationStateType ?? "unknown"); " +
+            "last_error=\(lastTDLibErrorDescription ?? "none")"
+        )
         return authorizationState
     }
 
@@ -289,33 +371,76 @@ public actor TelegramUserTDLibClient: TelegramUserClienting {
         guard let type = state["@type"] as? String else {
             return
         }
+        let previousState = lastAuthorizationStateType
+        lastAuthorizationStateType = type
+        emitDiagnostic("authorization state -> \(type)")
         do {
             switch type {
             case "authorizationStateWaitTdlibParameters":
-                try sendTdlibParameters()
+                if didSubmitTDLibParameters {
+                    emitDiagnostic("TDLib parameters already submitted for current session; skipping duplicate submission")
+                } else {
+                    didSubmitTDLibParameters = true
+                    emitDiagnostic("submitting TDLib parameters")
+                    try sendTdlibParameters()
+                }
             case "authorizationStateWaitEncryptionKey":
-                try send([
-                    "@type": "checkDatabaseEncryptionKey",
-                    "encryption_key": settings.encryptionKey
-                ])
+                if didSubmitEncryptionKey {
+                    emitDiagnostic("database encryption key already submitted for current session; skipping duplicate submission")
+                } else {
+                    didSubmitEncryptionKey = true
+                    emitDiagnostic("submitting database encryption key; present=\(!settings.encryptionKey.isEmpty)")
+                    try send([
+                        "@type": "checkDatabaseEncryptionKey",
+                        "encryption_key": settings.encryptionKey
+                    ])
+                }
             case "authorizationStateWaitPhoneNumber":
                 authorizationState = .waitingForPhoneNumber
-                try send([
-                    "@type": "setAuthenticationPhoneNumber",
-                    "phone_number": settings.phoneNumber.trimmingCharacters(in: .whitespacesAndNewlines)
-                ])
+                if didSubmitPhoneNumber {
+                    emitDiagnostic("phone number already submitted for current session; skipping duplicate submission")
+                } else {
+                    didSubmitPhoneNumber = true
+                    emitDiagnostic("submitting phone number \(Self.maskedPhoneNumber(settings.phoneNumber))")
+                    try send([
+                        "@type": "setAuthenticationPhoneNumber",
+                        "phone_number": settings.phoneNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+                    ])
+                }
             case "authorizationStateWaitCode":
                 authorizationState = .waitingForCode
+                emitDiagnostic("Telegram requested login code")
             case "authorizationStateWaitPassword":
                 authorizationState = .waitingForPassword
+                emitDiagnostic("Telegram requested 2FA password")
             case "authorizationStateReady":
                 authorizationState = .ready
+                emitDiagnostic("Telegram user authorization completed successfully")
             case "authorizationStateClosed", "authorizationStateClosing":
-                authorizationState = .closed
+                let lastError = lastTDLibErrorDescription ?? "none"
+                if lastError.contains("UPDATE_APP_TO_LOGIN") {
+                    authorizationState = .failed(
+                        "Telegram rejected login because TDLib is too old for login. " +
+                        "Update libtdjson and try again."
+                    )
+                } else if lastError.contains("PASSWORD_HASH_INVALID") {
+                    authorizationState = .failed(
+                        "Telegram rejected the 2FA password. Enter the correct Telegram password."
+                    )
+                } else {
+                    authorizationState = .closed
+                }
+                emitDiagnostic(
+                    "TDLib session closed; previous_state=\(previousState ?? "unknown"); " +
+                    "last_error=\(lastError)"
+                )
+                resetConnectionState()
             default:
+                emitDiagnostic("authorization state \(type) is not explicitly handled")
                 break
             }
         } catch {
+            emitDiagnostic("failed while handling \(type): \(error.localizedDescription)")
             authorizationState = .failed(error.localizedDescription)
         }
     }
@@ -362,6 +487,9 @@ public actor TelegramUserTDLibClient: TelegramUserClienting {
             guard let response = bridge.receive(timeout: 0.5) else {
                 continue
             }
+            if shouldIgnore(update: response) {
+                continue
+            }
             if response["@extra"] as? String == extra {
                 if let error = Self.errorDescription(response) {
                     throw TelegramCommandError.telegramAPIError(error)
@@ -382,6 +510,34 @@ public actor TelegramUserTDLibClient: TelegramUserClienting {
         }
     }
 
+    private func resetConnectionState() {
+        emitDiagnostic("resetting TDLib connection state")
+        bridge = nil
+        clientId = nil
+        didSubmitTDLibParameters = false
+        didSubmitEncryptionKey = false
+        didSubmitPhoneNumber = false
+        didExtendAuthorizationTimeoutAfterPhoneSubmission = false
+    }
+
+    private func shouldIgnore(update: [String: Any]) -> Bool {
+        guard let clientId else {
+            return false
+        }
+        guard let updateClientId = Self.int32Value(update["@client_id"]) else {
+            return false
+        }
+        guard updateClientId != clientId else {
+            return false
+        }
+        emitDiagnostic("ignoring TDLib update for foreign client_id=\(updateClientId); current_client_id=\(clientId)")
+        return true
+    }
+
+    private func emitDiagnostic(_ message: String) {
+        diagnosticSink(message)
+    }
+
     private func isAllowed(chatId: String, title: String?) -> Bool {
         guard !settings.chatAllowlist.isEmpty else {
             return true
@@ -400,6 +556,61 @@ public actor TelegramUserTDLibClient: TelegramUserClienting {
         let code = intValue(object["code"]).map(String.init) ?? "unknown"
         let message = object["message"] as? String ?? "Unknown TDLib error"
         return "TDLib \(code): \(message)"
+    }
+
+    private static func updateSummary(_ object: [String: Any]) -> String {
+        let type = object["@type"] as? String ?? "unknown"
+        if type == "updateAuthorizationState",
+           let state = object["authorization_state"] as? [String: Any],
+           let stateType = state["@type"] as? String {
+            return "\(type) -> \(stateType)"
+        }
+        if type == "updateOption",
+           let name = object["name"] as? String,
+           name == "version",
+           let value = object["value"] as? [String: Any],
+           let optionType = value["@type"] as? String,
+           optionType == "optionValueString",
+           let version = value["value"] as? String {
+            return "\(type) version=\(version)"
+        }
+        if type == "error" {
+            return errorDescription(object) ?? "error"
+        }
+        return type
+    }
+
+    private static func requestSummary(_ request: [String: Any]) -> String {
+        let type = request["@type"] as? String ?? "unknown"
+        switch type {
+        case "checkAuthenticationCode":
+            let code = request["code"] as? String ?? ""
+            return "\(type) length=\(code.count)"
+        case "checkAuthenticationPassword":
+            let password = request["password"] as? String ?? ""
+            return "\(type) length=\(password.count)"
+        case "setAuthenticationPhoneNumber":
+            let phone = request["phone_number"] as? String ?? ""
+            return "\(type) phone=\(maskedPhoneNumber(phone))"
+        case "checkDatabaseEncryptionKey":
+            let key = request["encryption_key"] as? String ?? ""
+            return "\(type) present=\(!key.isEmpty)"
+        case "setTdlibParameters":
+            let apiId = intValue(request["api_id"]) ?? 0
+            let databaseDirectory = request["database_directory"] as? String ?? ""
+            let filesDirectory = request["files_directory"] as? String ?? ""
+            return "\(type) api_id=\(apiId) db=\(databaseDirectory) files=\(filesDirectory)"
+        default:
+            return type
+        }
+    }
+
+    private static func maskedPhoneNumber(_ value: String) -> String {
+        let digits = value.filter(\.isNumber)
+        guard digits.count > 4 else {
+            return "[redacted-phone]"
+        }
+        return "[redacted-phone:\(digits.suffix(4))]"
     }
 
     private static func chatTypeName(_ object: Any?) -> String {
@@ -458,6 +669,15 @@ public actor TelegramUserTDLibClient: TelegramUserClienting {
             return Int64(value)
         }
         return nil
+    }
+
+    private static func int32Value(_ value: Any?) -> Int32? {
+        guard let int64 = int64Value(value),
+              int64 >= Int64(Int32.min),
+              int64 <= Int64(Int32.max) else {
+            return nil
+        }
+        return Int32(int64)
     }
 
     private static func intValue(_ value: Any?) -> Int? {

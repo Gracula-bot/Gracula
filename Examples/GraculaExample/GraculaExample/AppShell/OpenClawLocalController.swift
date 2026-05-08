@@ -1292,9 +1292,13 @@ final class OpenClawLocalController: NSObject, ObservableObject {
     @Published private(set) var chatStatusText = "Ready to chat."
     @Published private(set) var isSendingChat = false
     @Published private(set) var pendingTelegramReply: PendingTelegramReply?
+    @Published private(set) var telegramUserAuthorizationState: TelegramUserAuthorizationState = .disabled
     @Published private(set) var telegramUserStatusText = "Telegram user API disabled."
     @Published private(set) var telegramUserDialogs: [TelegramUserDialog] = []
     @Published private(set) var isStartingTelegramUserAPI = false
+    @Published private(set) var telegramBusinessStatusText = "Telegram Business disabled."
+    @Published private(set) var telegramBusinessConnected = false
+    @Published private(set) var isTestingTelegramBusiness = false
     @Published private(set) var settingsSnapshot: OpenClawSettingsSnapshot
     @Published private(set) var settingsStatusText = "Settings loaded."
     @Published private(set) var bootstrapStatusText = "Bootstrap not run."
@@ -1319,7 +1323,7 @@ final class OpenClawLocalController: NSObject, ObservableObject {
     private let directModelTimeoutSeconds: TimeInterval = 120
     private let directMemoryFileLimit = 2
     private let onlyFansPoster = WorkspaceOpeningClient()
-    private let telegramCommandRouter: OpenClawVoiceCommandRouter
+    private var telegramCommandRouter: OpenClawVoiceCommandRouter
     private var chatSessionID = "gracula-local-chat"
     private var gatewayProcess: Process?
     private var streamBridgeProcess: Process?
@@ -1358,6 +1362,7 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         self.telegramCommandRouter = OpenClawVoiceCommandRouter(telegramHandler: telegramHandler)
         self.settingsSnapshot = Self.makeSettingsSnapshot(layout: runtimeLayout, store: configurationStore)
         super.init()
+        refreshTelegramCommandRouter()
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(applicationWillTerminate(_:)),
@@ -1376,6 +1381,13 @@ final class OpenClawLocalController: NSObject, ObservableObject {
             return "gracula-local-chat • \(suffix.prefix(8))"
         }
         return chatSessionID
+    }
+
+    var isTelegramUserConnected: Bool {
+        if case .ready = telegramUserAuthorizationState {
+            return true
+        }
+        return false
     }
 
     deinit {
@@ -1416,6 +1428,7 @@ final class OpenClawLocalController: NSObject, ObservableObject {
                 layout: runtimeLayout
             )
             settingsSnapshot = Self.makeSettingsSnapshot(layout: runtimeLayout, store: configurationStore)
+            await startTelegramUserAPI(environment: environment)
             await ensureQdrantServer(environment: environment)
             startTelegramBusinessPolling(environment: environment)
             let primaryModelRef = currentPrimaryModelRef()
@@ -1599,6 +1612,7 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         healthTask = nil
         telegramBusinessTask?.cancel()
         telegramBusinessTask = nil
+        setTelegramBusinessStatus("Telegram Business stopped.", connected: false)
         startupTask?.cancel()
         startupTask = nil
         isStartingTelegramUserAPI = false
@@ -1625,7 +1639,7 @@ final class OpenClawLocalController: NSObject, ObservableObject {
             return
         }
         let state = await telegramUserClient.submitCode(code)
-        telegramUserStatusText = state.displayText
+        setTelegramUserAuthorizationState(state)
         if case .ready = state {
             await refreshTelegramUserDialogs()
         }
@@ -1637,7 +1651,7 @@ final class OpenClawLocalController: NSObject, ObservableObject {
             return
         }
         let state = await telegramUserClient.submitPassword(password)
-        telegramUserStatusText = state.displayText
+        setTelegramUserAuthorizationState(state)
         if case .ready = state {
             await refreshTelegramUserDialogs()
         }
@@ -1650,9 +1664,34 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         }
         do {
             telegramUserDialogs = try await telegramUserClient.dialogs(limit: 50)
+            telegramUserAuthorizationState = .ready
             telegramUserStatusText = "Telegram user API is authorized. Dialogs: \(telegramUserDialogs.count)."
         } catch {
             telegramUserStatusText = error.localizedDescription
+        }
+    }
+
+    func testTelegramBusinessConnection() async {
+        let environment = (try? openClawEnvironment()) ?? [:]
+        let settings = telegramBusinessSettings(environment: environment)
+        guard settings.enabled else {
+            setTelegramBusinessStatus("Telegram Business disabled.", connected: false)
+            return
+        }
+        guard !settings.botToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            setTelegramBusinessStatus("Telegram Business bot token is missing.", connected: false)
+            return
+        }
+
+        isTestingTelegramBusiness = true
+        defer { isTestingTelegramBusiness = false }
+
+        let service = TelegramBusinessBotService(botToken: settings.botToken)
+        do {
+            try await service.probeConnection()
+            setTelegramBusinessStatus(businessConnectedStatusText(for: settings), connected: true)
+        } catch {
+            setTelegramBusinessStatus("Telegram Business test failed: \(error.localizedDescription)", connected: false)
         }
     }
 
@@ -1685,14 +1724,17 @@ final class OpenClawLocalController: NSObject, ObservableObject {
 
         let settings = telegramBusinessSettings(environment: environment)
         guard settings.enabled else {
+            setTelegramBusinessStatus("Telegram Business disabled.", connected: false)
             appendLog("Telegram Business mode disabled.")
             return
         }
         guard !settings.botToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            setTelegramBusinessStatus("Telegram Business enabled, but bot token is missing.", connected: false)
             appendLog("Telegram Business mode enabled, but bot token is missing.")
             return
         }
         guard OpenClawQdrantClient.make(environment: environment) != nil else {
+            setTelegramBusinessStatus("Telegram Business requires Qdrant; polling not started.", connected: false)
             appendLog("Telegram Business mode requires Qdrant; polling not started.")
             return
         }
@@ -1705,6 +1747,7 @@ final class OpenClawLocalController: NSObject, ObservableObject {
                 environment: environment
             )
         }
+        setTelegramBusinessStatus("Telegram Business polling started.", connected: false)
         appendLog("Telegram Business polling started.")
     }
 
@@ -1713,7 +1756,8 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         guard settings.enabled else {
             await closeTelegramUserClient()
             telegramUserDialogs = []
-            telegramUserStatusText = TelegramUserAuthorizationState.disabled.displayText
+            setTelegramUserAuthorizationState(.disabled)
+            refreshTelegramCommandRouter(environment: environment)
             appendLog(telegramUserStatusText)
             return
         }
@@ -1727,7 +1771,7 @@ final class OpenClawLocalController: NSObject, ObservableObject {
             let state = await telegramUserClient.currentAuthorizationState()
             switch state {
             case .ready, .waitingForCode, .waitingForPassword, .waitingForPhoneNumber:
-                telegramUserStatusText = state.displayText
+                setTelegramUserAuthorizationState(state)
                 appendLog("Telegram user API already has an active session.")
                 if case .ready = state {
                     await refreshTelegramUserDialogs()
@@ -1739,13 +1783,24 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         }
 
         isStartingTelegramUserAPI = true
+        telegramUserAuthorizationState = .closed
         telegramUserStatusText = "Starting Telegram user API..."
         defer { isStartingTelegramUserAPI = false }
 
-        let client = TelegramUserTDLibClient(settings: settings)
+        let client = TelegramUserTDLibClient(settings: settings, diagnosticSink: { [weak self] message in
+            let line = (message as String?) ?? "nil"
+            log.info("telegram-user: \(line)")
+            Task { @MainActor [weak self, line] in
+                guard let self else {
+                    return
+                }
+                self.appendLog(line, prefix: "telegram-user")
+            }
+        })
         telegramUserClient = client
+        refreshTelegramCommandRouter(environment: environment)
         let state = await client.start()
-        telegramUserStatusText = state.displayText
+        setTelegramUserAuthorizationState(state)
         appendLog(telegramUserStatusText)
         if case .ready = state {
             await refreshTelegramUserDialogs()
@@ -1762,6 +1817,7 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         if self.telegramUserClient === telegramUserClient {
             self.telegramUserClient = nil
         }
+        refreshTelegramCommandRouter()
     }
 
     private func telegramUserSettings(environment: [String: String]) -> TelegramUserSettings {
@@ -1800,6 +1856,9 @@ final class OpenClawLocalController: NSObject, ObservableObject {
             environment: environment,
             environmentKeys: ["GRACULA_TDLIB_JSON_LIBRARY"]
         )
+        settings.tdjsonLibraryPath = TDLibLibraryLocator.resolveExistingPath(
+            preferredPath: settings.tdjsonLibraryPath
+        ) ?? settings.tdjsonLibraryPath
         settings.databaseDirectory = stringConfig(
             "integrations.telegram.user.databaseDirectory",
             entries: entries,
@@ -1841,6 +1900,7 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         while !Task.isCancelled {
             do {
                 let messages = try await service.getUpdates(offset: offset)
+                setTelegramBusinessStatus(businessConnectedStatusText(for: settings), connected: true)
                 if let maxUpdateId = messages.map(\.updateId).max() {
                     offset = maxUpdateId + 1
                 }
@@ -1859,7 +1919,10 @@ final class OpenClawLocalController: NSObject, ObservableObject {
                     )
                 }
             } catch {
-                appendLog("Telegram Business polling error: \(error.localizedDescription)")
+                if !TelegramBusinessBotService.isExpectedLongPollTimeout(error) {
+                    setTelegramBusinessStatus("Telegram Business polling error: \(error.localizedDescription)", connected: false)
+                    appendLog("Telegram Business polling error: \(error.localizedDescription)")
+                }
                 try? await Task.sleep(for: .seconds(max(2.0, pollDelay)))
             }
             try? await Task.sleep(for: .seconds(pollDelay))
@@ -2022,6 +2085,49 @@ final class OpenClawLocalController: NSObject, ObservableObject {
             autoReplyEnabled: autoReply,
             markReadEnabled: markRead
         )
+    }
+
+    private func setTelegramUserAuthorizationState(_ state: TelegramUserAuthorizationState) {
+        telegramUserAuthorizationState = state
+        telegramUserStatusText = state.displayText
+    }
+
+    private func refreshTelegramCommandRouter(environment: [String: String]? = nil) {
+        let resolvedEnvironment = environment ?? (try? openClawEnvironment()) ?? [:]
+        let automationService = TelegramMacAppAutomationService()
+        let businessSettings = telegramBusinessSettings(environment: resolvedEnvironment)
+        let businessService = businessSettings.enabled
+            && !businessSettings.botToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? TelegramBusinessBotService(botToken: businessSettings.botToken)
+            : nil
+        let businessConnectionId = businessSettings.enabled
+            ? businessSettings.businessConnectionId
+            : nil
+        let service = TelegramRoutingService(
+            automationService: automationService,
+            userService: telegramUserClient,
+            businessService: businessService,
+            businessConnectionId: businessConnectionId
+        )
+        let handler = TelegramCommandHandler(
+            service: service,
+            eventSink: { event in
+                NSLog("%@", event.rawValue)
+            }
+        )
+        telegramCommandRouter = OpenClawVoiceCommandRouter(telegramHandler: handler)
+    }
+
+    private func setTelegramBusinessStatus(_ text: String, connected: Bool) {
+        telegramBusinessStatusText = text
+        telegramBusinessConnected = connected
+    }
+
+    private func businessConnectedStatusText(for settings: TelegramBusinessSettings) -> String {
+        if settings.businessConnectionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "Telegram Business connected. Bot token is valid."
+        }
+        return "Telegram Business connected. Business connection ID is configured."
     }
 
     private func stringConfig(
@@ -2296,14 +2402,16 @@ final class OpenClawLocalController: NSObject, ObservableObject {
                 stop()
                 start()
             }
-            if hadTelegramUserClient {
+            let shouldStartTelegramUserClient = hadTelegramUserClient
+                || ((try? configurationStore.loadOrCreate().telegram.userEnabled) ?? false)
+            if shouldStartTelegramUserClient && !wasRunning {
                 Task { [weak self] in
                     await self?.closeTelegramUserClient()
                     await self?.startTelegramUserAPI()
                 }
             }
             settingsStatusText =
-                if wasRunning || hadTelegramUserClient {
+                if wasRunning || shouldStartTelegramUserClient {
                     "Settings applied and runtime restarted."
                 } else {
                     "Settings applied."

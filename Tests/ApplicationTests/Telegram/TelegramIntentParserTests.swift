@@ -20,12 +20,12 @@ func parsesSendMessageToNamedTelegramChat() {
 }
 
 @Test
-func ignoresPrepareReplyCommand() {
+func fallsBackToReadLatestForUnhandledTelegramMention() {
     let parser = TelegramIntentParser()
 
     let intent = parser.parse(text: "подготовь ответ в Telegram Антону: буду через 10 минут")
 
-    #expect(intent == .unknown)
+    #expect(intent == .readLatest)
 }
 
 @Test
@@ -65,6 +65,22 @@ func parsesTelegramAuthorizationPassword() {
     let parser = TelegramIntentParser()
 
     #expect(parser.parse(text: "пароль telegram my-2fa-pass") == .submitPassword("my-2fa-pass"))
+}
+
+@Test
+func parsesNaturalLanguageReadLatestTelegramMessagesRequest() {
+    let parser = TelegramIntentParser()
+
+    #expect(parser.parse(text: "какие последние сообщения в телеграм ты видишь") == .readLatest)
+}
+
+@Test
+func anyTelegramMentionRoutesToReadLatestByDefault() {
+    let parser = TelegramIntentParser()
+
+    #expect(parser.parse(text: "telegram") == .readLatest)
+    #expect(parser.parse(text: "открой telegram") == .readLatest)
+    #expect(parser.parse(text: "что там в телеграм") == .readLatest)
 }
 
 @Test

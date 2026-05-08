@@ -263,15 +263,29 @@ print("speech-stack-ok")
 
     private func verifyTDLib(configuration: AppConfiguration) -> DependencyReport.Item {
         let path = configuration.telegram.userTDLibPath
-        let exists = fileManager.fileExists(atPath: path)
+        let resolvedPath = TDLibLibraryLocator.resolveExistingPath(
+            preferredPath: path,
+            fileManager: fileManager
+        )
+        let exists = resolvedPath != nil
         return DependencyReport.Item(
             name: "tdlib",
             available: exists,
             status: exists ? "ready" : "soft-disabled",
-            installStrategy: "Provide a project-local TDLib dylib at `.openclaw/bin/libtdjson.dylib`.",
-            configuredPath: path,
-            detail: exists ? "TDLib dylib is present." : "TDLib dylib is missing."
+            installStrategy: "Provide a project-local TDLib dylib at `.openclaw/bin/libtdjson.dylib` or install TDLib into `/opt/homebrew/lib`.",
+            configuredPath: resolvedPath ?? path,
+            detail: tdlibDetail(configuredPath: path, resolvedPath: resolvedPath)
         )
+    }
+
+    private func tdlibDetail(configuredPath: String, resolvedPath: String?) -> String {
+        guard let resolvedPath else {
+            return "TDLib dylib is missing."
+        }
+        if resolvedPath == configuredPath {
+            return "TDLib dylib is present."
+        }
+        return "TDLib dylib is available via fallback path: \(resolvedPath)"
     }
 
     private func verifyGateway(

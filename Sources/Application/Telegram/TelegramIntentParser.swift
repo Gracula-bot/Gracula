@@ -39,6 +39,10 @@ public struct TelegramIntentParser: Sendable {
             return draft
         }
 
+        if hasTelegramMention(normalized) {
+            return .readLatest
+        }
+
         return .unknown
     }
 
@@ -152,7 +156,35 @@ public struct TelegramIntentParser: Sendable {
             "что мне написали в телеграм",
             "прочитай последний чат"
         ]
-        return phrases.contains { normalized.contains($0) }
+        if phrases.contains(where: { normalized.contains($0) }) {
+            return true
+        }
+
+        guard normalized.contains("telegram") || normalized.contains("телеграм") else {
+            return false
+        }
+
+        let hasReadCue = [
+            "прочитай",
+            "покажи",
+            "какие",
+            "какое",
+            "какой",
+            "что",
+            "видишь"
+        ].contains(where: { normalized.contains($0) })
+        let hasLatestCue = normalized.contains("последн") || normalized.contains("нов")
+        let hasMessageCue = [
+            "сообщени",
+            "написал",
+            "написали"
+        ].contains(where: { normalized.contains($0) })
+
+        return hasReadCue && hasLatestCue && hasMessageCue
+    }
+
+    private func hasTelegramMention(_ normalized: String) -> Bool {
+        normalized.contains("telegram") || normalized.contains("телеграм")
     }
 
     private func isConfirm(_ normalized: String) -> Bool {
@@ -164,7 +196,7 @@ public struct TelegramIntentParser: Sendable {
     }
 
     private func parseAuthValue(normalized: String, original: String, kind: AuthValueKind) -> String? {
-        guard normalized.contains("telegram") || normalized.contains("телеграм") else {
+        guard hasTelegramMention(normalized) else {
             return nil
         }
 

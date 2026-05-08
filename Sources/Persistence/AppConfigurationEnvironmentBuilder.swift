@@ -77,7 +77,9 @@ public enum AppConfigurationEnvironmentBuilder {
         environment["GRACULA_TELEGRAM_API_ID"] = configuration.telegram.userAPIID
         environment["GRACULA_TELEGRAM_API_HASH"] = configuration.telegram.userAPIHash
         environment["GRACULA_TELEGRAM_PHONE"] = configuration.telegram.userPhone
-        environment["GRACULA_TDLIB_JSON_LIBRARY"] = configuration.telegram.userTDLibPath
+        environment["GRACULA_TDLIB_JSON_LIBRARY"] = TDLibLibraryLocator.resolveExistingPath(
+            preferredPath: configuration.telegram.userTDLibPath
+        ) ?? configuration.telegram.userTDLibPath
         environment["GRACULA_TELEGRAM_USER_DATABASE_DIR"] = configuration.telegram.userDatabaseDirectory
         environment["GRACULA_TELEGRAM_USER_FILES_DIR"] = configuration.telegram.userFilesDirectory
         environment["GRACULA_TELEGRAM_USER_ENCRYPTION_KEY"] = configuration.telegram.userEncryptionKey

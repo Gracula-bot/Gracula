@@ -675,9 +675,12 @@ struct BrainSettingsSection: View {
             ?? environmentValue(for: "GRACULA_TELEGRAM_PHONE")
             ?? environmentValue(for: "TELEGRAM_PHONE")
             ?? ""
-        telegramUserTDLibPath = value(for: "integrations.telegram.user.tdjsonLibraryPath")
+        let preferredTDLibPath = value(for: "integrations.telegram.user.tdjsonLibraryPath")
             ?? environmentValue(for: "GRACULA_TDLIB_JSON_LIBRARY")
             ?? runtimeLayout.binDirectoryURL.appendingPathComponent("libtdjson.dylib").path
+        telegramUserTDLibPath = TDLibLibraryLocator.resolveExistingPath(
+            preferredPath: preferredTDLibPath
+        ) ?? preferredTDLibPath
         telegramUserDatabaseDirectory = value(for: "integrations.telegram.user.databaseDirectory")
             ?? environmentValue(for: "GRACULA_TELEGRAM_USER_DATABASE_DIR")
             ?? runtimeLayout.runtimeDirectoryURL.appendingPathComponent("telegram-user/database").path

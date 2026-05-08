@@ -233,9 +233,12 @@ func dependencyVerifierReportsMissingOptionalRuntimeDependencies() throws {
     let report = DependencyVerifier(layout: layout).verify(configuration: configuration)
 
     let namesByStatus = Dictionary(uniqueKeysWithValues: report.items.map { ($0.name, $0.status) })
+    let expectedTDLibStatus = TDLibLibraryLocator.resolveExistingPath(
+        preferredPath: configuration.telegram.userTDLibPath
+    ) == nil ? "soft-disabled" : "ready"
     #expect(namesByStatus["ffmpeg"] == "missing")
     #expect(namesByStatus["qdrant"] == "soft-disabled")
-    #expect(namesByStatus["tdlib"] == "soft-disabled")
+    #expect(namesByStatus["tdlib"] == expectedTDLibStatus)
     #expect(namesByStatus["gateway-entrypoint"] == "missing-entrypoint")
 }
 

@@ -41,6 +41,12 @@ public actor TelegramRoutingService: TelegramService, TelegramAuthenticatingServ
     }
 
     public func getLatestChat() async throws -> TelegramChat {
+        if let userChatAndMessage = try await latestUserChatAndMessageIfAvailable() {
+            return TelegramChat(
+                id: Self.userChatID(userChatAndMessage.chat.id),
+                displayName: userChatAndMessage.chat.title
+            )
+        }
         if let userChat = try await latestUserChatIfAvailable() {
             return TelegramChat(id: Self.userChatID(userChat.id), displayName: userChat.title)
         }
@@ -78,7 +84,8 @@ public actor TelegramRoutingService: TelegramService, TelegramAuthenticatingServ
             guard let userService else {
                 throw TelegramCommandError.telegramNotConnected
             }
-            guard let latest = try await userService.latestMessages(chatId: rawChatId, limit: 1).first else {
+            try await ensureUserServiceReady(userService)
+            guard let latest = try await userService.latestMessages(chatId: rawChatId, limit: 20).first else {
                 throw TelegramCommandError.telegramAPIError("No Telegram messages were found in the selected chat.")
             }
             return latest
@@ -168,6 +175,20 @@ public actor TelegramRoutingService: TelegramService, TelegramAuthenticatingServ
         }
         try await ensureUserServiceReady(userService)
         return try await userService.latestChat()
+    }
+
+    private func latestUserChatAndMessageIfAvailable() async throws -> (chat: TelegramUserDialog, message: TelegramMessage)? {
+        guard let userService else {
+            return nil
+        }
+        try await ensureUserServiceReady(userService)
+        let dialogs = try await userService.dialogs(limit: 20)
+        for dialog in dialogs {
+            if let message = try await userService.latestMessages(chatId: dialog.id, limit: 20).first {
+                return (dialog, message)
+            }
+        }
+        return nil
     }
 
     private func findUserChatIfAvailable(name: String) async throws -> TelegramUserDialog? {
