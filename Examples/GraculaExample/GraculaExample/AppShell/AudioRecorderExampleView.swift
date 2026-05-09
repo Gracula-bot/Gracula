@@ -379,10 +379,21 @@ struct GraculaSettingsTabView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                RecorderSettingsSection(viewModel: viewModel)
-                VoicePipelineSettingsEditorView(viewModel: viewModel)
-                LocalNotificationSettingsSection(viewModel: viewModel)
-                OpenClawSettingsView(controller: openClawController)
+                settingsSectionCard {
+                    RecorderSettingsSection(viewModel: viewModel)
+                }
+
+                settingsSectionCard {
+                    VoicePipelineSettingsEditorView(viewModel: viewModel)
+                }
+
+                settingsSectionCard {
+                    LocalNotificationSettingsSection(viewModel: viewModel)
+                }
+
+                settingsSectionCard {
+                    OpenClawSettingsView(controller: openClawController)
+                }
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -463,20 +474,26 @@ struct BrainSettingsSection: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Picker("Suggested model", selection: $selectedPreset) {
-                ForEach(BrainPreset.allCases) { preset in
-                    Text(preset.displayName).tag(preset)
+            SettingsLabeledField("Suggested model") {
+                Picker("Suggested model", selection: $selectedPreset) {
+                    ForEach(BrainPreset.allCases) { preset in
+                        Text(preset.displayName).tag(preset)
+                    }
                 }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .pickerStyle(.menu)
             .onChange(of: selectedPreset) { _, newValue in
                 guard !isSyncing else { return }
                 applyPreset(newValue)
             }
 
-            TextField("Primary model ref", text: $customModelRef)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.caption, design: .monospaced))
+            SettingsLabeledField("Primary model ref") {
+                TextField("Primary model ref", text: $customModelRef)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.body, design: .monospaced))
+            }
                 .onChange(of: customModelRef) { _, newValue in
                     guard !isSyncing else { return }
                     applyCustomModelRef(newValue)
@@ -521,8 +538,9 @@ struct BrainSettingsSection: View {
             openAIRequestControls
 
             Text("Push-safe template: `ConfigFiles/AppConfiguration.example.plist`. Local runtime config: `ConfigFiles/AppConfiguration.plist`.")
-                .font(.caption2)
+                .font(.caption)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             Divider()
 
@@ -713,114 +731,136 @@ struct BrainSettingsSection: View {
         VStack(alignment: .leading, spacing: 8) {
             sectionHeader("API Keys", systemImage: "key")
 
-            HStack(alignment: .center, spacing: 8) {
-                SecureField("OpenAI API key", text: $openAIApiKey)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.caption, design: .monospaced))
-                    .onChange(of: openAIApiKey) { _, newValue in
-                        guard !isSyncing else { return }
-                        upsertAPIKey(for: "openai", value: newValue)
-                    }
+            SettingsLabeledField("OpenAI API key") {
+                HStack(alignment: .center, spacing: 8) {
+                    SecureField("OpenAI API key", text: $openAIApiKey)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.body, design: .monospaced))
+                        .onChange(of: openAIApiKey) { _, newValue in
+                            guard !isSyncing else { return }
+                            upsertAPIKey(for: "openai", value: newValue)
+                        }
 
-                Button {
-                    let persistedKey = openAIApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let status = applyDraftSettings()
-                    if status.lowercased().contains("failed") {
-                        openAIApplyStatus = status
-                    } else if persistedKey.isEmpty {
-                        openAIApplyStatus = "OpenAI API key cleared in \(canonicalPlistPath)."
-                    } else {
-                        openAIApplyStatus = "OpenAI API key recorded in \(canonicalPlistPath)."
+                    Button {
+                        let persistedKey = openAIApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let status = applyDraftSettings()
+                        if status.lowercased().contains("failed") {
+                            openAIApplyStatus = status
+                        } else if persistedKey.isEmpty {
+                            openAIApplyStatus = "OpenAI API key cleared in \(canonicalPlistPath)."
+                        } else {
+                            openAIApplyStatus = "OpenAI API key recorded in \(canonicalPlistPath)."
+                        }
+                    } label: {
+                        Label("Apply", systemImage: "checkmark.circle")
                     }
-                } label: {
-                    Label("Apply", systemImage: "checkmark.circle")
+                    .buttonStyle(.borderedProminent)
                 }
-                .buttonStyle(.borderedProminent)
             }
 
             if !openAIApplyStatus.isEmpty {
                 Text(openAIApplyStatus)
-                    .font(.caption2)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            SecureField("Brave Search API key (optional)", text: $braveAPIKey)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.caption, design: .monospaced))
-                .onChange(of: braveAPIKey) { _, newValue in
-                    guard !isSyncing else { return }
-                    upsertEnvironmentAliases(keys: ["BRAVE_API_KEY"], value: newValue)
-                }
+            SettingsLabeledField("Brave Search API key") {
+                SecureField("Brave Search API key (optional)", text: $braveAPIKey)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.body, design: .monospaced))
+                    .onChange(of: braveAPIKey) { _, newValue in
+                        guard !isSyncing else { return }
+                        upsertEnvironmentAliases(keys: ["BRAVE_API_KEY"], value: newValue)
+                    }
+            }
 
-            SecureField("Gemini API key", text: $geminiAPIKey)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.caption, design: .monospaced))
-                .onChange(of: geminiAPIKey) { _, newValue in
-                    guard !isSyncing else { return }
-                    upsertEnvironmentAliases(keys: ["GEMINI_API_KEY"], value: newValue)
-                }
+            SettingsLabeledField("Gemini API key") {
+                SecureField("Gemini API key", text: $geminiAPIKey)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.body, design: .monospaced))
+                    .onChange(of: geminiAPIKey) { _, newValue in
+                        guard !isSyncing else { return }
+                        upsertEnvironmentAliases(keys: ["GEMINI_API_KEY"], value: newValue)
+                    }
+            }
 
-            SecureField("xAI API key", text: $xaiAPIKey)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.caption, design: .monospaced))
-                .onChange(of: xaiAPIKey) { _, newValue in
-                    guard !isSyncing else { return }
-                    upsertEnvironmentAliases(keys: ["XAI_API_KEY"], value: newValue)
-                }
+            SettingsLabeledField("xAI API key") {
+                SecureField("xAI API key", text: $xaiAPIKey)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.body, design: .monospaced))
+                    .onChange(of: xaiAPIKey) { _, newValue in
+                        guard !isSyncing else { return }
+                        upsertEnvironmentAliases(keys: ["XAI_API_KEY"], value: newValue)
+                    }
+            }
 
-            SecureField("Perplexity API key", text: $perplexityAPIKey)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.caption, design: .monospaced))
-                .onChange(of: perplexityAPIKey) { _, newValue in
-                    guard !isSyncing else { return }
-                    upsertEnvironmentAliases(keys: ["PERPLEXITY_API_KEY"], value: newValue)
-                }
+            SettingsLabeledField("Perplexity API key") {
+                SecureField("Perplexity API key", text: $perplexityAPIKey)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.body, design: .monospaced))
+                    .onChange(of: perplexityAPIKey) { _, newValue in
+                        guard !isSyncing else { return }
+                        upsertEnvironmentAliases(keys: ["PERPLEXITY_API_KEY"], value: newValue)
+                    }
+            }
 
-            SecureField("Moonshot / Kimi API key", text: $moonshotAPIKey)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.caption, design: .monospaced))
-                .onChange(of: moonshotAPIKey) { _, newValue in
-                    guard !isSyncing else { return }
-                    upsertEnvironmentAliases(keys: ["KIMI_API_KEY", "MOONSHOT_API_KEY"], value: newValue)
-                }
+            SettingsLabeledField("Moonshot / Kimi API key") {
+                SecureField("Moonshot / Kimi API key", text: $moonshotAPIKey)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.body, design: .monospaced))
+                    .onChange(of: moonshotAPIKey) { _, newValue in
+                        guard !isSyncing else { return }
+                        upsertEnvironmentAliases(keys: ["KIMI_API_KEY", "MOONSHOT_API_KEY"], value: newValue)
+                    }
+            }
 
-            SecureField("Firecrawl API key", text: $firecrawlAPIKey)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.caption, design: .monospaced))
-                .onChange(of: firecrawlAPIKey) { _, newValue in
-                    guard !isSyncing else { return }
-                    upsertEnvironmentAliases(keys: ["FIRECRAWL_API_KEY"], value: newValue)
-                }
+            SettingsLabeledField("Firecrawl API key") {
+                SecureField("Firecrawl API key", text: $firecrawlAPIKey)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.body, design: .monospaced))
+                    .onChange(of: firecrawlAPIKey) { _, newValue in
+                        guard !isSyncing else { return }
+                        upsertEnvironmentAliases(keys: ["FIRECRAWL_API_KEY"], value: newValue)
+                    }
+            }
 
             Text("These fields update the draft settings immediately and are written into the project when you press Apply.")
-                .font(.caption2)
+                .font(.caption)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
     private var qdrantControls: some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionHeader("Qdrant", systemImage: "externaldrive.connected.to.line.below")
-            TextField("Qdrant URL", text: $qdrantURL)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.caption, design: .monospaced))
+            SettingsLabeledField("Qdrant URL") {
+                TextField("Qdrant URL", text: $qdrantURL)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.body, design: .monospaced))
+            }
                 .onChange(of: qdrantURL) { _, newValue in
                     guard !isSyncing else { return }
                     upsertEnvironmentSetting(key: "GRACULA_QDRANT_URL", value: newValue)
                     upsertEnvironmentSetting(key: "OPENCLAW_QDRANT_URL", value: newValue)
                     upsertEnvironmentSetting(key: "QDRANT_URL", value: newValue)
                 }
-            TextField("Embedded qdrant binary", text: $qdrantBinaryPath)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.caption, design: .monospaced))
+            SettingsLabeledField("Embedded qdrant binary") {
+                TextField("Embedded qdrant binary", text: $qdrantBinaryPath)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.body, design: .monospaced))
+            }
                 .onChange(of: qdrantBinaryPath) { _, newValue in
                     guard !isSyncing else { return }
                     upsertEnvironmentSetting(key: "GRACULA_QDRANT_BIN", value: newValue)
                     upsertEnvironmentSetting(key: "OPENCLAW_QDRANT_BIN", value: newValue)
                 }
-            TextField("Qdrant storage", text: $qdrantStoragePath)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.caption, design: .monospaced))
+            SettingsLabeledField("Qdrant storage") {
+                TextField("Qdrant storage", text: $qdrantStoragePath)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.body, design: .monospaced))
+            }
                 .onChange(of: qdrantStoragePath) { _, newValue in
                     guard !isSyncing else { return }
                     upsertEnvironmentSetting(key: "GRACULA_QDRANT_STORAGE_DIR", value: newValue)
@@ -1594,24 +1634,24 @@ private struct RecorderSettingsSection: View {
         VStack(alignment: .leading, spacing: 12) {
             sectionHeader("Recorder", systemImage: "mic")
 
-            HStack(alignment: .top, spacing: 16) {
-                VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 12) {
+                SettingsLabeledField("Input device") {
                     Picker("Input device", selection: $viewModel.selectedInputDeviceID) {
                         ForEach(viewModel.inputDevices) { device in
                             Text(device.name).tag(Optional(device.id))
                         }
                     }
+                    .labelsHidden()
                     .pickerStyle(.menu)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .disabled(viewModel.isRecording || viewModel.isTranscribing)
-
-                    Button {
-                        viewModel.refreshInputDevices()
-                    } label: {
-                        Label("Refresh Devices", systemImage: "arrow.clockwise")
-                    }
                 }
 
-                Spacer()
+                Button {
+                    viewModel.refreshInputDevices()
+                } label: {
+                    Label("Refresh Devices", systemImage: "arrow.clockwise")
+                }
             }
         }
     }
@@ -1647,58 +1687,68 @@ private struct VoicePipelineSettingsEditorView: View {
             sectionHeader("Voice Pipeline", systemImage: "waveform")
 
             VStack(alignment: .leading, spacing: 14) {
-                Group {
+                SettingsLabeledField("Recognition model") {
                     Picker("Recognition model", selection: $draft.whisperModelName) {
                         ForEach(Self.recognitionModelOptions) { option in
                             Text(option.label).tag(option.id)
                         }
                     }
+                    .labelsHidden()
                     .pickerStyle(.menu)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
 
+                SettingsLabeledField("Recognition language") {
                     TextField("Recognition language", text: $draft.whisperLanguageCode)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.body, design: .monospaced))
                 }
 
                 Text("The selected speech model is downloaded automatically when you save and use voice transcription.")
-                    .font(.caption2)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
-                Picker("Speech backend", selection: $draft.speechSynthesisBackend) {
-                    ForEach(SpeechSynthesisBackend.allCases, id: \.self) { backend in
-                        Text(label(for: backend)).tag(backend)
-                    }
-                }
-                .pickerStyle(.menu)
-
-                Toggle(
-                    "Start voice automatically",
-                    isOn: Binding(
-                        get: { draft.startVoiceAutomatically },
-                        set: { draft.startVoiceAutomatically = $0 }
-                    )
-                )
-
-                Text("Speak the recognized text aloud after transcription.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-
-                Picker(
-                    "System voice",
-                    selection: Binding(
-                        get: { draft.appleSystemVoiceIdentifier ?? "" },
-                        set: { newValue in
-                            draft.appleSystemVoiceIdentifier = newValue.isEmpty ? nil : newValue
-                            if let voice = viewModel.systemVoices.first(where: { $0.id == newValue }) {
-                                draft.appleSystemVoiceLanguageCode = voice.languageCode
-                            }
+                SettingsLabeledField("Speech backend") {
+                    Picker("Speech backend", selection: $draft.speechSynthesisBackend) {
+                        ForEach(SpeechSynthesisBackend.allCases, id: \.self) { backend in
+                            Text(label(for: backend)).tag(backend)
                         }
-                    )
-                ) {
-                    Text("Automatic").tag("")
-                    ForEach(viewModel.systemVoices) { voice in
-                        Text(voice.displayName).tag(voice.id)
                     }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .pickerStyle(.menu)
+
+                Toggle("Speak recognized text", isOn: $draft.speakRecognizedText)
+
+                Text("After transcription, Gracula can speak the recognized text back through the selected system voice.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                SettingsLabeledField("System voice") {
+                    Picker(
+                        "System voice",
+                        selection: Binding(
+                            get: { draft.appleSystemVoiceIdentifier ?? "" },
+                            set: { newValue in
+                                draft.appleSystemVoiceIdentifier = newValue.isEmpty ? nil : newValue
+                                if let voice = viewModel.systemVoices.first(where: { $0.id == newValue }) {
+                                    draft.appleSystemVoiceLanguageCode = voice.languageCode
+                                }
+                            }
+                        )
+                    ) {
+                        Text("Automatic").tag("")
+                        ForEach(viewModel.systemVoices) { voice in
+                            Text(voice.displayName).tag(voice.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
 
                 HStack(spacing: 16) {
                     VStack(alignment: .leading, spacing: 4) {
@@ -1759,10 +1809,15 @@ private struct VoicePipelineSettingsEditorView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Text("File: \(VoicePipelineSettingsStore.defaultFileURL().path)")
-                .font(.caption2)
+            Text("Voice settings file")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(VoicePipelineSettingsStore.defaultFileURL().path)
+                .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
+                .lineLimit(nil)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .onAppear {
             reloadDraft()
@@ -1866,7 +1921,7 @@ private struct LocalNotificationSettingsSection: View {
                 .foregroundStyle(.secondary)
 
             Text("macOS does not expose other apps' notifications through a public API. This monitor reads the local Notification Center database, sends new notifications to OpenClaw, and speaks OpenClaw's reply. Full Disk Access is required when macOS blocks the database.")
-                .font(.caption2)
+                .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -1886,5 +1941,33 @@ private func sectionHeader(_ title: String, systemImage: String) -> some View {
         Image(systemName: systemImage)
         Text(title)
             .font(.headline)
+    }
+}
+
+private func settingsSectionCard<Content: View>(
+    @ViewBuilder content: () -> Content
+) -> some View {
+    content()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 8))
+}
+
+private struct SettingsLabeledField<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            content
+        }
     }
 }

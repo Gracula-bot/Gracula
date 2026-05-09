@@ -2765,6 +2765,16 @@ final class OpenClawLocalController: NSObject, ObservableObject {
             "internet",
             "web",
             "веб",
+            "твиттер",
+            "твит",
+            "twitter",
+            "x.com",
+            "x/twitter",
+            "reddit",
+            "реддит",
+            "что говорят",
+            "что пишут",
+            "что обсуждают",
             "найди",
             "поищи",
             "погугли",
@@ -2869,6 +2879,9 @@ final class OpenClawLocalController: NSObject, ObservableObject {
 
     private func looksLikeDegenerateDirectModelReply(_ reply: String) -> Bool {
         let trimmed = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+        if looksLikeInterimAgentReply(trimmed) {
+            return true
+        }
         guard trimmed.count >= 24 else {
             return false
         }
