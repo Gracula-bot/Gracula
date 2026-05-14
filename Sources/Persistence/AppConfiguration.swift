@@ -39,18 +39,7 @@ public struct AppConfiguration: Codable, Sendable, Equatable {
         public var openAIBaseURL: String
         public var openAITemperature: Double
         public var openAITopP: Double
-        public var openAIMaxTokens: Int
-        public var personaMode: String
         public var reasoningMode: String
-        public var notificationRuntimeContextWindow: Int
-        public var notificationMaxOutputTokens: Int
-        public var notificationReserveTokens: Int
-        public var simpleRuntimeContextWindow: Int
-        public var simpleMaxOutputTokens: Int
-        public var simpleReserveTokens: Int
-        public var deepRuntimeContextWindow: Int
-        public var deepMaxOutputTokens: Int
-        public var deepReserveTokens: Int
 
         public init(
             directLocalModeEnabled: Bool,
@@ -62,18 +51,7 @@ public struct AppConfiguration: Codable, Sendable, Equatable {
             openAIBaseURL: String,
             openAITemperature: Double,
             openAITopP: Double,
-            openAIMaxTokens: Int,
-            personaMode: String,
-            reasoningMode: String,
-            notificationRuntimeContextWindow: Int,
-            notificationMaxOutputTokens: Int,
-            notificationReserveTokens: Int,
-            simpleRuntimeContextWindow: Int,
-            simpleMaxOutputTokens: Int,
-            simpleReserveTokens: Int,
-            deepRuntimeContextWindow: Int,
-            deepMaxOutputTokens: Int,
-            deepReserveTokens: Int
+            reasoningMode: String
         ) {
             self.directLocalModeEnabled = directLocalModeEnabled
             self.primaryModelRef = primaryModelRef
@@ -84,18 +62,7 @@ public struct AppConfiguration: Codable, Sendable, Equatable {
             self.openAIBaseURL = openAIBaseURL
             self.openAITemperature = openAITemperature
             self.openAITopP = openAITopP
-            self.openAIMaxTokens = openAIMaxTokens
-            self.personaMode = personaMode
             self.reasoningMode = reasoningMode
-            self.notificationRuntimeContextWindow = notificationRuntimeContextWindow
-            self.notificationMaxOutputTokens = notificationMaxOutputTokens
-            self.notificationReserveTokens = notificationReserveTokens
-            self.simpleRuntimeContextWindow = simpleRuntimeContextWindow
-            self.simpleMaxOutputTokens = simpleMaxOutputTokens
-            self.simpleReserveTokens = simpleReserveTokens
-            self.deepRuntimeContextWindow = deepRuntimeContextWindow
-            self.deepMaxOutputTokens = deepMaxOutputTokens
-            self.deepReserveTokens = deepReserveTokens
         }
     }
 
@@ -404,18 +371,7 @@ public enum AppConfigurationDefaults {
                 openAIBaseURL: "https://api.openai.com/v1",
                 openAITemperature: 0.35,
                 openAITopP: 0.85,
-                openAIMaxTokens: 512,
-                personaMode: "deep_persona",
-                reasoningMode: "on",
-                notificationRuntimeContextWindow: 4096,
-                notificationMaxOutputTokens: 128,
-                notificationReserveTokens: 512,
-                simpleRuntimeContextWindow: 8192,
-                simpleMaxOutputTokens: 512,
-                simpleReserveTokens: 1024,
-                deepRuntimeContextWindow: 16384,
-                deepMaxOutputTokens: 2048,
-                deepReserveTokens: 4096
+                reasoningMode: "on"
             ),
             python: .init(
                 bootstrapExecutablePath: "/usr/bin/python3",

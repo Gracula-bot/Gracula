@@ -1,0 +1,978 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gracula: интерактивная карта потоков</title>
+  <style>
+    :root {
+      --bg: #f6f7f4;
+      --panel: #ffffff;
+      --panel-soft: #f1f4f2;
+      --ink: #182226;
+      --muted: #5d6a70;
+      --line: #d9e0dd;
+      --accent: #0b6f63;
+      --accent-soft: #d9f0eb;
+      --blue: #265f9f;
+      --blue-soft: #deebf8;
+      --red: #a33d35;
+      --red-soft: #f7dfdc;
+      --amber: #9b6a12;
+      --amber-soft: #f3ead2;
+      --shadow: 0 18px 48px rgba(18, 34, 38, 0.08);
+      --radius: 8px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 15px/1.45 "Avenir Next", "Segoe UI", Helvetica, Arial, sans-serif;
+    }
+
+    button,
+    input {
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    .page {
+      max-width: 1500px;
+      margin: 0 auto;
+      padding: 22px;
+    }
+
+    .topbar {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 18px;
+      align-items: start;
+      margin-bottom: 18px;
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin: 0;
+    }
+
+    h1 {
+      font-size: 30px;
+      line-height: 1.1;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      font-size: 17px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      font-size: 14px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    .summary {
+      max-width: 980px;
+      margin-top: 8px;
+      color: var(--muted);
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+
+    .pill {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 6px 10px;
+      background: var(--panel);
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .toolbar {
+      display: grid;
+      gap: 12px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 14px;
+      box-shadow: var(--shadow);
+      margin-bottom: 18px;
+    }
+
+    .toolbar-head {
+      display: grid;
+      grid-template-columns: 1fr minmax(260px, 380px);
+      gap: 12px;
+      align-items: center;
+    }
+
+    .search {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 9px 11px;
+      width: 100%;
+      color: var(--ink);
+      background: #fff;
+    }
+
+    .action-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 8px;
+    }
+
+    .action-button {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 10px 11px;
+      background: #fff;
+      color: var(--ink);
+      text-align: left;
+      min-height: 74px;
+      display: grid;
+      gap: 5px;
+    }
+
+    .action-button:hover {
+      border-color: var(--accent);
+    }
+
+    .action-button[aria-pressed="true"] {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      box-shadow: inset 0 0 0 1px var(--accent);
+    }
+
+    .action-label {
+      font-weight: 700;
+    }
+
+    .action-summary {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .status {
+      display: inline-flex;
+      width: fit-content;
+      border-radius: 999px;
+      padding: 2px 7px;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--accent);
+      background: var(--accent-soft);
+    }
+
+    .status.unavailable {
+      color: var(--red);
+      background: var(--red-soft);
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 420px;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .map-panel,
+    .detail-panel,
+    .component-panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+
+    .map-panel {
+      position: relative;
+      min-height: 780px;
+      padding: 14px;
+      overflow: hidden;
+    }
+
+    .map-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+      position: relative;
+      z-index: 2;
+    }
+
+    .legend {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .legend-item {
+      display: inline-flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .swatch {
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+      border: 1px solid var(--line);
+      background: #fff;
+    }
+
+    .swatch.active {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+
+    .swatch.warn {
+      background: var(--red);
+      border-color: var(--red);
+    }
+
+    .graph-wrap {
+      position: relative;
+      min-height: 700px;
+    }
+
+    #edge-layer {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    #component-grid {
+      position: relative;
+      z-index: 2;
+      display: grid;
+      grid-template-columns: repeat(5, minmax(150px, 1fr));
+      gap: 12px;
+      align-items: start;
+    }
+
+    .lane {
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .lane-title {
+      position: sticky;
+      top: 0;
+      z-index: 3;
+      border-radius: var(--radius);
+      padding: 8px 9px;
+      background: var(--panel-soft);
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font-weight: 800;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+
+    .component-node {
+      position: relative;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 10px;
+      background: #fff;
+      min-height: 96px;
+      display: grid;
+      gap: 7px;
+      transition: border-color 150ms ease, box-shadow 150ms ease, opacity 150ms ease, background 150ms ease;
+    }
+
+    .component-node.dimmed {
+      opacity: 0.32;
+    }
+
+    .component-node.active {
+      border-color: var(--accent);
+      background: #f4fbf8;
+      box-shadow: inset 0 0 0 1px var(--accent);
+    }
+
+    .component-node.unavailable.active {
+      border-color: var(--red);
+      background: var(--red-soft);
+      box-shadow: inset 0 0 0 1px var(--red);
+    }
+
+    .component-title {
+      font-weight: 800;
+      line-height: 1.15;
+    }
+
+    .component-package {
+      color: var(--blue);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .component-kind {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .step-badge {
+      position: absolute;
+      right: 8px;
+      top: 8px;
+      min-width: 22px;
+      height: 22px;
+      border-radius: 999px;
+      display: none;
+      place-items: center;
+      background: var(--accent);
+      color: white;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .component-node.active .step-badge {
+      display: grid;
+    }
+
+    .edge-line {
+      stroke: var(--accent);
+      stroke-width: 3;
+      stroke-linecap: round;
+      opacity: 0.9;
+      filter: drop-shadow(0 4px 6px rgba(11, 111, 99, 0.18));
+    }
+
+    .edge-line.unavailable {
+      stroke: var(--red);
+      stroke-dasharray: 8 7;
+    }
+
+    .edge-label {
+      fill: var(--ink);
+      font-size: 11px;
+      paint-order: stroke;
+      stroke: white;
+      stroke-width: 5px;
+      stroke-linejoin: round;
+    }
+
+    .side-stack {
+      display: grid;
+      gap: 18px;
+      position: sticky;
+      top: 14px;
+    }
+
+    .detail-panel,
+    .component-panel {
+      padding: 14px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .detail-head {
+      display: grid;
+      gap: 8px;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 12px;
+    }
+
+    .detail-title-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: start;
+    }
+
+    .payload {
+      border-radius: var(--radius);
+      padding: 10px;
+      background: var(--panel-soft);
+      color: var(--ink);
+      font-family: Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+
+    .flow-steps {
+      display: grid;
+      gap: 8px;
+      max-height: 520px;
+      overflow: auto;
+      padding-right: 4px;
+    }
+
+    .flow-step {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 10px;
+      display: grid;
+      gap: 7px;
+      background: #fff;
+    }
+
+    .flow-step.active {
+      border-color: var(--accent);
+      background: #f4fbf8;
+    }
+
+    .flow-step.unavailable {
+      border-color: var(--red);
+      background: var(--red-soft);
+    }
+
+    .flow-step-route {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      flex-wrap: wrap;
+      font-weight: 800;
+      font-size: 13px;
+    }
+
+    .arrow {
+      color: var(--accent);
+    }
+
+    .flow-data {
+      color: var(--blue);
+      font-family: Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+
+    .flow-note {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .component-details {
+      display: grid;
+      gap: 8px;
+    }
+
+    .file-list {
+      display: grid;
+      gap: 6px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .file-list a {
+      display: block;
+      border-radius: var(--radius);
+      padding: 7px 8px;
+      background: var(--panel-soft);
+      color: var(--blue);
+      text-decoration: none;
+      font-family: Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+
+    .file-list a:hover {
+      text-decoration: underline;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .empty-state,
+    .error-state {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 14px;
+      background: var(--panel);
+      color: var(--muted);
+    }
+
+    .error-state {
+      color: var(--red);
+      background: var(--red-soft);
+      border-color: #e6b9b4;
+    }
+
+    footer {
+      margin-top: 18px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    @media (max-width: 1180px) {
+      .workspace,
+      .topbar,
+      .toolbar-head {
+        grid-template-columns: 1fr;
+      }
+
+      .meta {
+        justify-content: flex-start;
+      }
+
+      .side-stack {
+        position: static;
+      }
+
+      #component-grid {
+        grid-template-columns: repeat(3, minmax(150px, 1fr));
+      }
+    }
+
+    @media (max-width: 720px) {
+      .page {
+        padding: 14px;
+      }
+
+      #component-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .map-panel {
+        min-height: auto;
+      }
+
+      .graph-wrap {
+        min-height: auto;
+      }
+
+      #edge-layer {
+        display: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="topbar">
+      <div>
+        <h1 id="page-title">Gracula: интерактивная карта потоков</h1>
+        <p class="summary" id="page-summary">Загрузка JSON-документа...</p>
+      </div>
+      <div class="meta" id="meta"></div>
+    </header>
+
+    <section class="toolbar" aria-label="Действия потоков">
+      <div class="toolbar-head">
+        <div>
+          <h2>Действия</h2>
+          <p class="muted">Кликните действие, чтобы подсветить маршрут между пакетами и увидеть передачу данных по шагам.</p>
+        </div>
+        <input class="search" id="search" type="search" placeholder="Фильтр действий или компонентов">
+      </div>
+      <div class="action-grid" id="actions"></div>
+    </section>
+
+    <section class="workspace">
+      <div class="map-panel">
+        <div class="map-head">
+          <div>
+            <h2>Пакеты и компоненты</h2>
+            <p class="muted">Все SwiftPM targets, ключевые application-компоненты и внешние backend'ы.</p>
+          </div>
+          <div class="legend">
+            <span class="legend-item"><span class="swatch active"></span>участвует</span>
+            <span class="legend-item"><span class="swatch warn"></span>разрыв / extension point</span>
+            <span class="legend-item"><span class="swatch"></span>не в текущем потоке</span>
+          </div>
+        </div>
+        <div class="graph-wrap" id="graph-wrap">
+          <svg id="edge-layer" aria-hidden="true"></svg>
+          <div id="component-grid"></div>
+        </div>
+      </div>
+
+      <aside class="side-stack">
+        <section class="detail-panel" aria-live="polite">
+          <div class="detail-head">
+            <div class="detail-title-row">
+              <h2 id="action-title">Действие не выбрано</h2>
+              <span class="status" id="action-status">ready</span>
+            </div>
+            <p class="muted" id="action-summary">Выберите действие сверху.</p>
+            <div class="payload" id="action-payload">payload</div>
+          </div>
+          <div>
+            <h3>Передача данных</h3>
+            <div class="flow-steps" id="flow-steps"></div>
+          </div>
+        </section>
+
+        <section class="component-panel">
+          <h2 id="component-title">Компонент</h2>
+          <div class="component-details" id="component-details">
+            <p class="muted">Кликните узел на карте, чтобы увидеть роль и исходники.</p>
+          </div>
+        </section>
+      </aside>
+    </section>
+
+    <footer id="footer"></footer>
+  </main>
+
+  <script>
+    const dataUrl = new URL("./gracula-app-flows.json", window.location.href);
+    const state = {
+      data: null,
+      activeActionId: null,
+      activeStepIndex: null,
+      selectedComponentId: null,
+      query: ""
+    };
+
+    const groups = ["Entry", "UI", "Core", "AI", "Tools", "Integrations", "Voice", "Runtime"];
+    const els = {
+      title: document.getElementById("page-title"),
+      summary: document.getElementById("page-summary"),
+      meta: document.getElementById("meta"),
+      actions: document.getElementById("actions"),
+      search: document.getElementById("search"),
+      grid: document.getElementById("component-grid"),
+      wrap: document.getElementById("graph-wrap"),
+      edgeLayer: document.getElementById("edge-layer"),
+      actionTitle: document.getElementById("action-title"),
+      actionStatus: document.getElementById("action-status"),
+      actionSummary: document.getElementById("action-summary"),
+      actionPayload: document.getElementById("action-payload"),
+      flowSteps: document.getElementById("flow-steps"),
+      componentTitle: document.getElementById("component-title"),
+      componentDetails: document.getElementById("component-details"),
+      footer: document.getElementById("footer")
+    };
+
+    els.search.addEventListener("input", (event) => {
+      state.query = event.target.value.trim().toLowerCase();
+      renderActions();
+      renderComponents();
+      drawEdges();
+    });
+
+    window.addEventListener("resize", () => {
+      window.requestAnimationFrame(drawEdges);
+    });
+
+    loadData();
+
+    async function loadData() {
+      try {
+        const response = await fetch(dataUrl, { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        init(await response.json());
+      } catch (error) {
+        els.summary.innerHTML = `<span class="error-state">Не удалось загрузить ${escapeHtml(dataUrl.pathname)}. Откройте страницу через локальный сервер из папки docs или проверьте JSON: ${escapeHtml(error.message)}</span>`;
+      }
+    }
+
+    function init(data) {
+      state.data = data;
+      state.activeActionId = data.actions[0]?.id || null;
+      els.title.textContent = data.meta.title;
+      els.summary.textContent = data.meta.summary;
+      els.meta.innerHTML = [
+        `generated ${data.meta.generatedOn}`,
+        data.meta.sourceOfTruth,
+        data.meta.projectRoot
+      ].map((item) => `<span class="pill">${escapeHtml(item)}</span>`).join("");
+      els.footer.textContent = `Данные загружены из ${dataUrl.pathname.split("/").pop()}. Компоненты: ${data.components.length}. Действия: ${data.actions.length}.`;
+      render();
+    }
+
+    function render() {
+      renderActions();
+      renderComponents();
+      renderActionDetail();
+      renderSelectedComponent();
+      requestAnimationFrame(drawEdges);
+    }
+
+    function renderActions() {
+      const actions = filteredActions();
+      els.actions.innerHTML = actions.map((action) => `
+        <button class="action-button" type="button" data-action-id="${escapeAttr(action.id)}" aria-pressed="${action.id === state.activeActionId}">
+          <span class="status ${action.status === "unavailable" ? "unavailable" : ""}">${escapeHtml(action.category)} · ${escapeHtml(action.status)}</span>
+          <span class="action-label">${escapeHtml(action.label)}</span>
+          <span class="action-summary">${escapeHtml(action.summary)}</span>
+        </button>
+      `).join("");
+
+      els.actions.querySelectorAll("button[data-action-id]").forEach((button) => {
+        button.addEventListener("click", () => {
+          state.activeActionId = button.dataset.actionId;
+          state.activeStepIndex = null;
+          render();
+        });
+      });
+    }
+
+    function renderComponents() {
+      const componentsByGroup = new Map();
+      for (const component of state.data.components) {
+        if (state.query && !matchesQuery(component)) {
+          continue;
+        }
+        const list = componentsByGroup.get(component.group) || [];
+        list.push(component);
+        componentsByGroup.set(component.group, list);
+      }
+
+      const activeIds = activeComponentIds();
+      const order = groups.filter((group) => componentsByGroup.has(group))
+        .concat([...componentsByGroup.keys()].filter((group) => !groups.includes(group)));
+
+      els.grid.innerHTML = order.map((group) => `
+        <section class="lane">
+          <div class="lane-title">${escapeHtml(group)}</div>
+          ${(componentsByGroup.get(group) || []).map((component) => {
+            const active = activeIds.has(component.id);
+            const dimmed = state.activeActionId && activeIds.size > 0 && !active;
+            const step = firstStepFor(component.id);
+            return `
+              <button class="component-node ${active ? "active" : ""} ${dimmed ? "dimmed" : ""} ${component.status === "unavailable" ? "unavailable" : ""}" type="button" data-component-id="${escapeAttr(component.id)}">
+                <span class="step-badge">${step === null ? "" : step + 1}</span>
+                <span class="component-title">${escapeHtml(component.label)}</span>
+                <span class="component-package">${escapeHtml(component.package)}</span>
+                <span class="component-kind">${escapeHtml(component.kind)}</span>
+              </button>
+            `;
+          }).join("")}
+        </section>
+      `).join("");
+
+      els.grid.querySelectorAll("button[data-component-id]").forEach((button) => {
+        button.addEventListener("click", () => {
+          state.selectedComponentId = button.dataset.componentId;
+          renderSelectedComponent();
+        });
+      });
+    }
+
+    function renderActionDetail() {
+      const action = activeAction();
+      if (!action) {
+        els.actionTitle.textContent = "Действие не выбрано";
+        els.actionSummary.textContent = "Выберите действие сверху.";
+        els.actionPayload.textContent = "payload";
+        els.flowSteps.innerHTML = "";
+        return;
+      }
+
+      els.actionTitle.textContent = action.label;
+      els.actionStatus.textContent = action.status;
+      els.actionStatus.className = `status ${action.status === "unavailable" ? "unavailable" : ""}`;
+      els.actionSummary.textContent = action.summary;
+      els.actionPayload.textContent = action.payload;
+      els.flowSteps.innerHTML = action.edges.map((edge, index) => {
+        const from = component(edge.from);
+        const to = component(edge.to);
+        const active = state.activeStepIndex === index;
+        const unavailable = action.status === "unavailable" || from?.status === "unavailable" || to?.status === "unavailable";
+        return `
+          <button class="flow-step ${active ? "active" : ""} ${unavailable ? "unavailable" : ""}" type="button" data-step-index="${index}">
+            <span class="flow-step-route">
+              <span>${escapeHtml(from?.label || edge.from)}</span>
+              <span class="arrow">→</span>
+              <span>${escapeHtml(to?.label || edge.to)}</span>
+            </span>
+            <span class="flow-data">${escapeHtml(edge.data)}</span>
+            <span class="flow-note">${escapeHtml(edge.annotation)}</span>
+          </button>
+        `;
+      }).join("");
+
+      els.flowSteps.querySelectorAll("button[data-step-index]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const next = Number(button.dataset.stepIndex);
+          state.activeStepIndex = state.activeStepIndex === next ? null : next;
+          renderComponents();
+          renderActionDetail();
+          drawEdges();
+        });
+      });
+    }
+
+    function renderSelectedComponent() {
+      const item = component(state.selectedComponentId) || component([...activeComponentIds()][0]);
+      if (!item) {
+        els.componentTitle.textContent = "Компонент";
+        els.componentDetails.innerHTML = `<p class="muted">Кликните узел на карте, чтобы увидеть роль и исходники.</p>`;
+        return;
+      }
+
+      els.componentTitle.textContent = item.label;
+      const files = item.files?.length
+        ? `<ul class="file-list">${item.files.map((file) => `<li><a href="${escapeAttr(fileHref(file))}">${escapeHtml(file)}</a></li>`).join("")}</ul>`
+        : `<p class="muted">Исходники не привязаны: это внешний actor/service.</p>`;
+
+      els.componentDetails.innerHTML = `
+        <span class="status ${item.status === "unavailable" ? "unavailable" : ""}">${escapeHtml(item.package)} · ${escapeHtml(item.kind)}</span>
+        <p>${escapeHtml(item.description)}</p>
+        ${files}
+      `;
+    }
+
+    function drawEdges() {
+      const action = activeAction();
+      if (!action) {
+        els.edgeLayer.innerHTML = "";
+        return;
+      }
+
+      const wrapRect = els.wrap.getBoundingClientRect();
+      els.edgeLayer.setAttribute("viewBox", `0 0 ${wrapRect.width} ${wrapRect.height}`);
+      els.edgeLayer.setAttribute("width", wrapRect.width);
+      els.edgeLayer.setAttribute("height", wrapRect.height);
+
+      const defs = `
+        <defs>
+          <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+            <path d="M0,0 L0,6 L9,3 z" fill="${action.status === "unavailable" ? "#a33d35" : "#0b6f63"}"></path>
+          </marker>
+        </defs>
+      `;
+
+      const edgeMarkup = action.edges.map((edge, index) => {
+        if (state.activeStepIndex !== null && state.activeStepIndex !== index) {
+          return "";
+        }
+
+        const fromEl = els.grid.querySelector(`[data-component-id="${cssEscape(edge.from)}"]`);
+        const toEl = els.grid.querySelector(`[data-component-id="${cssEscape(edge.to)}"]`);
+        if (!fromEl || !toEl) {
+          return "";
+        }
+
+        const fromRect = fromEl.getBoundingClientRect();
+        const toRect = toEl.getBoundingClientRect();
+        const start = center(fromRect, wrapRect);
+        const end = center(toRect, wrapRect);
+        const midX = (start.x + end.x) / 2;
+        const midY = (start.y + end.y) / 2;
+        const unavailable = action.status === "unavailable" || component(edge.from)?.status === "unavailable" || component(edge.to)?.status === "unavailable";
+
+        return `
+          <line class="edge-line ${unavailable ? "unavailable" : ""}" x1="${start.x}" y1="${start.y}" x2="${end.x}" y2="${end.y}" marker-end="url(#arrow)"></line>
+          <text class="edge-label" x="${midX}" y="${midY - 7}" text-anchor="middle">${index + 1}</text>
+        `;
+      }).join("");
+
+      els.edgeLayer.innerHTML = defs + edgeMarkup;
+    }
+
+    function activeAction() {
+      return state.data?.actions.find((action) => action.id === state.activeActionId) || null;
+    }
+
+    function component(id) {
+      return state.data?.components.find((item) => item.id === id) || null;
+    }
+
+    function activeComponentIds() {
+      const action = activeAction();
+      const ids = new Set();
+      if (!action) {
+        return ids;
+      }
+      const edges = state.activeStepIndex === null ? action.edges : [action.edges[state.activeStepIndex]];
+      for (const edge of edges.filter(Boolean)) {
+        ids.add(edge.from);
+        ids.add(edge.to);
+      }
+      return ids;
+    }
+
+    function firstStepFor(componentId) {
+      const action = activeAction();
+      if (!action) {
+        return null;
+      }
+      const index = action.edges.findIndex((edge) => edge.from === componentId || edge.to === componentId);
+      return index === -1 ? null : index;
+    }
+
+    function filteredActions() {
+      if (!state.query) {
+        return state.data.actions;
+      }
+      return state.data.actions.filter((action) => {
+        const haystack = `${action.label} ${action.category} ${action.summary} ${action.payload}`.toLowerCase();
+        return haystack.includes(state.query) || action.edges.some((edge) => {
+          const from = component(edge.from);
+          const to = component(edge.to);
+          return `${from?.label || ""} ${to?.label || ""} ${edge.data} ${edge.annotation}`.toLowerCase().includes(state.query);
+        });
+      });
+    }
+
+    function matchesQuery(component) {
+      const haystack = `${component.label} ${component.package} ${component.group} ${component.kind} ${component.description}`.toLowerCase();
+      return haystack.includes(state.query);
+    }
+
+    function center(rect, wrapRect) {
+      return {
+        x: rect.left - wrapRect.left + rect.width / 2,
+        y: rect.top - wrapRect.top + rect.height / 2
+      };
+    }
+
+    function fileHref(path) {
+      if (path.startsWith(".openclaw/") || path.startsWith("ConfigFiles/")) {
+        return `file://${state.data.meta.projectRoot}/${path}`;
+      }
+      if (path.includes("/")) {
+        return `file://${state.data.meta.projectRoot}/${path}`;
+      }
+      return "#";
+    }
+
+    function cssEscape(value) {
+      return String(value).replace(/"/g, "\\\"");
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function escapeAttr(value) {
+      return escapeHtml(value);
+    }
+  </script>
+</body>
+</html>

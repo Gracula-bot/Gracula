@@ -97,7 +97,6 @@ struct AppCompositionRoot {
         let openAIModel = Self.preferredOpenAIModel(from: environment)
         let temperature = Self.preferredLLMTemperature(from: environment)
         let topP = configuration.llm.openAITopP
-        let maxTokens = configuration.llm.openAIMaxTokens
 
         if !openAIKey.isEmpty {
             return LLMPlanningAdapter(
@@ -112,7 +111,7 @@ struct AppCompositionRoot {
                     model: openAIModel,
                     temperature: temperature,
                     topP: topP,
-                    maxTokens: maxTokens
+                    maxTokens: nil
                 ),
                 parser: AgentPlanParser(availableTools: availableTools),
                 metricsStore: llmMetricsStore,
@@ -132,7 +131,7 @@ struct AppCompositionRoot {
                 model: environment["GRACULA_LLM_MODEL"],
                 temperature: temperature,
                 topP: topP,
-                maxTokens: maxTokens
+                maxTokens: nil
             ),
             parser: AgentPlanParser(availableTools: availableTools),
             metricsStore: llmMetricsStore,

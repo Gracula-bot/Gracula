@@ -418,7 +418,6 @@ struct BrainSettingsSection: View {
     @State private var firecrawlAPIKey = ""
     @State private var openAITemperature = 0.35
     @State private var openAITopP = 0.85
-    @State private var openAIMaxTokens = 512
     @State private var qdrantURL = ""
     @State private var qdrantBinaryPath = ""
     @State private var qdrantStoragePath = ""
@@ -437,17 +436,7 @@ struct BrainSettingsSection: View {
     @State private var telegramUserFilesDirectory = ""
     @State private var telegramUserEncryptionKey = ""
     @State private var telegramUserChatAllowlist = ""
-    @State private var selectedPersonaMode: BrainPersonaMode = .deepPersona
     @State private var selectedReasoningMode: BrainReasoningMode = .on
-    @State private var notificationContextTokens = 4096
-    @State private var notificationOutputTokens = 128
-    @State private var notificationReserveTokens = 512
-    @State private var simpleContextTokens = 8192
-    @State private var simpleOutputTokens = 512
-    @State private var simpleReserveTokens = 1024
-    @State private var deepContextTokens = 16384
-    @State private var deepOutputTokens = 2048
-    @State private var deepReserveTokens = 4096
     @State private var openAIApplyStatus = ""
     @State private var isSyncing = false
     @State private var didSeedProviderDefaults = false
@@ -499,23 +488,6 @@ struct BrainSettingsSection: View {
                     applyCustomModelRef(newValue)
                 }
 
-            Divider()
-
-            Picker("Persona mode", selection: $selectedPersonaMode) {
-                ForEach(BrainPersonaMode.allCases) { mode in
-                    Text(mode.displayName).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-            .onChange(of: selectedPersonaMode) { _, newValue in
-                guard !isSyncing else { return }
-                upsertJSONSetting(
-                    key: "agents.defaults.localPrompt.mode",
-                    value: newValue.rawValue,
-                    isSecret: false
-                )
-            }
-
             Picker("Reasoning", selection: $selectedReasoningMode) {
                 ForEach(BrainReasoningMode.allCases) { mode in
                     Text(mode.displayName).tag(mode)
@@ -530,8 +502,6 @@ struct BrainSettingsSection: View {
                     isSecret: false
                 )
             }
-
-            promptTokenControls
 
             apiKeyControls
 
@@ -595,58 +565,7 @@ struct BrainSettingsSection: View {
             default: 0.85,
             range: 0...1
         )
-        openAIMaxTokens = intValue(
-            for: "agents.defaults.localPrompt.openAIChat.maxTokens",
-            default: 512,
-            range: 32...8192
-        )
-        selectedPersonaMode = BrainPersonaMode(rawValue: value(for: "agents.defaults.localPrompt.mode") ?? "") ?? .deepPersona
         selectedReasoningMode = BrainReasoningMode(rawValue: value(for: "agents.defaults.localPrompt.reasoning") ?? "") ?? .on
-        notificationContextTokens = intValue(
-            for: "agents.defaults.localPrompt.notificationSpeech.runtimeContextWindow",
-            default: 4096,
-            range: 1024...4096
-        )
-        notificationOutputTokens = intValue(
-            for: "agents.defaults.localPrompt.notificationSpeech.maxOutputTokens",
-            default: 128,
-            range: 16...128
-        )
-        notificationReserveTokens = intValue(
-            for: "agents.defaults.localPrompt.notificationSpeech.reserveTokens",
-            default: 512,
-            range: 128...1024
-        )
-        simpleContextTokens = intValue(
-            for: "agents.defaults.localPrompt.simpleChat.runtimeContextWindow",
-            default: 8192,
-            range: 2048...32768
-        )
-        simpleOutputTokens = intValue(
-            for: "agents.defaults.localPrompt.simpleChat.maxOutputTokens",
-            default: 512,
-            range: 64...2048
-        )
-        simpleReserveTokens = intValue(
-            for: "agents.defaults.localPrompt.simpleChat.reserveTokens",
-            default: 1024,
-            range: 256...4096
-        )
-        deepContextTokens = intValue(
-            for: "agents.defaults.localPrompt.deepPersona.runtimeContextWindow",
-            default: 16384,
-            range: 8192...65536
-        )
-        deepOutputTokens = intValue(
-            for: "agents.defaults.localPrompt.deepPersona.maxOutputTokens",
-            default: 2048,
-            range: 256...8192
-        )
-        deepReserveTokens = intValue(
-            for: "agents.defaults.localPrompt.deepPersona.reserveTokens",
-            default: 4096,
-            range: 1024...8192
-        )
         let runtimeLayout = ProjectRuntimeLayout.resolveDefault()
         qdrantURL = environmentValue(for: "GRACULA_QDRANT_URL") ?? "http://127.0.0.1:6333"
         qdrantBinaryPath = environmentValue(for: "GRACULA_QDRANT_BIN")
@@ -917,20 +836,6 @@ struct BrainSettingsSection: View {
                     }
             }
 
-            Stepper(value: $openAIMaxTokens, in: 32...8192, step: 32) {
-                Text("OpenAI max tokens cap: \(openAIMaxTokens)")
-                    .font(.caption)
-            }
-            .onChange(of: openAIMaxTokens) { _, newValue in
-                guard !isSyncing else { return }
-                upsertJSONSetting(
-                    key: "agents.defaults.localPrompt.openAIChat.maxTokens",
-                    value: String(newValue),
-                    isSecret: false,
-                    kind: .int
-                )
-            }
-
             Text("These values are applied to direct OpenAI chat requests after you press Apply.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -1108,93 +1013,6 @@ struct BrainSettingsSection: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
-    }
-
-    private var promptTokenControls: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            promptTokenRow(
-                title: "Notification speech",
-                context: $notificationContextTokens,
-                output: $notificationOutputTokens,
-                reserve: $notificationReserveTokens,
-                contextRange: 1024...4096,
-                outputRange: 16...128,
-                reserveRange: 128...1024,
-                keyPrefix: "agents.defaults.localPrompt.notificationSpeech"
-            )
-            promptTokenRow(
-                title: "Simple chat",
-                context: $simpleContextTokens,
-                output: $simpleOutputTokens,
-                reserve: $simpleReserveTokens,
-                contextRange: 2048...32768,
-                outputRange: 64...2048,
-                reserveRange: 256...4096,
-                keyPrefix: "agents.defaults.localPrompt.simpleChat"
-            )
-            promptTokenRow(
-                title: "Deep persona",
-                context: $deepContextTokens,
-                output: $deepOutputTokens,
-                reserve: $deepReserveTokens,
-                contextRange: 8192...65536,
-                outputRange: 256...8192,
-                reserveRange: 1024...8192,
-                keyPrefix: "agents.defaults.localPrompt.deepPersona"
-            )
-        }
-    }
-
-    private func promptTokenRow(
-        title: String,
-        context: Binding<Int>,
-        output: Binding<Int>,
-        reserve: Binding<Int>,
-        contextRange: ClosedRange<Int>,
-        outputRange: ClosedRange<Int>,
-        reserveRange: ClosedRange<Int>,
-        keyPrefix: String
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
-                promptStepperRow("Context", value: context, range: contextRange, key: "\(keyPrefix).runtimeContextWindow")
-                promptStepperRow("Output", value: output, range: outputRange, key: "\(keyPrefix).maxOutputTokens")
-                promptStepperRow("Reserve", value: reserve, range: reserveRange, key: "\(keyPrefix).reserveTokens")
-            }
-        }
-    }
-
-    private func promptStepperRow(
-        _ label: String,
-        value: Binding<Int>,
-        range: ClosedRange<Int>,
-        key: String
-    ) -> some View {
-        GridRow {
-            Text(label)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-            Stepper(value: value, in: range, step: tokenStep(for: range)) {
-                Text("\(value.wrappedValue)")
-                    .font(.system(.caption, design: .monospaced))
-            }
-            .onChange(of: value.wrappedValue) { _, newValue in
-                guard !isSyncing else { return }
-                upsertJSONSetting(
-                    key: key,
-                    value: String(newValue),
-                    isSecret: false,
-                    kind: .int
-                )
-            }
-        }
-    }
-
-    private func tokenStep(for range: ClosedRange<Int>) -> Int {
-        range.upperBound <= 128 ? 16 : 256
     }
 
     private var activeBrainDisplayName: String {
@@ -1476,12 +1294,6 @@ struct BrainSettingsSection: View {
             isSecret: false,
             kind: .double
         )
-        ensureJSONSetting(
-            key: "agents.defaults.localPrompt.openAIChat.maxTokens",
-            value: "512",
-            isSecret: false,
-            kind: .int
-        )
     }
 
     private func clearModelFallbacks() {
@@ -1591,22 +1403,6 @@ enum BrainPreset: String, CaseIterable, Identifiable {
             return OpenClawLLMConfiguration.openAIModelRef
         case .custom:
             return ""
-        }
-    }
-}
-
-private enum BrainPersonaMode: String, CaseIterable, Identifiable {
-    case personaCompact = "persona_compact"
-    case deepPersona = "deep_persona"
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .personaCompact:
-            return "persona_compact"
-        case .deepPersona:
-            return "deep_persona"
         }
     }
 }

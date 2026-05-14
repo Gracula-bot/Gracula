@@ -79,7 +79,11 @@ struct OpenClawCanonicalSettingsBridge {
             "SOUL.md",
             "TOOLS.md",
             "USER.md",
-            "persona_compact.md"
+            "Vibe.txt",
+            "vibe.txt",
+            "style/Vibe.txt",
+            "style/vibe.txt",
+            "style/vibe1.txt"
         ]
 
         return names.map { name in
@@ -101,6 +105,10 @@ struct OpenClawCanonicalSettingsBridge {
         try fileManager.createDirectory(at: layout.workspaceDirectoryURL, withIntermediateDirectories: true)
         for file in files {
             let url = layout.workspaceDirectoryURL.appendingPathComponent(file.relativePath)
+            try fileManager.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
             let data = Data(file.contents.utf8)
             try data.write(to: url, options: [.atomic])
         }
@@ -132,18 +140,7 @@ struct OpenClawCanonicalSettingsBridge {
             secretJSON("models.providers.openai.apiKey", configuration.apiKeys.openAI),
             json("agents.defaults.localPrompt.openAIChat.temperature", String(configuration.llm.openAITemperature), kind: .double),
             json("agents.defaults.localPrompt.openAIChat.topP", String(configuration.llm.openAITopP), kind: .double),
-            json("agents.defaults.localPrompt.openAIChat.maxTokens", String(configuration.llm.openAIMaxTokens), kind: .int),
-            json("agents.defaults.localPrompt.mode", configuration.llm.personaMode),
             json("agents.defaults.localPrompt.reasoning", configuration.llm.reasoningMode),
-            json("agents.defaults.localPrompt.notificationSpeech.runtimeContextWindow", String(configuration.llm.notificationRuntimeContextWindow), kind: .int),
-            json("agents.defaults.localPrompt.notificationSpeech.maxOutputTokens", String(configuration.llm.notificationMaxOutputTokens), kind: .int),
-            json("agents.defaults.localPrompt.notificationSpeech.reserveTokens", String(configuration.llm.notificationReserveTokens), kind: .int),
-            json("agents.defaults.localPrompt.simpleChat.runtimeContextWindow", String(configuration.llm.simpleRuntimeContextWindow), kind: .int),
-            json("agents.defaults.localPrompt.simpleChat.maxOutputTokens", String(configuration.llm.simpleMaxOutputTokens), kind: .int),
-            json("agents.defaults.localPrompt.simpleChat.reserveTokens", String(configuration.llm.simpleReserveTokens), kind: .int),
-            json("agents.defaults.localPrompt.deepPersona.runtimeContextWindow", String(configuration.llm.deepRuntimeContextWindow), kind: .int),
-            json("agents.defaults.localPrompt.deepPersona.maxOutputTokens", String(configuration.llm.deepMaxOutputTokens), kind: .int),
-            json("agents.defaults.localPrompt.deepPersona.reserveTokens", String(configuration.llm.deepReserveTokens), kind: .int),
             json("integrations.telegram.business.enabled", configuration.telegram.businessEnabled ? "true" : "false", kind: .bool),
             secretJSON("integrations.telegram.business.botToken", configuration.telegram.businessBotToken),
             json("integrations.telegram.business.businessConnectionId", configuration.telegram.businessConnectionID),
@@ -181,18 +178,7 @@ struct OpenClawCanonicalSettingsBridge {
         configuration.llm.primaryModelRef = jsonMap["agents.defaults.model.primary"] ?? configuration.llm.primaryModelRef
         configuration.llm.openAITemperature = Double(jsonMap["agents.defaults.localPrompt.openAIChat.temperature"] ?? "") ?? configuration.llm.openAITemperature
         configuration.llm.openAITopP = Double(jsonMap["agents.defaults.localPrompt.openAIChat.topP"] ?? "") ?? configuration.llm.openAITopP
-        configuration.llm.openAIMaxTokens = Int(jsonMap["agents.defaults.localPrompt.openAIChat.maxTokens"] ?? "") ?? configuration.llm.openAIMaxTokens
-        configuration.llm.personaMode = jsonMap["agents.defaults.localPrompt.mode"] ?? configuration.llm.personaMode
         configuration.llm.reasoningMode = jsonMap["agents.defaults.localPrompt.reasoning"] ?? configuration.llm.reasoningMode
-        configuration.llm.notificationRuntimeContextWindow = Int(jsonMap["agents.defaults.localPrompt.notificationSpeech.runtimeContextWindow"] ?? "") ?? configuration.llm.notificationRuntimeContextWindow
-        configuration.llm.notificationMaxOutputTokens = Int(jsonMap["agents.defaults.localPrompt.notificationSpeech.maxOutputTokens"] ?? "") ?? configuration.llm.notificationMaxOutputTokens
-        configuration.llm.notificationReserveTokens = Int(jsonMap["agents.defaults.localPrompt.notificationSpeech.reserveTokens"] ?? "") ?? configuration.llm.notificationReserveTokens
-        configuration.llm.simpleRuntimeContextWindow = Int(jsonMap["agents.defaults.localPrompt.simpleChat.runtimeContextWindow"] ?? "") ?? configuration.llm.simpleRuntimeContextWindow
-        configuration.llm.simpleMaxOutputTokens = Int(jsonMap["agents.defaults.localPrompt.simpleChat.maxOutputTokens"] ?? "") ?? configuration.llm.simpleMaxOutputTokens
-        configuration.llm.simpleReserveTokens = Int(jsonMap["agents.defaults.localPrompt.simpleChat.reserveTokens"] ?? "") ?? configuration.llm.simpleReserveTokens
-        configuration.llm.deepRuntimeContextWindow = Int(jsonMap["agents.defaults.localPrompt.deepPersona.runtimeContextWindow"] ?? "") ?? configuration.llm.deepRuntimeContextWindow
-        configuration.llm.deepMaxOutputTokens = Int(jsonMap["agents.defaults.localPrompt.deepPersona.maxOutputTokens"] ?? "") ?? configuration.llm.deepMaxOutputTokens
-        configuration.llm.deepReserveTokens = Int(jsonMap["agents.defaults.localPrompt.deepPersona.reserveTokens"] ?? "") ?? configuration.llm.deepReserveTokens
 
         configuration.qdrant.baseURL = environmentMap["GRACULA_QDRANT_URL"] ?? configuration.qdrant.baseURL
         configuration.qdrant.binaryPath = environmentMap["GRACULA_QDRANT_BIN"] ?? configuration.qdrant.binaryPath

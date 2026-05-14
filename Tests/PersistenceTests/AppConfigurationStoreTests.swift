@@ -105,11 +105,6 @@ func bootstrapSeedsWorkspaceTemplatesWithoutBackupFiles() throws {
         atomically: true,
         encoding: .utf8
     )
-    try "compact\n".write(
-        to: resources.appendingPathComponent("persona_compact.md"),
-        atomically: true,
-        encoding: .utf8
-    )
     try "# Bootstrap\n".write(
         to: resources.appendingPathComponent("BOOTSTRAP.md"),
         atomically: true,
@@ -282,18 +277,7 @@ func loadOrCreateRepairsCanonicalPlistWithMissingNewKeys() throws {
             "openAIBaseURL": "https://api.openai.com/v1",
             "openAITemperature": 0.35,
             "openAITopP": 0.85,
-            "openAIMaxTokens": 512,
-            "personaMode": "deep_persona",
             "reasoningMode": "on",
-            "notificationRuntimeContextWindow": 4096,
-            "notificationMaxOutputTokens": 128,
-            "notificationReserveTokens": 512,
-            "simpleRuntimeContextWindow": 8192,
-            "simpleMaxOutputTokens": 512,
-            "simpleReserveTokens": 1024,
-            "deepRuntimeContextWindow": 16384,
-            "deepMaxOutputTokens": 2048,
-            "deepReserveTokens": 4096
         ],
         "python": [
             "bootstrapExecutablePath": "/usr/bin/python3",

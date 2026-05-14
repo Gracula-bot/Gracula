@@ -1,0 +1,462 @@
+{
+  "meta": {
+    "title": "Gracula: интерактивная карта потоков между пакетами",
+    "generatedOn": "2026-05-13",
+    "projectRoot": "/Users/gg/Gracula",
+    "language": "ru",
+    "sourceOfTruth": "Package.swift, Sources/**, Examples/GraculaExample/**",
+    "summary": "JSON описывает компоненты, пакеты и маршруты данных для интерактивной HTML-страницы. HTML не хранит логику потоков вручную: он строит узлы, действия, подсветку и аннотации из этого документа."
+  },
+  "legend": {
+    "activeNode": "Компонент участвует в выбранном действии.",
+    "activeEdge": "Данные переходят между двумя компонентами в выбранном действии.",
+    "unavailable": "Поток показывает текущий разрыв или точку расширения, а не готовую возможность."
+  },
+  "components": [
+    {
+      "id": "user",
+      "label": "User",
+      "package": "Human",
+      "group": "Entry",
+      "kind": "actor",
+      "description": "Пользователь вводит текст, говорит команду, подтверждает действие или запускает example runtime.",
+      "files": []
+    },
+    {
+      "id": "gracula_app",
+      "label": "GraculaApp",
+      "package": "AgentApp",
+      "group": "Entry",
+      "kind": "SwiftUI App",
+      "description": "Основной executable target. Создает окно и отдает UI из composition root.",
+      "files": ["Sources/AgentApp/GraculaApp.swift"]
+    },
+    {
+      "id": "composition_root",
+      "label": "AppCompositionRoot",
+      "package": "AgentApp",
+      "group": "Entry",
+      "kind": "composition",
+      "description": "Собирает tools, policy gate, planner, executor, Telegram routing, trace logger и AgentView.",
+      "files": ["Sources/AgentApp/AppCompositionRoot.swift"]
+    },
+    {
+      "id": "app_shell",
+      "label": "AgentView / AgentViewModel",
+      "package": "AppShell",
+      "group": "UI",
+      "kind": "SwiftUI + state",
+      "description": "UI ввода команд, панели подтверждения, Telegram draft panel, trace preview, audit preview и LLM metrics.",
+      "files": ["Sources/AppShell/AgentView.swift", "Sources/AppShell/AgentViewModel.swift"]
+    },
+    {
+      "id": "example_app",
+      "label": "GraculaExampleApp",
+      "package": "Example",
+      "group": "UI",
+      "kind": "SwiftUI App",
+      "description": "Example host для recorder UI, локального OpenClaw runtime, bootstrap и диагностики.",
+      "files": ["Examples/GraculaExample/GraculaExample/AgentApp/GraculaExampleApp.swift"]
+    },
+    {
+      "id": "openclaw_controller",
+      "label": "OpenClawLocalController",
+      "package": "Example",
+      "group": "UI",
+      "kind": "controller",
+      "description": "Управляет Start/Stop bot, settings, local chat, Telegram user API, Business polling, gateway/direct runtime.",
+      "files": ["Examples/GraculaExample/GraculaExample/AppShell/OpenClawLocalController.swift"]
+    },
+    {
+      "id": "voice_ui",
+      "label": "AudioRecorderViewModel",
+      "package": "Example",
+      "group": "UI",
+      "kind": "view model",
+      "description": "Example-контур записи аудио, транскрипции, voice settings, notification monitor и speech playback.",
+      "files": ["Examples/GraculaExample/GraculaExample/AppShell/AudioRecorderViewModel.swift"]
+    },
+    {
+      "id": "application",
+      "label": "AgentOrchestrator",
+      "package": "Application",
+      "group": "Core",
+      "kind": "actor",
+      "description": "Центральный цикл: память диалога, planning, policy decision, execution outcome.",
+      "files": ["Sources/Application/Orchestration/AgentOrchestrator.swift"]
+    },
+    {
+      "id": "policy_gate",
+      "label": "DefaultPolicyGate",
+      "package": "Application",
+      "group": "Core",
+      "kind": "policy",
+      "description": "Решает allow / requiresConfirmation по highest risk level плана.",
+      "files": ["Sources/Application/Policy/DefaultPolicyGate.swift"]
+    },
+    {
+      "id": "tool_executor",
+      "label": "ToolExecutor / ToolRegistry",
+      "package": "Application",
+      "group": "Core",
+      "kind": "tool runtime",
+      "description": "Резолвит tool по имени, выполняет вызовы по очереди, пишет trace и audit.",
+      "files": ["Sources/Application/Tools/ToolExecutor.swift", "Sources/Application/Tools/ToolRegistry.swift"]
+    },
+    {
+      "id": "conversation_memory",
+      "label": "ConversationMemory",
+      "package": "Application",
+      "group": "Core",
+      "kind": "memory",
+      "description": "In-memory история последних 50 сообщений для prompt context.",
+      "files": ["Sources/Application/Memory/ConversationMemory.swift"]
+    },
+    {
+      "id": "domain",
+      "label": "Domain Models",
+      "package": "Domain",
+      "group": "Core",
+      "kind": "models",
+      "description": "AgentPlan, ToolCall, ToolResult, ConversationMessage, risk levels, confirmation challenge.",
+      "files": ["Sources/Domain/AgentPlan.swift", "Sources/Domain/ToolCall.swift", "Sources/Domain/ToolResult.swift"]
+    },
+    {
+      "id": "llm",
+      "label": "LLM Planning",
+      "package": "LLM",
+      "group": "AI",
+      "kind": "planner",
+      "description": "PromptCompiler, LLMPlanningAdapter, clients and AgentPlanParser.",
+      "files": ["Sources/LLM/PromptCompiler.swift", "Sources/LLM/LLMPlanningAdapter.swift", "Sources/LLM/AgentPlanParser.swift"]
+    },
+    {
+      "id": "openai_client",
+      "label": "OpenAI / Local HTTP LLM",
+      "package": "External",
+      "group": "AI",
+      "kind": "service",
+      "description": "Внешний или локальный OpenAI-compatible endpoint, который возвращает JSON-план.",
+      "files": ["Sources/LLM/OpenAIChatCompletionsLLMClient.swift", "Sources/LLM/LocalHTTPLLMClient.swift"]
+    },
+    {
+      "id": "tools",
+      "label": "Tools Target",
+      "package": "Tools",
+      "group": "Tools",
+      "kind": "tool implementations",
+      "description": "open_url, open_app, publish_onlyfans_post, read_allowed_file, write_note.",
+      "files": ["Sources/Tools/OpenURLTool.swift", "Sources/Tools/OpenAppTool.swift", "Sources/Tools/PublishOnlyFansPostTool.swift", "Sources/Tools/ReadAllowedFileTool.swift", "Sources/Tools/WriteNoteTool.swift"]
+    },
+    {
+      "id": "web_search_tool",
+      "label": "Web Search Tool",
+      "package": "Missing Tool",
+      "group": "Tools",
+      "kind": "extension point",
+      "status": "unavailable",
+      "description": "В текущем registry web search tool не зарегистрирован. Поток показывает, где такой tool должен подключиться или где запрос завершится ошибкой unknown tool.",
+      "files": ["Sources/AgentApp/AppCompositionRoot.swift", "Sources/Application/Tools/ToolRegistry.swift"]
+    },
+    {
+      "id": "automation",
+      "label": "Automation",
+      "package": "Automation",
+      "group": "Integrations",
+      "kind": "macOS automation",
+      "description": "NSWorkspace, Telegram Desktop automation, browser/app/file handoff clients.",
+      "files": ["Sources/Automation/TelegramMacAppAutomationService.swift"]
+    },
+    {
+      "id": "telegram",
+      "label": "Telegram Routing",
+      "package": "Application.Telegram",
+      "group": "Integrations",
+      "kind": "router",
+      "description": "Parser, command handler, routing service and pending reply state.",
+      "files": ["Sources/Application/Telegram/TelegramIntentParser.swift", "Sources/Application/Telegram/TelegramCommandHandler.swift", "Sources/Application/Telegram/TelegramRoutingService.swift"]
+    },
+    {
+      "id": "telegram_user",
+      "label": "TDLib User API",
+      "package": "Application.Telegram",
+      "group": "Integrations",
+      "kind": "backend",
+      "description": "MTProto/TDLib personal account backend: auth state, dialogs, latest messages, direct sends.",
+      "files": ["Sources/Application/Telegram/TelegramUserTDLibClient.swift"]
+    },
+    {
+      "id": "telegram_business",
+      "label": "Business Bot API",
+      "package": "Application.Telegram",
+      "group": "Integrations",
+      "kind": "backend",
+      "description": "Telegram Business polling and replies through business connection id.",
+      "files": ["Sources/Application/Telegram/TelegramBusinessBotService.swift"]
+    },
+    {
+      "id": "telegram_desktop",
+      "label": "Telegram Desktop",
+      "package": "External",
+      "group": "Integrations",
+      "kind": "application",
+      "description": "Fallback UI automation target when API backends are unavailable.",
+      "files": []
+    },
+    {
+      "id": "voice",
+      "label": "Voice Pipeline",
+      "package": "Voice",
+      "group": "Voice",
+      "kind": "pipeline",
+      "description": "Audio capture, speech recognition, orchestration handoff, speech synthesis.",
+      "files": ["Sources/Voice/VoicePipeline.swift", "Sources/Voice/AppleAudioCapture.swift", "Sources/Voice/AppleSpeechRecognizer.swift", "Sources/Voice/AppleSpeechSynthesizer.swift"]
+    },
+    {
+      "id": "persistence",
+      "label": "Persistence / Bootstrap",
+      "package": "Persistence",
+      "group": "Runtime",
+      "kind": "configuration",
+      "description": "ProjectRuntimeLayout, AppConfigurationStore, AppBootstrapper and environment builder.",
+      "files": ["Sources/Persistence/ProjectRuntimeLayout.swift", "Sources/Persistence/AppConfigurationStore.swift", "Sources/Persistence/AppBootstrapper.swift", "Sources/Persistence/AppConfigurationEnvironmentBuilder.swift"]
+    },
+    {
+      "id": "security",
+      "label": "AgentSecurity",
+      "package": "AgentSecurity",
+      "group": "Runtime",
+      "kind": "guard",
+      "description": "PathAllowlist validates approved directories before file reads/writes.",
+      "files": ["Sources/Security/PathAllowlist.swift"]
+    },
+    {
+      "id": "shared",
+      "label": "Shared TraceLogger",
+      "package": "Shared",
+      "group": "Runtime",
+      "kind": "observability",
+      "description": "RequestTraceContext, TraceLogger and trace event store.",
+      "files": ["Sources/Shared/RequestTracing.swift"]
+    },
+    {
+      "id": "audit",
+      "label": "InMemoryAuditLog",
+      "package": "Application",
+      "group": "Runtime",
+      "kind": "observability",
+      "description": "In-memory audit events for plan, policy, confirmation and tool lifecycle.",
+      "files": ["Sources/Application/Audit/InMemoryAuditLog.swift"]
+    },
+    {
+      "id": "filesystem",
+      "label": "File System / Runtime Dirs",
+      "package": "External",
+      "group": "Runtime",
+      "kind": "storage",
+      "description": "ConfigFiles, .openclaw runtime, logs, notes directory, allowed readable directory.",
+      "files": ["ConfigFiles/AppConfiguration.plist", ".openclaw/"]
+    },
+    {
+      "id": "openclaw_gateway",
+      "label": "OpenClaw Gateway / Direct Model",
+      "package": "External Runtime",
+      "group": "Runtime",
+      "kind": "process",
+      "description": "Local gateway process or direct completion runtime used by the example host.",
+      "files": [".openclaw/runtime/openclaw-gateway"]
+    },
+    {
+      "id": "qdrant",
+      "label": "Qdrant",
+      "package": "External Runtime",
+      "group": "Runtime",
+      "kind": "optional service",
+      "description": "Optional vector store runtime checked and started by the example controller.",
+      "files": [".openclaw/qdrant"]
+    }
+  ],
+  "actions": [
+    {
+      "id": "user-request-to-llm",
+      "label": "Запрос пользователя к LLM модели",
+      "status": "available",
+      "category": "Agent",
+      "summary": "Обычная команда проходит из SwiftUI в orchestrator, превращается в LLM prompt и возвращается как AgentPlan.",
+      "payload": "String userText -> ConversationContext -> LLMRequest -> JSON plan -> AgentPlan",
+      "edges": [
+        {"from": "user", "to": "app_shell", "data": "inputText / onSubmit", "annotation": "Пользователь вводит команду в TextField. ViewModel создает RequestTraceContext."},
+        {"from": "app_shell", "to": "shared", "data": "traceID + user_request.received", "annotation": "TraceLogger получает начало запроса и metadata surface=AppShell."},
+        {"from": "app_shell", "to": "application", "data": "handleFinalUserText(userText)", "annotation": "Если Telegram shortcut не сработал, текст передается в AgentOrchestrator."},
+        {"from": "application", "to": "conversation_memory", "data": "ConversationMessage(role=user)", "annotation": "Команда добавляется в in-memory историю, затем собирается currentContext()."},
+        {"from": "application", "to": "llm", "data": "userText + ConversationContext + ToolDescriptor[]", "annotation": "Planner получает недавние сообщения и список доступных tools."},
+        {"from": "llm", "to": "openai_client", "data": "LLMRequest(systemPrompt,userPrompt,model,temp)", "annotation": "OpenAI или local HTTP client получает prompt для tool planning."},
+        {"from": "openai_client", "to": "llm", "data": "JSON text response + metrics", "annotation": "Ответ сохраняет request/response metrics, затем парсится."},
+        {"from": "llm", "to": "domain", "data": "AgentPlan(summary, toolCalls[])", "annotation": "AgentPlanParser валидирует JSON и risk levels относительно известных tools."},
+        {"from": "domain", "to": "application", "data": "AgentPlan", "annotation": "Orchestrator пишет plan.created и передает план в policy gate."}
+      ]
+    },
+    {
+      "id": "open-url-tool",
+      "label": "Вызов tool: открыть URL",
+      "status": "available",
+      "category": "Tools",
+      "summary": "Безопасный tool open_url разрешается автоматически и отдает URL в macOS NSWorkspace через automation client.",
+      "payload": "ToolCall(name=open_url,args.url) -> ToolResult.success",
+      "edges": [
+        {"from": "user", "to": "app_shell", "data": "команда с http/https URL", "annotation": "Пользователь просит открыть ссылку."},
+        {"from": "app_shell", "to": "application", "data": "userText", "annotation": "ViewModel запускает общий agent cycle."},
+        {"from": "application", "to": "llm", "data": "planning request", "annotation": "Planner выбирает tool open_url с riskLevel=safe."},
+        {"from": "llm", "to": "domain", "data": "ToolCall(open_url,{url})", "annotation": "План содержит имя tool и аргумент url."},
+        {"from": "domain", "to": "policy_gate", "data": "highestRiskLevel=safe", "annotation": "Policy gate возвращает allow без UI-подтверждения."},
+        {"from": "policy_gate", "to": "tool_executor", "data": "allow(plan)", "annotation": "Orchestrator передает разрешенный план executor'у."},
+        {"from": "tool_executor", "to": "tools", "data": "run OpenURLTool", "annotation": "Registry резолвит open_url и вызывает run()."},
+        {"from": "tools", "to": "automation", "data": "URL", "annotation": "OpenURLTool валидирует http/https и передает URL в URLOpening."},
+        {"from": "automation", "to": "filesystem", "data": "macOS open request", "annotation": "На практике это handoff в системный default browser, не запись в файл."},
+        {"from": "tools", "to": "app_shell", "data": "ToolResult.success", "annotation": "UI получает результат и показывает 'Opened URL: ...'."}
+      ]
+    },
+    {
+      "id": "web-search-tool",
+      "label": "Вызов tool: web search",
+      "status": "unavailable",
+      "category": "Tools",
+      "summary": "В текущем Swift registry web search tool отсутствует. Поток показывает ожидаемую точку подключения и текущую ошибочную ветку.",
+      "payload": "Requested ToolCall(web_search) -> registry/parser rejection",
+      "edges": [
+        {"from": "user", "to": "app_shell", "data": "команда поиска в интернете", "annotation": "Пользователь может попросить web search, но этот tool не описан в AppCompositionRoot."},
+        {"from": "app_shell", "to": "application", "data": "userText", "annotation": "Команда идет в обычный planner path."},
+        {"from": "application", "to": "llm", "data": "availableTools without web_search", "annotation": "PromptCompiler перечисляет только зарегистрированные tools."},
+        {"from": "llm", "to": "web_search_tool", "data": "desired web_search intent", "annotation": "Это желаемая точка расширения: отдельный AgentTool с descriptor и реализацией."},
+        {"from": "web_search_tool", "to": "domain", "data": "unknown or unavailable tool", "annotation": "Если LLM все же вернет web_search, parser/registry должен отклонить unknown tool."},
+        {"from": "domain", "to": "app_shell", "data": "error surfaced to resultText", "annotation": "Пользователь увидит ошибку, пока tool не добавлен в registry."}
+      ]
+    },
+    {
+      "id": "write-note-tool",
+      "label": "Вызов tool: записать заметку",
+      "status": "available",
+      "category": "Tools",
+      "summary": "Reversible allowlisted tool пишет UTF-8 заметку только в approved notes directory.",
+      "payload": "ToolCall(write_note,text,filename) -> PathAllowlist -> FileSystemClient.writeFile",
+      "edges": [
+        {"from": "user", "to": "app_shell", "data": "text command", "annotation": "Пользователь просит сохранить заметку или DemoPlanner fallback выбирает write_note."},
+        {"from": "app_shell", "to": "application", "data": "userText", "annotation": "Команда попадает в orchestrator."},
+        {"from": "application", "to": "llm", "data": "planning request", "annotation": "Planner возвращает ToolCall write_note с текстом и filename."},
+        {"from": "llm", "to": "domain", "data": "AgentPlan risk=reversible", "annotation": "План считается reversible."},
+        {"from": "domain", "to": "policy_gate", "data": "toolCalls=[write_note]", "annotation": "write_note входит в reversibleAllowlistedTools, поэтому проходит автоматически."},
+        {"from": "policy_gate", "to": "tool_executor", "data": "allow", "annotation": "Executor получает план без confirmation UI."},
+        {"from": "tool_executor", "to": "tools", "data": "WriteNoteTool.run()", "annotation": "Tool sanitizes filename and builds notes URL."},
+        {"from": "tools", "to": "security", "data": "URL", "annotation": "PathAllowlist проверяет, что итоговый путь внутри approved directory."},
+        {"from": "security", "to": "filesystem", "data": "approved URL + UTF-8 text", "annotation": "LocalFileSystemClient пишет заметку на диск."},
+        {"from": "tools", "to": "app_shell", "data": "ToolResult.success(path)", "annotation": "UI показывает путь записанной заметки."}
+      ]
+    },
+    {
+      "id": "external-confirmation",
+      "label": "Подтверждение внешнего действия",
+      "status": "available",
+      "category": "Safety",
+      "summary": "External communication, например publish_onlyfans_post, не исполняется до подтверждения пользователя.",
+      "payload": "AgentPlan(externalCommunication) -> ConfirmationChallenge -> approved plan -> ToolResult",
+      "edges": [
+        {"from": "user", "to": "app_shell", "data": "publish/send/post command", "annotation": "Команда явно просит внешнюю публикацию."},
+        {"from": "app_shell", "to": "application", "data": "userText", "annotation": "Обычный agent cycle строит план."},
+        {"from": "application", "to": "llm", "data": "available tool publish_onlyfans_post", "annotation": "Prompt разрешает этот tool только при явной просьбе publish/post/send/upload."},
+        {"from": "llm", "to": "domain", "data": "ToolCall(publish_onlyfans_post)", "annotation": "План получает riskLevel=externalCommunication."},
+        {"from": "domain", "to": "policy_gate", "data": "highestRiskLevel=externalCommunication", "annotation": "Policy gate возвращает requiresConfirmation."},
+        {"from": "policy_gate", "to": "app_shell", "data": "ConfirmationChallenge", "annotation": "ViewModel сохраняет pendingPlan и показывает ConfirmationView."},
+        {"from": "user", "to": "app_shell", "data": "Approve", "annotation": "Пользователь нажимает approve; для critical flow могла бы проверяться requiredPhrase."},
+        {"from": "app_shell", "to": "tool_executor", "data": "pendingPlan", "annotation": "После approve ViewModel напрямую вызывает execute(pendingPlan)."},
+        {"from": "tool_executor", "to": "tools", "data": "PublishOnlyFansPostTool.run(text)", "annotation": "Tool проверяет непустой text."},
+        {"from": "tools", "to": "automation", "data": "post text", "annotation": "Automation/browser handoff публикует текст."}
+      ]
+    },
+    {
+      "id": "telegram-read-latest",
+      "label": "Telegram: прочитать последнее сообщение",
+      "status": "available",
+      "category": "Telegram",
+      "summary": "Telegram-команды перехватываются до LLM и маршрутизируются через TDLib, Business Bot API или Desktop fallback.",
+      "payload": "String command -> TelegramIntent.readLatest -> TelegramChat -> TelegramMessage",
+      "edges": [
+        {"from": "user", "to": "app_shell", "data": "прочитай последнее сообщение в Telegram", "annotation": "Команда содержит Telegram/телеграм и read/latest cues."},
+        {"from": "app_shell", "to": "telegram", "data": "route(text)", "annotation": "AgentViewModel сначала вызывает OpenClawVoiceCommandRouter."},
+        {"from": "telegram", "to": "telegram_user", "data": "latest dialogs/messages", "annotation": "Routing service предпочитает TDLib user backend, если он настроен и ready."},
+        {"from": "telegram", "to": "telegram_business", "data": "getUpdates business messages", "annotation": "Если user backend недоступен, может использовать Business updates."},
+        {"from": "telegram", "to": "telegram_desktop", "data": "fallback current chat", "annotation": "Desktop fallback для чтения ограничен: latest message может быть unsafeCurrentChat."},
+        {"from": "telegram", "to": "app_shell", "data": "handled(message,pendingReply)", "annotation": "UI получает готовую строку и не запускает LLM planner."},
+        {"from": "app_shell", "to": "audit", "data": "TelegramIntegrationEvent", "annotation": "Технические события интеграции попадают в audit sink."}
+      ]
+    },
+    {
+      "id": "telegram-send-reply",
+      "label": "Telegram: отправить ответ",
+      "status": "available",
+      "category": "Telegram",
+      "summary": "Reply-команда ищет чат, готовит PendingTelegramReply и отправляет через активный Telegram backend.",
+      "payload": "TelegramIntent.draftReply -> PendingTelegramReply -> sendReply",
+      "edges": [
+        {"from": "user", "to": "app_shell", "data": "ответь в Telegram ...", "annotation": "Parser выделяет target и messageText."},
+        {"from": "app_shell", "to": "telegram", "data": "TelegramIntent.draftReply", "annotation": "Shortcut path обрабатывает Telegram без LLM."},
+        {"from": "telegram", "to": "telegram_user", "data": "findChat/sendMessage", "annotation": "TDLib backend может найти чат и отправить MTProto-сообщение."},
+        {"from": "telegram", "to": "telegram_business", "data": "sendMessage businessConnectionId", "annotation": "Business backend отправляет через Bot API business connection."},
+        {"from": "telegram", "to": "automation", "data": "PendingTelegramReply", "annotation": "Если API нет, TelegramMacAppAutomationService открывает desktop app."},
+        {"from": "automation", "to": "telegram_desktop", "data": "Cmd+K, paste, Enter", "annotation": "Fallback выбирает чат, вставляет текст из pasteboard и нажимает Enter."},
+        {"from": "telegram", "to": "app_shell", "data": "handled('Отправлено...')", "annotation": "UI показывает результат отправки."}
+      ]
+    },
+    {
+      "id": "voice-command",
+      "label": "Голосовая команда",
+      "status": "available",
+      "category": "Voice",
+      "summary": "Audio frames становятся final transcript, затем идут в AgentOrchestrator и возвращаются как озвученный ответ.",
+      "payload": "Audio frames -> TranscriptEvent.final -> AgentOrchestratorOutcome -> speech text",
+      "edges": [
+        {"from": "user", "to": "voice_ui", "data": "record / hold-to-record", "annotation": "В example UI пользователь начинает запись или запускает voice pipeline."},
+        {"from": "voice_ui", "to": "voice", "data": "audio frames / saved recording", "annotation": "Recorder или VoicePipeline получает аудио."},
+        {"from": "voice", "to": "application", "data": "final transcript text", "annotation": "На финальной транскрипции вызывается handleFinalUserText()."},
+        {"from": "application", "to": "llm", "data": "planning request", "annotation": "Голосовая команда дальше совпадает с обычным agent cycle."},
+        {"from": "application", "to": "domain", "data": "AgentOrchestratorOutcome", "annotation": "Outcome содержит executed / requiresConfirmation / denied."},
+        {"from": "domain", "to": "voice", "data": "speechText", "annotation": "VoicePipeline выбирает текст результата, challenge summary или denial reason."},
+        {"from": "voice", "to": "user", "data": "spoken response", "annotation": "AppleSpeechSynthesizer или example speech pipeline озвучивает ответ."}
+      ]
+    },
+    {
+      "id": "runtime-bootstrap",
+      "label": "Bootstrap example runtime",
+      "status": "available",
+      "category": "Runtime",
+      "summary": "Example app готовит .openclaw, canonical config, speech dependencies, gateway/direct runtime, Telegram and Qdrant.",
+      "payload": "AppConfiguration -> environment -> dependency report -> managed processes",
+      "edges": [
+        {"from": "user", "to": "example_app", "data": "launch app", "annotation": "При старте example app вызывает bootstrapFoundation()."},
+        {"from": "example_app", "to": "persistence", "data": "ProjectRuntimeLayout + AppConfigurationStore", "annotation": "Создается или ремонтируется canonical plist и managed directories."},
+        {"from": "persistence", "to": "filesystem", "data": "ConfigFiles + .openclaw", "annotation": "Runtime layout создает bin, runtime, python, venv, models, workspace, logs, cache, qdrant."},
+        {"from": "user", "to": "openclaw_controller", "data": "Start Bot", "annotation": "Кнопка Start запускает startWorkflow()."},
+        {"from": "openclaw_controller", "to": "persistence", "data": "bootstrap()", "annotation": "Проверяются Python venv, speech packages, Whisper model, gateway build, keys."},
+        {"from": "openclaw_controller", "to": "telegram_user", "data": "start / auth state", "annotation": "Controller пытается поднять TDLib user API."},
+        {"from": "openclaw_controller", "to": "qdrant", "data": "ensure server", "annotation": "Qdrant опционален и может быть soft-disabled."},
+        {"from": "openclaw_controller", "to": "openclaw_gateway", "data": "launch or attach", "annotation": "Если direct model не выбран, controller запускает или подхватывает gateway."}
+      ]
+    },
+    {
+      "id": "trace-audit",
+      "label": "Trace и audit запроса",
+      "status": "available",
+      "category": "Observability",
+      "summary": "TraceLogger пишет JSONL, audit log хранит семантическую ленту событий для UI.",
+      "payload": "RequestTraceContext + TraceEvent + AuditEvent",
+      "edges": [
+        {"from": "app_shell", "to": "shared", "data": "traceID + event payload", "annotation": "ViewModel пишет user_request.received и финальный статус."},
+        {"from": "application", "to": "shared", "data": "context/plan/policy events", "annotation": "Orchestrator логирует context_built, plan.created, policy.decision."},
+        {"from": "llm", "to": "shared", "data": "prompt and response metadata", "annotation": "LLMPlanningAdapter и clients пишут request metadata, latency, usage, cost."},
+        {"from": "tool_executor", "to": "shared", "data": "tool.started/finished/failed", "annotation": "Executor пишет tool lifecycle с plan id и tool call id."},
+        {"from": "shared", "to": "filesystem", "data": ".openclaw/logs/request-trace.jsonl", "annotation": "TraceLogger сохраняет JSONL при включенном tracing."},
+        {"from": "application", "to": "audit", "data": "AuditEvent", "annotation": "Plan/policy/tool/confirmation события попадают в InMemoryAuditLog."},
+        {"from": "audit", "to": "app_shell", "data": "preview strings", "annotation": "UI показывает последние audit entries."}
+      ]
+    }
+  ]
+}

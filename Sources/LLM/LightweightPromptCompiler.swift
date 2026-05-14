@@ -41,19 +41,6 @@ public struct LightweightTaskProfile: Sendable, Equatable {
         disableThinking: true
     )
 
-    public static let deepPersona = LightweightTaskProfile(
-        name: "deep_persona",
-        runtimeContextWindow: 16384,
-        maxOutputTokens: 2048,
-        reserveTokens: 4096,
-        maxHistoryMessages: 20,
-        maxMemoryTokens: 2000,
-        maxRetrievedSnippets: 6,
-        maxRetrievedTokens: 5000,
-        personaCompactTokens: 500,
-        userNotificationTokens: 0,
-        disableThinking: false
-    )
 }
 
 public struct LightweightRetrievedSnippet: Sendable, Equatable {
@@ -155,7 +142,7 @@ public struct LightweightPromptCompiler: Sendable {
 
         let suffix = shouldDisableThinking(modelRef: modelRef, profile: profile) ? "\n\n/no_think" : ""
         var sections = [
-            section("persona_compact", persona),
+            section("persona", persona),
             section("retrievedMemory", retrieved),
             section("user", userBlock + suffix)
         ].filter { !$0.text.isEmpty }
@@ -169,7 +156,7 @@ public struct LightweightPromptCompiler: Sendable {
             retrieved = ""
             dropped.append("Qdrant snippets")
             sections = [
-                section("persona_compact", persona),
+                section("persona", persona),
                 section("user", userBlock + suffix)
             ].filter { !$0.text.isEmpty }
             prompt = join(sections)
@@ -180,7 +167,7 @@ public struct LightweightPromptCompiler: Sendable {
             userBlock = notificationBlock(notification, includeSubtitle: true, includeChannel: true, includeFallback: false)
             userBlock = limitedTokens(userBlock, maxTokens: profile.userNotificationTokens)
             dropped.append("fallback spoken text")
-            prompt = join([section("persona_compact", persona), section("user", userBlock + suffix)])
+            prompt = join([section("persona", persona), section("user", userBlock + suffix)])
         }
 
         if estimatedTokens(prompt) > promptBudget {
@@ -188,13 +175,13 @@ public struct LightweightPromptCompiler: Sendable {
             userBlock = notificationBlock(notification, includeSubtitle: false, includeChannel: false, includeFallback: false)
             userBlock = limitedTokens(userBlock, maxTokens: profile.userNotificationTokens)
             dropped.append("extra notification metadata")
-            prompt = join([section("persona_compact", persona), section("user", userBlock + suffix)])
+            prompt = join([section("persona", persona), section("user", userBlock + suffix)])
         }
 
         if estimatedTokens(prompt) > promptBudget {
             shrinkingApplied = true
             userBlock = minimalNotificationBlock(notification)
-            prompt = join([section("persona_compact", persona), section("user", userBlock + suffix)])
+            prompt = join([section("persona", persona), section("user", userBlock + suffix)])
         }
 
         let diagnostics = diagnostics(
@@ -229,7 +216,7 @@ public struct LightweightPromptCompiler: Sendable {
         let suffix = shouldDisableThinking(modelRef: modelRef, profile: profile) ? "\n\n/no_think" : ""
         var dropped: [String] = []
         var sections = [
-            section("persona_compact", persona),
+            section("persona", persona),
             section("memorySummary", memory),
             section("history", historyText),
             section("retrievedMemory", retrieved),

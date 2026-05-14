@@ -786,8 +786,7 @@ public final class AppBootstrapper: @unchecked Sendable {
             "MEMORY.md",
             "SOUL.md",
             "TOOLS.md",
-            "USER.md",
-            "persona_compact.md"
+            "USER.md"
         ]
 
         for fileName in templates {
