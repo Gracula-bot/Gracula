@@ -221,9 +221,6 @@ public struct AppConfiguration: Codable, Sendable, Equatable {
         public var businessEnabled: Bool
         public var businessBotToken: String
         public var businessConnectionID: String
-        public var businessAutoReplyEnabled: Bool
-        public var businessMarkReadEnabled: Bool
-        public var businessPollIntervalSeconds: Int
         public var userEnabled: Bool
         public var userAPIID: String
         public var userAPIHash: String
@@ -238,9 +235,6 @@ public struct AppConfiguration: Codable, Sendable, Equatable {
             businessEnabled: Bool,
             businessBotToken: String,
             businessConnectionID: String,
-            businessAutoReplyEnabled: Bool,
-            businessMarkReadEnabled: Bool,
-            businessPollIntervalSeconds: Int,
             userEnabled: Bool,
             userAPIID: String,
             userAPIHash: String,
@@ -254,9 +248,6 @@ public struct AppConfiguration: Codable, Sendable, Equatable {
             self.businessEnabled = businessEnabled
             self.businessBotToken = businessBotToken
             self.businessConnectionID = businessConnectionID
-            self.businessAutoReplyEnabled = businessAutoReplyEnabled
-            self.businessMarkReadEnabled = businessMarkReadEnabled
-            self.businessPollIntervalSeconds = businessPollIntervalSeconds
             self.userEnabled = userEnabled
             self.userAPIID = userAPIID
             self.userAPIHash = userAPIHash
@@ -412,9 +403,6 @@ public enum AppConfigurationDefaults {
                 businessEnabled: false,
                 businessBotToken: "",
                 businessConnectionID: "",
-                businessAutoReplyEnabled: true,
-                businessMarkReadEnabled: true,
-                businessPollIntervalSeconds: 2,
                 userEnabled: false,
                 userAPIID: "",
                 userAPIHash: "",

@@ -167,16 +167,10 @@ struct AppCompositionRoot {
         let businessService = configuration.telegram.businessEnabled && !trimmedBusinessToken.isEmpty
             ? TelegramBusinessBotService(botToken: trimmedBusinessToken)
             : nil
-        let businessConnectionId = configuration.telegram.businessEnabled
-            ? (environment["GRACULA_TELEGRAM_BUSINESS_CONNECTION_ID"]
-                ?? environment["TELEGRAM_BUSINESS_CONNECTION_ID"])
-            : nil
-
         return TelegramRoutingService(
             automationService: automationService,
             userService: userService,
-            businessService: businessService,
-            businessConnectionId: businessConnectionId
+            businessService: businessService
         )
     }
 

@@ -792,10 +792,12 @@ public final class AppBootstrapper: @unchecked Sendable {
         for fileName in templates {
             let sourceURL = layout.workspaceTemplatesDirectoryURL.appendingPathComponent(fileName)
             let destinationURL = layout.workspaceDirectoryURL.appendingPathComponent(fileName)
-            guard !fileManager.fileExists(atPath: destinationURL.path) else {
+            guard fileManager.fileExists(atPath: sourceURL.path) else {
                 continue
             }
-            guard fileManager.fileExists(atPath: sourceURL.path) else {
+            if fileManager.fileExists(atPath: destinationURL.path),
+               let existingContents = try? String(contentsOf: destinationURL, encoding: .utf8),
+               !existingContents.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 continue
             }
             let data = try Data(contentsOf: sourceURL)

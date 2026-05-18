@@ -424,9 +424,6 @@ struct BrainSettingsSection: View {
     @State private var telegramBusinessEnabled = false
     @State private var telegramBusinessBotToken = ""
     @State private var telegramBusinessConnectionId = ""
-    @State private var telegramBusinessAutoReplyEnabled = true
-    @State private var telegramBusinessMarkReadEnabled = true
-    @State private var telegramBusinessPollIntervalSeconds = 2
     @State private var telegramUserEnabled = false
     @State private var telegramUserAPIId = ""
     @State private var telegramUserAPIHash = ""
@@ -583,19 +580,6 @@ struct BrainSettingsSection: View {
         telegramBusinessConnectionId = value(for: "integrations.telegram.business.businessConnectionId")
             ?? environmentValue(for: "GRACULA_TELEGRAM_BUSINESS_CONNECTION_ID")
             ?? ""
-        telegramBusinessAutoReplyEnabled = boolValue(
-            for: "integrations.telegram.business.autoReplyEnabled",
-            default: true
-        )
-        telegramBusinessMarkReadEnabled = boolValue(
-            for: "integrations.telegram.business.markReadEnabled",
-            default: true
-        )
-        telegramBusinessPollIntervalSeconds = intValue(
-            for: "integrations.telegram.business.pollIntervalSeconds",
-            default: 2,
-            range: 1...60
-        )
         telegramUserEnabled = boolValue(
             for: "integrations.telegram.user.enabled",
             default: false
@@ -883,41 +867,6 @@ struct BrainSettingsSection: View {
                     upsertEnvironmentSetting(key: "GRACULA_TELEGRAM_BUSINESS_CONNECTION_ID", value: newValue)
                 }
 
-            Toggle("Auto reply from OpenClaw", isOn: $telegramBusinessAutoReplyEnabled)
-                .onChange(of: telegramBusinessAutoReplyEnabled) { _, newValue in
-                    guard !isSyncing else { return }
-                    upsertJSONSetting(
-                        key: "integrations.telegram.business.autoReplyEnabled",
-                        value: newValue ? "true" : "false",
-                        isSecret: false,
-                        kind: .bool
-                    )
-                }
-
-            Toggle("Mark incoming messages as read", isOn: $telegramBusinessMarkReadEnabled)
-                .onChange(of: telegramBusinessMarkReadEnabled) { _, newValue in
-                    guard !isSyncing else { return }
-                    upsertJSONSetting(
-                        key: "integrations.telegram.business.markReadEnabled",
-                        value: newValue ? "true" : "false",
-                        isSecret: false,
-                        kind: .bool
-                    )
-                }
-
-            Stepper(value: $telegramBusinessPollIntervalSeconds, in: 1...60, step: 1) {
-                Text("Poll interval: \(telegramBusinessPollIntervalSeconds)s")
-                    .font(.caption)
-            }
-            .onChange(of: telegramBusinessPollIntervalSeconds) { _, newValue in
-                guard !isSyncing else { return }
-                upsertJSONSetting(
-                    key: "integrations.telegram.business.pollIntervalSeconds",
-                    value: String(newValue),
-                    isSecret: false,
-                    kind: .int
-                )
-            }
         }
     }
 

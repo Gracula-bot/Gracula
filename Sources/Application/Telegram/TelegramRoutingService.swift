@@ -4,19 +4,15 @@ public actor TelegramRoutingService: TelegramService, TelegramAuthenticatingServ
     private let automationService: any TelegramService
     private let userService: (any TelegramUserClienting)?
     private let businessService: TelegramBusinessBotService?
-    private let businessConnectionId: String?
 
     public init(
         automationService: any TelegramService,
         userService: (any TelegramUserClienting)? = nil,
-        businessService: TelegramBusinessBotService? = nil,
-        businessConnectionId: String? = nil
+        businessService: TelegramBusinessBotService? = nil
     ) {
         self.automationService = automationService
         self.userService = userService
         self.businessService = businessService
-        let trimmedBusinessConnectionId = businessConnectionId?.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.businessConnectionId = (trimmedBusinessConnectionId?.isEmpty == false) ? trimmedBusinessConnectionId : nil
     }
 
     public func currentAuthorizationState() async -> TelegramUserAuthorizationState {
@@ -50,30 +46,12 @@ public actor TelegramRoutingService: TelegramService, TelegramAuthenticatingServ
         if let userChat = try await latestUserChatIfAvailable() {
             return TelegramChat(id: Self.userChatID(userChat.id), displayName: userChat.title)
         }
-        if let businessMessage = try await latestBusinessMessageIfAvailable() {
-            return TelegramChat(
-                id: Self.businessChatID(
-                    connectionId: businessMessage.businessConnectionId,
-                    chatId: businessMessage.chat.id
-                ),
-                displayName: businessMessage.chat.displayName
-            )
-        }
         return try await automationService.getLatestChat()
     }
 
     public func findChat(byName name: String) async throws -> TelegramChat {
         if let userChat = try await findUserChatIfAvailable(name: name) {
             return TelegramChat(id: Self.userChatID(userChat.id), displayName: userChat.title)
-        }
-        if let businessMessage = try await findBusinessMessageIfAvailable(name: name) {
-            return TelegramChat(
-                id: Self.businessChatID(
-                    connectionId: businessMessage.businessConnectionId,
-                    chatId: businessMessage.chat.id
-                ),
-                displayName: businessMessage.chat.displayName
-            )
         }
         return try await automationService.findChat(byName: name)
     }
@@ -90,20 +68,8 @@ public actor TelegramRoutingService: TelegramService, TelegramAuthenticatingServ
             }
             return latest
 
-        case .business(let connectionId, let rawChatId):
-            guard let latest = try await latestBusinessMessageIfAvailable(
-                connectionId: connectionId,
-                chatId: rawChatId
-            ) else {
-                throw TelegramCommandError.telegramAPIError("No Telegram Business messages were found in the selected chat.")
-            }
-            return TelegramMessage(
-                id: String(latest.messageId),
-                chatId: chatId,
-                senderName: latest.senderName ?? latest.senderUsername,
-                text: latest.text,
-                date: latest.date
-            )
+        case .business:
+            throw TelegramCommandError.telegramAPIError("Latest Telegram Business messages are not available from this service.")
 
         case .automation:
             return try await automationService.getLatestMessage(chatId: chatId)
@@ -126,16 +92,10 @@ public actor TelegramRoutingService: TelegramService, TelegramAuthenticatingServ
                 createdAt: Date()
             )
 
-        case .business(let connectionId, let rawChatId):
-            guard let businessMessage = try await latestBusinessMessageIfAvailable(
-                connectionId: connectionId,
-                chatId: rawChatId
-            ) else {
-                throw TelegramCommandError.chatNotFound(rawChatId)
-            }
+        case .business(_, let rawChatId):
             return PendingTelegramReply(
                 chatId: chatId,
-                chatName: businessMessage.chat.displayName,
+                chatName: rawChatId,
                 messageText: trimmedText,
                 createdAt: Date()
             )
@@ -223,45 +183,8 @@ public actor TelegramRoutingService: TelegramService, TelegramAuthenticatingServ
         }
     }
 
-    private func latestBusinessMessageIfAvailable() async throws -> TelegramBusinessIncomingMessage? {
-        try await businessMessages().max(by: { $0.date < $1.date })
-    }
-
-    private func latestBusinessMessageIfAvailable(connectionId: String, chatId: String) async throws -> TelegramBusinessIncomingMessage? {
-        try await businessMessages()
-            .filter {
-                $0.businessConnectionId == connectionId && String($0.chat.id) == chatId
-            }
-            .max(by: { $0.date < $1.date })
-    }
-
-    private func findBusinessMessageIfAvailable(name: String) async throws -> TelegramBusinessIncomingMessage? {
-        let normalizedName = Self.normalize(name)
-        return try await businessMessages()
-            .filter { message in
-                Self.normalize(message.chat.displayName) == normalizedName
-                    || Self.normalize(message.chat.username ?? "") == normalizedName
-            }
-            .max(by: { $0.date < $1.date })
-    }
-
-    private func businessMessages() async throws -> [TelegramBusinessIncomingMessage] {
-        guard let businessService else {
-            return []
-        }
-        let updates = try await businessService.getUpdates(offset: nil)
-        if let businessConnectionId {
-            return updates.filter { $0.businessConnectionId == businessConnectionId }
-        }
-        return updates
-    }
-
     private static func userChatID(_ id: String) -> String {
         "tg-user:\(id)"
-    }
-
-    private static func businessChatID(connectionId: String, chatId: Int64) -> String {
-        "tg-business:\(connectionId):\(chatId)"
     }
 
     private static func normalize(_ value: String) -> String {

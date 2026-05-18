@@ -269,7 +269,7 @@ private struct OpenClawTaskProfile: Equatable {
         maxHistoryMessages: 0,
         includeMemorySummary: false,
         maxMemoryTokens: 0,
-        includeWorkspaceFiles: false,
+        includeWorkspaceFiles: true,
         includeTools: false,
         includeSkills: false,
         includeFullMemory: false,
@@ -296,9 +296,9 @@ private struct OpenClawTaskProfile: Equatable {
         maxHistoryMessages: 6,
         includeMemorySummary: true,
         maxMemoryTokens: 800,
-        includeWorkspaceFiles: false,
-        includeTools: false,
-        includeSkills: false,
+        includeWorkspaceFiles: true,
+        includeTools: true,
+        includeSkills: true,
         includeFullMemory: false,
         includeFullPersonaFiles: true,
         includeRag: true,
@@ -316,6 +316,20 @@ private struct OpenClawTaskProfile: Equatable {
 private struct OpenClawPromptSection: Equatable {
     let name: String
     let text: String
+}
+
+private enum OpenClawPromptSectionName {
+    static let channelSessionAgentResolution = "01-channel-session-agent-resolution"
+    static let openClawConfig = "02-openclaw-json"
+    static let modelWorkspaceChannelPlugins = "03-model-workspace-channel-config-plugins"
+    static let runtimeSystemPrompt = "04-base-openclaw-runtime-system-prompt"
+    static let workspaceFiles = "05-workspace-files"
+    static let skillsTools = "06-skills-tools-descriptions"
+    static let beforePromptBuildHooks = "07-before-prompt-build-hooks"
+    static let vibeRag = "08-vibe-rag-style-vibe1"
+    static let memorySearch = "09-memory-search"
+    static let sessionHistory = "10-session-history"
+    static let currentUserMessage = "11-current-user-message"
 }
 
 private struct OpenClawLayeredPrompt: Equatable {
@@ -477,7 +491,6 @@ private struct OpenClawQdrantClient {
 
     static let memoryCollection = "gracula_memory"
     static let notificationCacheCollection = "gracula_notification_cache"
-    static let telegramBusinessCollection = "gracula_telegram_business_messages"
     private static let placeholderVector = [0.0]
 
     static func make(environment: [String: String]) -> OpenClawQdrantClient? {
@@ -556,7 +569,6 @@ private struct OpenClawQdrantClient {
     func ensurePayloadIndexes() async {
         try? await ensureCollection(Self.memoryCollection)
         try? await ensureCollection(Self.notificationCacheCollection)
-        try? await ensureCollection(Self.telegramBusinessCollection)
 
         let memoryFields: [(String, String)] = [
             ("kind", "keyword"),
@@ -575,24 +587,12 @@ private struct OpenClawQdrantClient {
             ("language", "keyword"),
             ("created_at", "datetime")
         ]
-        let telegramFields: [(String, String)] = [
-            ("kind", "keyword"),
-            ("business_connection_id", "keyword"),
-            ("chat_id", "integer"),
-            ("chat_name", "keyword"),
-            ("sender_username", "keyword"),
-            ("direction", "keyword"),
-            ("created_at", "datetime")
-        ]
 
         for field in memoryFields {
             try? await createPayloadIndex(collection: Self.memoryCollection, fieldName: field.0, fieldSchema: field.1)
         }
         for field in cacheFields {
             try? await createPayloadIndex(collection: Self.notificationCacheCollection, fieldName: field.0, fieldSchema: field.1)
-        }
-        for field in telegramFields {
-            try? await createPayloadIndex(collection: Self.telegramBusinessCollection, fieldName: field.0, fieldSchema: field.1)
         }
     }
 
@@ -761,139 +761,6 @@ private struct OpenClawQdrantClient {
             app: best.point.string("app"),
             title: best.point.string("title")
         )
-    }
-
-    func storeBusinessMessage(_ message: TelegramBusinessIncomingMessage, direction: String = "incoming") async {
-        await ensurePayloadIndexes()
-        let payload: [String: Any] = [
-            "kind": "telegram_business_message",
-            "business_connection_id": message.businessConnectionId,
-            "message_id": message.messageId,
-            "chat_id": message.chat.id,
-            "chat_type": message.chat.type,
-            "chat_name": message.chat.displayName,
-            "chat_username": message.chat.username ?? "",
-            "sender_name": message.senderName ?? "",
-            "sender_username": message.senderUsername ?? "",
-            "direction": direction,
-            "text": message.text,
-            "source": "telegram_business",
-            "language": "ru",
-            "created_at": ISO8601DateFormatter().string(from: message.date),
-            "token_estimate": estimatedTokenCount(message.text)
-        ]
-        let point: [String: Any] = [
-            "id": businessMessagePointID(message, direction: direction),
-            "payload": payload,
-            "vector": Self.placeholderVector
-        ]
-        _ = try? await request(
-            path: "/collections/\(Self.telegramBusinessCollection)/points",
-            method: "PUT",
-            body: ["points": [point]]
-        )
-    }
-
-    func businessMessageExists(_ message: TelegramBusinessIncomingMessage, direction: String = "incoming") async -> Bool {
-        await ensurePayloadIndexes()
-        let body: [String: Any] = [
-            "ids": [businessMessagePointID(message, direction: direction)],
-            "with_payload": false,
-            "with_vector": false
-        ]
-        guard let data = try? await request(
-            path: "/collections/\(Self.telegramBusinessCollection)/points",
-            method: "POST",
-            body: body
-        ),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let result = root["result"] as? [[String: Any]] else {
-            return false
-        }
-        return result.isEmpty == false
-    }
-
-    private func businessMessagePointID(_ message: TelegramBusinessIncomingMessage, direction: String) -> String {
-        "tg-business-\(message.businessConnectionId)-\(message.chat.id)-\(message.messageId)-\(direction)"
-    }
-
-    func storeBusinessReply(
-        businessConnectionId: String,
-        chat: TelegramBusinessChat,
-        text: String
-    ) async {
-        let message = TelegramBusinessIncomingMessage(
-            updateId: 0,
-            businessConnectionId: businessConnectionId,
-            messageId: Int(Date().timeIntervalSince1970),
-            chat: chat,
-            senderName: "Gracula",
-            senderUsername: nil,
-            text: text,
-            date: Date()
-        )
-        await storeBusinessMessage(message, direction: "outgoing")
-    }
-
-    func searchBusinessMessages(
-        query: String,
-        businessConnectionId: String,
-        chatId: Int64,
-        limit: Int = 8
-    ) async -> [OpenClawRetrievedSnippet] {
-        let filter: [String: Any] = [
-            "must": [
-                ["key": "kind", "match": ["value": "telegram_business_message"]],
-                ["key": "business_connection_id", "match": ["value": businessConnectionId]],
-                ["key": "chat_id", "match": ["value": chatId]]
-            ]
-        ]
-        let body: [String: Any] = [
-            "filter": filter,
-            "limit": 64,
-            "with_payload": true,
-            "with_vector": false
-        ]
-        guard let data = try? await request(
-            path: "/collections/\(Self.telegramBusinessCollection)/points/scroll",
-            method: "POST",
-            body: body
-        ),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let result = root["result"] as? [String: Any],
-              let points = result["points"] as? [[String: Any]] else {
-            return []
-        }
-        let queryTokens = lexicalTokens(query)
-        return points.compactMap(QdrantPoint.init)
-            .compactMap { point -> OpenClawRetrievedSnippet? in
-                let text = point.string("text")
-                guard !text.isEmpty else {
-                    return nil
-                }
-                let score = jaccardScore(lhs: queryTokens, rhs: lexicalTokens(text))
-                return OpenClawRetrievedSnippet(
-                    id: point.id,
-                    kind: "telegram_business_message",
-                    profile: "telegram_business",
-                    source: "telegram_business:\(point.string("chat_name"))",
-                    language: point.string("language", fallback: "ru"),
-                    channel: nil,
-                    app: "Telegram",
-                    priority: 0,
-                    tokenEstimate: max(1, point.int("token_estimate", fallback: estimatedTokenCount(text))),
-                    text: text,
-                    score: score
-                )
-            }
-            .sorted { lhs, rhs in
-                if lhs.score == rhs.score {
-                    return lhs.id > rhs.id
-                }
-                return lhs.score > rhs.score
-            }
-            .prefix(limit)
-            .map { $0 }
     }
 
     private func allowedKinds(for profile: OpenClawTaskProfile) -> [String] {
@@ -1256,7 +1123,6 @@ final class OpenClawLocalController: NSObject, ObservableObject {
     private var startupTask: Task<Void, Never>?
     private var directPersonaContextCache: String?
     private var directCompactPersonaContextCache: String?
-    private var telegramBusinessTask: Task<Void, Never>?
     private var telegramUserClient: TelegramUserTDLibClient?
 
     override init() {
@@ -1352,7 +1218,6 @@ final class OpenClawLocalController: NSObject, ObservableObject {
             settingsSnapshot = Self.makeSettingsSnapshot(layout: runtimeLayout, store: configurationStore)
             await startTelegramUserAPI(environment: environment)
             await ensureQdrantServer(environment: environment)
-            startTelegramBusinessPolling(environment: environment)
             let primaryModelRef = currentPrimaryModelRef()
             if shouldUseDirectCompletion(for: primaryModelRef) {
                 try await ensureDirectModelRuntimeReady(for: primaryModelRef)
@@ -1532,9 +1397,6 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         directModelPrewarmTask = nil
         healthTask?.cancel()
         healthTask = nil
-        telegramBusinessTask?.cancel()
-        telegramBusinessTask = nil
-        setTelegramBusinessStatus("Telegram Business stopped.", connected: false)
         startupTask?.cancel()
         startupTask = nil
         isStartingTelegramUserAPI = false
@@ -1640,39 +1502,6 @@ final class OpenClawLocalController: NSObject, ObservableObject {
             consecutiveHealthFailures = min(consecutiveHealthFailures + 1, 8)
         }
     }
-    private func startTelegramBusinessPolling(environment: [String: String]) {
-        telegramBusinessTask?.cancel()
-        telegramBusinessTask = nil
-
-        let settings = telegramBusinessSettings(environment: environment)
-        guard settings.enabled else {
-            setTelegramBusinessStatus("Telegram Business disabled.", connected: false)
-            appendLog("Telegram Business mode disabled.")
-            return
-        }
-        guard !settings.botToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            setTelegramBusinessStatus("Telegram Business enabled, but bot token is missing.", connected: false)
-            appendLog("Telegram Business mode enabled, but bot token is missing.")
-            return
-        }
-        guard OpenClawQdrantClient.make(environment: environment) != nil else {
-            setTelegramBusinessStatus("Telegram Business requires Qdrant; polling not started.", connected: false)
-            appendLog("Telegram Business mode requires Qdrant; polling not started.")
-            return
-        }
-
-        let service = TelegramBusinessBotService(botToken: settings.botToken)
-        telegramBusinessTask = Task { [weak self] in
-            await self?.runTelegramBusinessPolling(
-                service: service,
-                settings: settings,
-                environment: environment
-            )
-        }
-        setTelegramBusinessStatus("Telegram Business polling started.", connected: false)
-        appendLog("Telegram Business polling started.")
-    }
-
     private func startTelegramUserAPI(environment: [String: String]) async {
         let settings = telegramUserSettings(environment: environment)
         guard settings.enabled else {
@@ -1812,150 +1641,6 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         return settings
     }
 
-    private func runTelegramBusinessPolling(
-        service: TelegramBusinessBotService,
-        settings: TelegramBusinessSettings,
-        environment: [String: String]
-    ) async {
-        var offset: Int?
-        let pollDelay = max(0.5, settings.pollIntervalSeconds)
-        while !Task.isCancelled {
-            do {
-                let messages = try await service.getUpdates(offset: offset)
-                setTelegramBusinessStatus(businessConnectedStatusText(for: settings), connected: true)
-                if let maxUpdateId = messages.map(\.updateId).max() {
-                    offset = maxUpdateId + 1
-                }
-
-                for message in messages {
-                    guard !Task.isCancelled else { return }
-                    guard settings.businessConnectionId.isEmpty
-                        || settings.businessConnectionId == message.businessConnectionId else {
-                        continue
-                    }
-                    await handleTelegramBusinessMessage(
-                        message,
-                        service: service,
-                        settings: settings,
-                        environment: environment
-                    )
-                }
-            } catch {
-                if !TelegramBusinessBotService.isExpectedLongPollTimeout(error) {
-                    setTelegramBusinessStatus("Telegram Business polling error: \(error.localizedDescription)", connected: false)
-                    appendLog("Telegram Business polling error: \(error.localizedDescription)")
-                }
-                try? await Task.sleep(for: .seconds(max(2.0, pollDelay)))
-            }
-            try? await Task.sleep(for: .seconds(pollDelay))
-        }
-    }
-
-    private func handleTelegramBusinessMessage(
-        _ message: TelegramBusinessIncomingMessage,
-        service: TelegramBusinessBotService,
-        settings: TelegramBusinessSettings,
-        environment: [String: String]
-    ) async {
-        let trimmedText = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedText.isEmpty else {
-            return
-        }
-
-        let qdrant = OpenClawQdrantClient.make(environment: environment)
-        let alreadyStored = await qdrant?.businessMessageExists(message) ?? false
-        await qdrant?.storeBusinessMessage(message)
-        appendLog("Telegram Business message stored: \(message.chat.displayName) #\(message.messageId)")
-
-        if alreadyStored {
-            appendLog("Telegram Business message already handled; skipping duplicate auto-reply.")
-        }
-
-        if settings.autoReplyEnabled, !alreadyStored {
-            do {
-                let reply = try await telegramBusinessReply(
-                    to: message,
-                    qdrant: qdrant,
-                    environment: environment
-                )
-                try await service.sendMessage(
-                    businessConnectionId: message.businessConnectionId,
-                    chatId: message.chat.id,
-                    text: reply
-                )
-                await qdrant?.storeBusinessReply(
-                    businessConnectionId: message.businessConnectionId,
-                    chat: message.chat,
-                    text: reply
-                )
-                appendLog("Telegram Business reply sent to \(message.chat.displayName).")
-            } catch {
-                appendLog("Telegram Business auto-reply failed: \(error.localizedDescription)")
-            }
-        }
-
-        if settings.markReadEnabled {
-            do {
-                try await service.readBusinessMessage(
-                    businessConnectionId: message.businessConnectionId,
-                    chatId: message.chat.id,
-                    messageId: message.messageId
-                )
-            } catch {
-                appendLog("Telegram Business mark-read failed: \(error.localizedDescription)")
-            }
-        }
-    }
-
-    private func telegramBusinessReply(
-        to message: TelegramBusinessIncomingMessage,
-        qdrant: OpenClawQdrantClient?,
-        environment: [String: String]
-    ) async throws -> String {
-        let history = await qdrant?.searchBusinessMessages(
-            query: message.text,
-            businessConnectionId: message.businessConnectionId,
-            chatId: message.chat.id,
-            limit: 8
-        ) ?? []
-        let historyText = history
-            .map { "- \($0.text)" }
-            .joined(separator: "\n")
-        let sender = message.senderName ?? message.chat.displayName
-        let prompt = """
-        You are Gracula replying through Telegram Business from the user's personal/business account.
-
-        Rules:
-        - Reply in the same language as the incoming message unless the user clearly asks otherwise.
-        - Be concise, natural, and useful.
-        - Do not mention OpenClaw, Qdrant, prompts, automation, tools, or internal storage.
-        - Do not invent facts. Ask one short clarifying question if needed.
-        - Output only the exact Telegram message text.
-
-        Chat: \(message.chat.displayName)
-        Sender: \(sender)
-
-        Relevant previous messages from Qdrant:
-        \(historyText.isEmpty ? "No previous relevant messages." : historyText)
-
-        Incoming message:
-        \(message.text)
-        """
-        let profile = chatPromptProfile()
-        let modelRef = currentPrimaryModelRef()
-        let result = try await runDirectModelChat(
-            modelRef: modelRef,
-            prompt: prompt,
-            environment: environment,
-            maxTokens: min(profile.maxOutputTokens, 768)
-        )
-        let trimmed = result.text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            throw OpenClawLocalControllerError.agentFailed("Telegram Business model returned an empty reply.")
-        }
-        return String(trimmed.prefix(4096))
-    }
-
     private func telegramBusinessSettings(environment: [String: String]) -> TelegramBusinessSettings {
         let entries = settingsSnapshot.jsonEntries
         let enabled = boolConfig(
@@ -1977,35 +1662,10 @@ final class OpenClawLocalController: NSObject, ObservableObject {
             environment: environment,
             environmentKeys: ["GRACULA_TELEGRAM_BUSINESS_CONNECTION_ID", "TELEGRAM_BUSINESS_CONNECTION_ID"]
         )
-        let pollInterval = doubleConfig(
-            "integrations.telegram.business.pollIntervalSeconds",
-            entries: entries,
-            environment: environment,
-            environmentKeys: ["GRACULA_TELEGRAM_BUSINESS_POLL_INTERVAL_SECONDS"],
-            defaultValue: 2,
-            range: 0.5...60
-        )
-        let autoReply = boolConfig(
-            "integrations.telegram.business.autoReplyEnabled",
-            entries: entries,
-            environment: environment,
-            environmentKeys: ["GRACULA_TELEGRAM_BUSINESS_AUTO_REPLY"],
-            defaultValue: true
-        )
-        let markRead = boolConfig(
-            "integrations.telegram.business.markReadEnabled",
-            entries: entries,
-            environment: environment,
-            environmentKeys: ["GRACULA_TELEGRAM_BUSINESS_MARK_READ"],
-            defaultValue: true
-        )
         return TelegramBusinessSettings(
             enabled: enabled,
             botToken: botToken,
-            businessConnectionId: businessConnectionId,
-            pollIntervalSeconds: pollInterval,
-            autoReplyEnabled: autoReply,
-            markReadEnabled: markRead
+            businessConnectionId: businessConnectionId
         )
     }
 
@@ -2022,14 +1682,10 @@ final class OpenClawLocalController: NSObject, ObservableObject {
             && !businessSettings.botToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? TelegramBusinessBotService(botToken: businessSettings.botToken)
             : nil
-        let businessConnectionId = businessSettings.enabled
-            ? businessSettings.businessConnectionId
-            : nil
         let service = TelegramRoutingService(
             automationService: automationService,
             userService: telegramUserClient,
-            businessService: businessService,
-            businessConnectionId: businessConnectionId
+            businessService: businessService
         )
         let handler = TelegramCommandHandler(
             service: service,
@@ -3102,8 +2758,6 @@ final class OpenClawLocalController: NSObject, ObservableObject {
     private func shutdownManagedProcessesForApplicationTermination() {
         healthTask?.cancel()
         healthTask = nil
-        telegramBusinessTask?.cancel()
-        telegramBusinessTask = nil
         startupTask?.cancel()
         startupTask = nil
         terminateAndWait(process: streamBridgeProcess, name: "stream-bridge", timeoutSeconds: 1.0)
@@ -3259,7 +2913,6 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         sampling: DirectModelSamplingOptions? = nil,
         configurationEntries: [OpenClawEditableSetting]? = nil
     ) async throws -> DirectModelChatResult {
-        let startedAt = PerformanceLog.checkpoint()
         let trimmedRef = modelRef.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedRef.isEmpty else {
             throw OpenClawLocalControllerError.agentFailed("Selected model is not set.")
@@ -3451,39 +3104,57 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         let providerParts = modelRef.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: true)
         let providerName = providerParts.first.map(String.init) ?? ""
         let modelName = providerParts.count == 2 ? String(providerParts[1]) : modelRef
-        let workspaceAuthority = workspaceSoulAuthorityRule()
-        let corePersona = profile.includeCorePersona
-            ? limitedTokens(readWorkspaceText(named: "SOUL.md") ?? "", maxTokens: profile.corePersonaTokens)
+        let channelSessionAgentResolution = promptChannelSessionAgentResolution(
+            profile: profile,
+            providerName: providerName,
+            modelName: modelName
+        )
+        let openClawConfig = promptOpenClawConfig()
+        let modelWorkspaceChannelPlugins = promptModelWorkspaceChannelPlugins(
+            modelRef: modelRef,
+            providerName: providerName,
+            modelName: modelName
+        )
+        let runtimeSystemPrompt = baseOpenClawRuntimeSystemPrompt()
+        let workspaceFiles = profile.includeWorkspaceFiles
+            ? orderedWorkspaceFileContext()
             : ""
-        let styleCard = profile.includeStyleCard
-            ? limitedTokens(compactSoulStyleContext(), maxTokens: profile.styleCardTokens)
+        let skillsTools = (profile.includeTools || profile.includeSkills)
+            ? promptSkillsToolsDescriptions()
             : ""
-        let memorySummary = profile.includeMemorySummary
-            ? limitedTokens(readWorkspaceText(named: "memory_summary.md") ?? "", maxTokens: profile.maxMemoryTokens)
+        let beforePromptBuildHooks = promptBeforePromptBuildHooks(profile: profile)
+        let vibeRag = profile.includeStyleCard
+            ? limitedTokens(vibeRagContext(), maxTokens: profile.styleCardTokens)
             : ""
         let history = profile.includeHistory
             ? limitedHistory(maxMessages: profile.maxHistoryMessages)
             : ""
-        let fullPersona = profile.includeFullPersonaFiles
-            ? limitedTokens(fullPersonaText(), maxTokens: profile.maxRetrievedTokens)
+        let retrieval = profile.includeRag
+            ? await selectiveMemoryContext(query: retrievalQuery, profile: profile)
+            : .empty(query: retrievalQuery, profile: profile)
+        let memorySummary = profile.includeMemorySummary
+            ? limitedTokens(readWorkspaceText(named: "memory_summary.md") ?? "", maxTokens: profile.maxMemoryTokens)
             : ""
         let fullMemory = profile.includeFullMemory
             ? limitedTokens(readWorkspaceText(named: "MEMORY.md") ?? "", maxTokens: profile.maxMemoryTokens)
             : ""
-        let retrieval = profile.includeRag
-            ? await selectiveMemoryContext(query: retrievalQuery, profile: profile)
-            : .empty(query: retrievalQuery, profile: profile)
-        var retrievedMemory = retrieval.text
+        var memorySearch = promptMemorySearchContext(
+            summary: memorySummary,
+            fullMemory: fullMemory,
+            retrievedMemory: retrieval.text
+        )
 
         var baseSections = [
-            OpenClawPromptSection(name: "workspaceAuthority", text: workspaceAuthority),
-            OpenClawPromptSection(name: "corePersona", text: corePersona),
-            OpenClawPromptSection(name: "styleCard", text: styleCard),
-            OpenClawPromptSection(name: "memorySummary", text: memorySummary),
-            OpenClawPromptSection(name: "history", text: history),
-            OpenClawPromptSection(name: "fullPersona", text: fullPersona),
-            OpenClawPromptSection(name: "fullMemory", text: fullMemory),
-            OpenClawPromptSection(name: "retrievedMemory", text: retrievedMemory),
+            OpenClawPromptSection(name: OpenClawPromptSectionName.channelSessionAgentResolution, text: channelSessionAgentResolution),
+            OpenClawPromptSection(name: OpenClawPromptSectionName.openClawConfig, text: openClawConfig),
+            OpenClawPromptSection(name: OpenClawPromptSectionName.modelWorkspaceChannelPlugins, text: modelWorkspaceChannelPlugins),
+            OpenClawPromptSection(name: OpenClawPromptSectionName.runtimeSystemPrompt, text: runtimeSystemPrompt),
+            OpenClawPromptSection(name: OpenClawPromptSectionName.workspaceFiles, text: workspaceFiles),
+            OpenClawPromptSection(name: OpenClawPromptSectionName.skillsTools, text: skillsTools),
+            OpenClawPromptSection(name: OpenClawPromptSectionName.beforePromptBuildHooks, text: beforePromptBuildHooks),
+            OpenClawPromptSection(name: OpenClawPromptSectionName.vibeRag, text: vibeRag),
+            OpenClawPromptSection(name: OpenClawPromptSectionName.memorySearch, text: memorySearch),
+            OpenClawPromptSection(name: OpenClawPromptSectionName.sessionHistory, text: history),
         ].filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
         let suffix = ""
@@ -3497,7 +3168,7 @@ final class OpenClawLocalController: NSObject, ObservableObject {
             userMessageForPrompt = limitedTokens(userMessageForPrompt, maxTokens: 2500)
         }
 
-        var sections = baseSections + [OpenClawPromptSection(name: "user", text: userMessageForPrompt + suffix)]
+        var sections = baseSections + [OpenClawPromptSection(name: OpenClawPromptSectionName.currentUserMessage, text: userMessageForPrompt + suffix)]
         var text = sections
             .map { "## \($0.name)\n\($0.text)" }
             .joined(separator: "\n\n")
@@ -3505,9 +3176,9 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         if estimatedTokens(text) > budget {
             shrinkingApplied = true
             dropped.append("Qdrant snippets")
-            baseSections.removeAll { $0.name == "retrievedMemory" }
-            retrievedMemory = ""
-            sections = baseSections + [OpenClawPromptSection(name: "user", text: userMessageForPrompt + suffix)]
+            baseSections.removeAll { $0.name == OpenClawPromptSectionName.memorySearch }
+            memorySearch = ""
+            sections = baseSections + [OpenClawPromptSection(name: OpenClawPromptSectionName.currentUserMessage, text: userMessageForPrompt + suffix)]
             text = sections.map { "## \($0.name)\n\($0.text)" }.joined(separator: "\n\n")
         }
 
@@ -3516,7 +3187,7 @@ final class OpenClawLocalController: NSObject, ObservableObject {
             dropped.append("fallback spoken text")
             userMessageForPrompt = notificationUserMessage(userMessage, includeFallback: false, includeExtraMetadata: true)
             userMessageForPrompt = limitedTokens(userMessageForPrompt, maxTokens: 2500)
-            sections = baseSections + [OpenClawPromptSection(name: "user", text: userMessageForPrompt + suffix)]
+            sections = baseSections + [OpenClawPromptSection(name: OpenClawPromptSectionName.currentUserMessage, text: userMessageForPrompt + suffix)]
             text = sections.map { "## \($0.name)\n\($0.text)" }.joined(separator: "\n\n")
         }
 
@@ -3525,12 +3196,18 @@ final class OpenClawLocalController: NSObject, ObservableObject {
             dropped.append("extra notification metadata")
             userMessageForPrompt = notificationUserMessage(userMessage, includeFallback: false, includeExtraMetadata: false)
             userMessageForPrompt = limitedTokens(userMessageForPrompt, maxTokens: 2500)
-            sections = baseSections + [OpenClawPromptSection(name: "user", text: userMessageForPrompt + suffix)]
+            sections = baseSections + [OpenClawPromptSection(name: OpenClawPromptSectionName.currentUserMessage, text: userMessageForPrompt + suffix)]
             text = sections.map { "## \($0.name)\n\($0.text)" }.joined(separator: "\n\n")
         }
 
         if estimatedTokens(text) > budget {
-            for sectionName in ["history", "workspaceFiles", "tools", "skills", "fullMemory", "fullPersona"] {
+            for sectionName in [
+                OpenClawPromptSectionName.sessionHistory,
+                OpenClawPromptSectionName.skillsTools,
+                OpenClawPromptSectionName.vibeRag,
+                OpenClawPromptSectionName.workspaceFiles,
+                OpenClawPromptSectionName.openClawConfig
+            ] {
                 guard estimatedTokens(text) > budget else {
                     break
                 }
@@ -3538,7 +3215,7 @@ final class OpenClawLocalController: NSObject, ObservableObject {
                     shrinkingApplied = true
                     dropped.append(sectionName)
                     baseSections.removeAll { $0.name == sectionName }
-                    sections = baseSections + [OpenClawPromptSection(name: "user", text: userMessageForPrompt + suffix)]
+                    sections = baseSections + [OpenClawPromptSection(name: OpenClawPromptSectionName.currentUserMessage, text: userMessageForPrompt + suffix)]
                     text = sections.map { "## \($0.name)\n\($0.text)" }.joined(separator: "\n\n")
                 }
             }
@@ -3547,7 +3224,7 @@ final class OpenClawLocalController: NSObject, ObservableObject {
         if profile.name == OpenClawTaskProfile.notificationSpeech.name, estimatedTokens(text) > budget {
             shrinkingApplied = true
             userMessageForPrompt = minimalNotificationUserMessage(userMessage)
-            sections = baseSections + [OpenClawPromptSection(name: "user", text: userMessageForPrompt + suffix)]
+            sections = baseSections + [OpenClawPromptSection(name: OpenClawPromptSectionName.currentUserMessage, text: userMessageForPrompt + suffix)]
             text = sections.map { "## \($0.name)\n\($0.text)" }.joined(separator: "\n\n")
         }
 
@@ -3561,14 +3238,14 @@ final class OpenClawLocalController: NSObject, ObservableObject {
             retrievedSnippetIDs: retrieval.snippets.map(\.id),
             retrievedSnippetSources: retrieval.snippets.map(\.source),
             retrievedSnippetScores: retrieval.snippets.map(\.score),
-            retrievedTokenCount: tokenCount(retrievedMemory),
-            systemTokens: tokenCount(corePersona + "\n" + styleCard),
+            retrievedTokenCount: tokenCount(memorySearch),
+            systemTokens: tokenCount(runtimeSystemPrompt),
             userTokens: tokenCount(userMessageForPrompt + suffix),
-            historyTokens: tokenCount(sections.first(where: { $0.name == "history" })?.text ?? ""),
-            workspaceTokens: 0,
-            toolsSkillsTokens: 0,
-            memoryTokens: tokenCount([memorySummary, fullMemory].filter { !$0.isEmpty }.joined(separator: "\n")),
-            ragTokens: tokenCount(retrievedMemory),
+            historyTokens: tokenCount(sections.first(where: { $0.name == OpenClawPromptSectionName.sessionHistory })?.text ?? ""),
+            workspaceTokens: tokenCount(sections.first(where: { $0.name == OpenClawPromptSectionName.workspaceFiles })?.text ?? ""),
+            toolsSkillsTokens: tokenCount(sections.first(where: { $0.name == OpenClawPromptSectionName.skillsTools })?.text ?? ""),
+            memoryTokens: tokenCount(memorySearch),
+            ragTokens: tokenCount(vibeRag),
             totalTokens: totalTokens,
             runtimeContextWindow: profile.runtimeContextWindow,
             modelContextWindow: modelContextWindow(for: modelRef) ?? profile.runtimeContextWindow,
@@ -3793,6 +3470,231 @@ final class OpenClawLocalController: NSObject, ObservableObject {
 
     private func fullPersonaText() -> String {
         soulWorkspaceSections(compact: false).joined(separator: "\n\n")
+    }
+
+    private func promptChannelSessionAgentResolution(
+        profile: OpenClawTaskProfile,
+        providerName: String,
+        modelName: String
+    ) -> String {
+        """
+        Incoming message has been accepted by the Swift app.
+        Channel: swift-app-local-chat
+        Session: \(chatSessionID)
+        Agent: \(mainAgentID)
+        Task profile: \(profile.name)
+        Provider: \(providerName.isEmpty ? "default" : providerName)
+        Model: \(modelName)
+        """
+    }
+
+    private func promptOpenClawConfig() -> String {
+        let url = runtimeLayout.openClawConfigFileURL
+        guard let data = try? Data(contentsOf: url) else {
+            return "openclaw.json not found at \(url.path)."
+        }
+        guard let root = try? JSONSerialization.jsonObject(with: data) else {
+            return "openclaw.json exists at \(url.path), but could not be parsed."
+        }
+        let redactedRoot = redactedOpenClawJSONValue(root)
+        guard let redactedData = try? JSONSerialization.data(
+            withJSONObject: redactedRoot,
+            options: [.prettyPrinted, .sortedKeys]
+        ) else {
+            return "openclaw.json exists at \(url.path), but could not be rendered for prompt context."
+        }
+        let rendered = String(decoding: redactedData, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return rendered.isEmpty ? "openclaw.json is empty at \(url.path)." : rendered
+    }
+
+    private func promptModelWorkspaceChannelPlugins(
+        modelRef: String,
+        providerName: String,
+        modelName: String
+    ) -> String {
+        let browserEnabled = openClawJSONBoolValue(path: ["plugins", "entries", "browser", "enabled"])
+            ?? openClawJSONBoolValue(path: ["browser", "enabled"])
+        let toolsProfile = openClawJSONStringValue(path: ["tools", "profile"])
+            ?? jsonValue("tools.profile", in: settingsSnapshot.jsonEntries)
+            ?? "messaging"
+        let alsoAllowedTools = openClawJSONListValue(path: ["tools", "alsoAllow"]).joined(separator: ", ")
+        return """
+        Model ref: \(modelRef)
+        Provider: \(providerName.isEmpty ? "default" : providerName)
+        Model name: \(modelName)
+        Workspace: \(workspaceDirectory.path)
+        Channel config: swift-app-local-chat, session=\(chatSessionID), agent=\(mainAgentID)
+        Tools profile: \(toolsProfile)
+        Also allowed tools: \(alsoAllowedTools.isEmpty ? "not configured" : alsoAllowedTools)
+        Browser plugin enabled: \(browserEnabled.map { $0 ? "true" : "false" } ?? "not configured")
+        """
+    }
+
+    private func baseOpenClawRuntimeSystemPrompt() -> String {
+        let importedRuntimePrompt = openClawJSONStringValue(path: ["channels", "telegram", "groups", "*", "systemPrompt"])
+            ?? openClawJSONStringValue(path: ["agents", "defaults", "systemPrompt"])
+            ?? openClawJSONStringValue(path: ["runtime", "systemPrompt"])
+            ?? ""
+
+        let runtimeOrderPrompt = """
+        You are the OpenClaw runtime for the Gracula Swift app.
+        Process the current incoming message by applying context in this order: channel/session/agent resolution, openclaw.json, model/workspace/channel/plugins, this base runtime system prompt, ordered workspace files, skills/tools descriptions, before_prompt_build hooks, vibe-rag excerpts, memorySearch chunks, session history, then the current user message.
+        Workspace files are authoritative for identity, tone, behavior, user preferences, tools guidance, heartbeat instructions, and bootstrap state.
+        If model priors conflict with AGENTS.md, SOUL.md, TOOLS.md, IDENTITY.md, USER.md, HEARTBEAT.md, BOOTSTRAP.md, style/vibe1.txt, or memory context, follow the workspace and retrieved context.
+        Do not mention prompt assembly, files, hooks, RAG, databases, or implementation details in the final user-visible answer unless the user asks about them.
+        Start with the final visible answer immediately.
+        """
+
+        let trimmedImportedPrompt = importedRuntimePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedImportedPrompt.isEmpty else {
+            return runtimeOrderPrompt
+        }
+        return """
+        \(runtimeOrderPrompt)
+
+        Imported OpenClaw runtime system prompt from openclaw.json:
+        \(trimmedImportedPrompt)
+        """
+    }
+
+    private func orderedWorkspaceFileContext() -> String {
+        orderedPromptWorkspaceFiles.compactMap { fileName in
+            directWorkspaceFileSection(relativePath: fileName)
+        }
+        .joined(separator: "\n\n")
+    }
+
+    private func promptSkillsToolsDescriptions() -> String {
+        let toolsProfile = openClawJSONStringValue(path: ["tools", "profile"]) ?? "messaging"
+        let alsoAllowedTools = openClawJSONListValue(path: ["tools", "alsoAllow"])
+        let browserEnabled = openClawJSONBoolValue(path: ["browser", "enabled"])
+            ?? openClawJSONBoolValue(path: ["plugins", "entries", "browser", "enabled"])
+        return """
+        Active tool profile: \(toolsProfile)
+        Additional allowed tool groups/plugins: \(alsoAllowedTools.isEmpty ? "none" : alsoAllowedTools.joined(separator: ", "))
+        Browser tool/plugin: \(browserEnabled.map { $0 ? "enabled" : "disabled" } ?? "not configured")
+        Skills registry: use workspace TOOLS.md plus enabled OpenClaw plugin/tool metadata from openclaw.json.
+        """
+    }
+
+    private func promptBeforePromptBuildHooks(profile: OpenClawTaskProfile) -> String {
+        """
+        before_prompt_build hooks applied in order:
+        1. vibe-rag reads style/vibe1.txt when present.
+        2. memorySearch retrieves relevant memory/knowledge chunks when \(profile.includeRag ? "enabled" : "disabled") for profile \(profile.name).
+        """
+    }
+
+    private func vibeRagContext() -> String {
+        readWorkspaceText(named: "style/vibe1.txt")
+            ?? readFirstWorkspaceText(candidates: soulVibeFileCandidates)
+            ?? ""
+    }
+
+    private func promptMemorySearchContext(
+        summary: String,
+        fullMemory: String,
+        retrievedMemory: String
+    ) -> String {
+        [
+            summary.isEmpty ? nil : "memory_summary.md\n\(summary)",
+            fullMemory.isEmpty ? nil : "MEMORY.md\n\(fullMemory)",
+            retrievedMemory.isEmpty ? nil : "memorySearch retrieved chunks\n\(retrievedMemory)"
+        ]
+        .compactMap { $0 }
+        .joined(separator: "\n\n")
+    }
+
+    private func openClawJSONStringValue(path: [String]) -> String? {
+        openClawJSONValue(path: path) as? String
+    }
+
+    private func openClawJSONBoolValue(path: [String]) -> Bool? {
+        if let value = openClawJSONValue(path: path) as? Bool {
+            return value
+        }
+        if let value = openClawJSONValue(path: path) as? String {
+            switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "1", "true", "yes", "on":
+                return true
+            case "0", "false", "no", "off":
+                return false
+            default:
+                return nil
+            }
+        }
+        return nil
+    }
+
+    private func openClawJSONListValue(path: [String]) -> [String] {
+        if let values = openClawJSONValue(path: path) as? [String] {
+            return values
+        }
+        if let values = openClawJSONValue(path: path) as? [Any] {
+            return values.compactMap { value in
+                switch value {
+                case let string as String:
+                    return string
+                case let number as NSNumber:
+                    return number.stringValue
+                default:
+                    return nil
+                }
+            }
+        }
+        if let value = openClawJSONStringValue(path: path), !value.isEmpty {
+            return [value]
+        }
+        return []
+    }
+
+    private func openClawJSONValue(path: [String]) -> Any? {
+        guard !path.isEmpty,
+              let data = try? Data(contentsOf: runtimeLayout.openClawConfigFileURL),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+
+        var current: Any = root
+        for key in path {
+            guard let object = current as? [String: Any],
+                  let next = object[key] else {
+                return nil
+            }
+            current = next
+        }
+        return current
+    }
+
+    private func redactedOpenClawJSONValue(_ value: Any, key: String? = nil) -> Any {
+        if let key, isSensitiveOpenClawJSONKey(key) {
+            return "[redacted]"
+        }
+        if let object = value as? [String: Any] {
+            var redactedObject: [String: Any] = [:]
+            for (childKey, childValue) in object {
+                redactedObject[childKey] = redactedOpenClawJSONValue(childValue, key: childKey)
+            }
+            return redactedObject
+        }
+        if let array = value as? [Any] {
+            return array.map { redactedOpenClawJSONValue($0) }
+        }
+        return value
+    }
+
+    private func isSensitiveOpenClawJSONKey(_ key: String) -> Bool {
+        let normalized = key.lowercased()
+        return normalized.contains("apikey")
+            || normalized.contains("api_key")
+            || normalized.contains("token")
+            || normalized.contains("secret")
+            || normalized.contains("authorization")
+            || normalized.contains("password")
+            || normalized.contains("hash")
+            || normalized.contains("encryptionkey")
+            || normalized.contains("encryption_key")
     }
 
     private func readWorkspaceText(named fileName: String) -> String? {
@@ -5161,11 +5063,23 @@ private func locateGraculaProjectRoot(startingAt url: URL) -> URL? {
 }
 
 private let requiredProjectWorkspaceFiles = [
-    "SOUL.md",
-    "IDENTITY.md",
     "AGENTS.md",
+    "SOUL.md",
+    "TOOLS.md",
+    "IDENTITY.md",
     "USER.md",
-    "TOOLS.md"
+    "HEARTBEAT.md",
+    "BOOTSTRAP.md"
+]
+
+private let orderedPromptWorkspaceFiles = [
+    "AGENTS.md",
+    "SOUL.md",
+    "TOOLS.md",
+    "IDENTITY.md",
+    "USER.md",
+    "HEARTBEAT.md",
+    "BOOTSTRAP.md"
 ]
 
 private let soulVibeFileCandidates = [

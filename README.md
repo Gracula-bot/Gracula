@@ -99,10 +99,10 @@ Supported commands:
 Current backend: `TelegramRoutingService`. It routes requests across three adapters:
 
 - `TelegramUserTDLibClient` for personal-account chat discovery, reading, and direct MTProto replies.
-- `TelegramBusinessBotService` for Telegram Business polling and replies through Bot API business connections.
+- `TelegramBusinessBotService` for Telegram Business replies through Bot API business connections when an explicit route is provided.
 - `TelegramMacAppAutomationService` as a macOS Telegram Desktop fallback for manual account sending when no API backend is available.
 
-When TDLib is configured, Gracula prefers TDLib for reading messages and sending replies. When a Business bot token is configured, Gracula can also read the latest pending Telegram Business message and answer through the same connection. If neither API backend is available, Gracula falls back to Telegram Desktop UI automation for sending.
+When TDLib is configured, Gracula prefers TDLib for reading messages and sending replies. When a Business bot token is configured, Gracula can send through an explicit Telegram Business route, but incoming Business updates are not read by this pipeline. If neither API backend is available, Gracula falls back to Telegram Desktop UI automation for sending.
 
 Additional authorization commands for the TDLib user backend:
 

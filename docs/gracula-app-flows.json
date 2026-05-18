@@ -64,7 +64,7 @@
       "package": "Example",
       "group": "UI",
       "kind": "controller",
-      "description": "Управляет Start/Stop bot, settings, local chat, Telegram user API, Business polling, gateway/direct runtime.",
+      "description": "Управляет Start/Stop bot, settings, local chat, Telegram user API, Business send/probe, gateway/direct runtime.",
       "files": ["Examples/GraculaExample/GraculaExample/AppShell/OpenClawLocalController.swift"]
     },
     {
@@ -191,7 +191,7 @@
       "package": "Application.Telegram",
       "group": "Integrations",
       "kind": "backend",
-      "description": "Telegram Business polling and replies through business connection id.",
+      "description": "Telegram Business replies through business connection id when an explicit route is provided.",
       "files": ["Sources/Application/Telegram/TelegramBusinessBotService.swift"]
     },
     {

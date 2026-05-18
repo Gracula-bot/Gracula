@@ -144,9 +144,6 @@ struct OpenClawCanonicalSettingsBridge {
             json("integrations.telegram.business.enabled", configuration.telegram.businessEnabled ? "true" : "false", kind: .bool),
             secretJSON("integrations.telegram.business.botToken", configuration.telegram.businessBotToken),
             json("integrations.telegram.business.businessConnectionId", configuration.telegram.businessConnectionID),
-            json("integrations.telegram.business.autoReplyEnabled", configuration.telegram.businessAutoReplyEnabled ? "true" : "false", kind: .bool),
-            json("integrations.telegram.business.markReadEnabled", configuration.telegram.businessMarkReadEnabled ? "true" : "false", kind: .bool),
-            json("integrations.telegram.business.pollIntervalSeconds", String(configuration.telegram.businessPollIntervalSeconds), kind: .int),
             json("integrations.telegram.user.enabled", configuration.telegram.userEnabled ? "true" : "false", kind: .bool),
             json("integrations.telegram.user.apiId", configuration.telegram.userAPIID),
             secretJSON("integrations.telegram.user.apiHash", configuration.telegram.userAPIHash),
@@ -187,9 +184,6 @@ struct OpenClawCanonicalSettingsBridge {
         configuration.telegram.businessEnabled = Self.boolValue(jsonMap["integrations.telegram.business.enabled"], default: configuration.telegram.businessEnabled)
         configuration.telegram.businessBotToken = jsonMap["integrations.telegram.business.botToken"] ?? configuration.telegram.businessBotToken
         configuration.telegram.businessConnectionID = jsonMap["integrations.telegram.business.businessConnectionId"] ?? configuration.telegram.businessConnectionID
-        configuration.telegram.businessAutoReplyEnabled = Self.boolValue(jsonMap["integrations.telegram.business.autoReplyEnabled"], default: configuration.telegram.businessAutoReplyEnabled)
-        configuration.telegram.businessMarkReadEnabled = Self.boolValue(jsonMap["integrations.telegram.business.markReadEnabled"], default: configuration.telegram.businessMarkReadEnabled)
-        configuration.telegram.businessPollIntervalSeconds = Int(jsonMap["integrations.telegram.business.pollIntervalSeconds"] ?? "") ?? configuration.telegram.businessPollIntervalSeconds
         configuration.telegram.userEnabled = Self.boolValue(jsonMap["integrations.telegram.user.enabled"], default: configuration.telegram.userEnabled)
         configuration.telegram.userAPIID = jsonMap["integrations.telegram.user.apiId"] ?? configuration.telegram.userAPIID
         configuration.telegram.userAPIHash = jsonMap["integrations.telegram.user.apiHash"] ?? configuration.telegram.userAPIHash

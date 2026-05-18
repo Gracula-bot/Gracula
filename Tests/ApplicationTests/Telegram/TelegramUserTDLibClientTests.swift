@@ -43,12 +43,6 @@ func telegramUserClientRestartsAfterClosedAuthorizationState() async {
 }
 
 @Test
-func telegramBusinessLongPollTimeoutsAreTreatedAsExpected() {
-    #expect(TelegramBusinessBotService.isExpectedLongPollTimeout(URLError(.timedOut)))
-    #expect(!TelegramBusinessBotService.isExpectedLongPollTimeout(URLError(.badServerResponse)))
-}
-
-@Test
 func telegramBusinessProbeConnectionUsesGetMe() async throws {
     let recorder = TelegramBusinessRequestRecorder()
     let session = makeTelegramBusinessURLSession(recorder: recorder, statusCode: 200, body: """
